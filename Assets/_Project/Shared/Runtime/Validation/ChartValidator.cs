@@ -19,11 +19,28 @@
 //   – hold tick: outside [startTimeMs, endTimeMs], unsorted, or duplicate
 //   – unknown note type or flick direction
 //
+// Errors (export-blocking, spec §12.1 + task sanity rules):
+//   – formatVersion not supported
+//   – tempo segments invalid (missing at 0, unsorted, overlap, bad BPM)
+//   – null required arrays (arenas, lanes, notes)
+//   – empty or duplicate IDs (arenaId, laneId, noteId)
+//   – lane references a missing arenaId
+//   – note references a missing laneId
+//   – required track has 0 keyframes (all arena/lane tracks are required)
+//   – keyframes not sorted ascending by timeMs
+//   – duplicate timeMs in a track
+//   – invalid easing string
+//   – enabled track: value not exactly 0 or 1
+//   – enabled track: easing not "hold"
+//   – hold note: startTimeMs >= endTimeMs
+//   – hold tick: outside [startTimeMs, endTimeMs], unsorted, or duplicate
+//   – unknown note type or flick direction
+//   – opacity value outside [0..1]         (sanity range, error per task §1C)
+//   – arcSweepDeg value outside (0..360]   (sanity range, error per task §1C)
+//   – widthDeg value <= 0                  (sanity range, error per task §1C)
+//
 // Warnings (non-blocking, spec §12.2):
 //   – enabled=1 keyframe alongside opacity≈0 keyframe (interactive but invisible)
-//   – arcSweepDeg value outside (0..360]
-//   – widthDeg value <= 0
-//   – opacity value outside [0..1]
 //   – more than MaxSimultaneousEnabledLanesWarning lanes enabled at chart start
 
 using System;
@@ -608,7 +625,8 @@ namespace RhythmicFlow.Shared
         // Warning helpers
         // ---------------------------------------------------------------------------
 
-        // Warns if any opacity keyframe value is outside [0..1].
+        // Errors (export-blocking) if any opacity keyframe value is outside [0..1].
+        // Sanity range enforced per task §1C; chart with out-of-range opacity is invalid.
         private static void WarnIfOpacityOutOfRange(
             FloatTrack track,
             string ctx,
@@ -624,14 +642,15 @@ namespace RhythmicFlow.Shared
 
                 if (kf.value < 0f || kf.value > 1f)
                 {
-                    result.AddWarning(
+                    result.AddError(
                         $"{ctx}.{trackName}.keyframes[{k}]: " +
-                        $"value {kf.value} is outside the expected range [0..1].");
+                        $"value {kf.value} is outside the required range [0..1] (export-blocking).");
                 }
             }
         }
 
-        // Warns if any arcSweepDeg keyframe value is outside (0..360].
+        // Errors (export-blocking) if any arcSweepDeg keyframe value is outside (0..360].
+        // Sanity range enforced per task §1C; a zero/negative sweep makes a degenerate arena.
         private static void WarnIfArcSweepInvalid(
             FloatTrack track,
             string ctx,
@@ -647,15 +666,16 @@ namespace RhythmicFlow.Shared
 
                 if (kf.value <= 0f || kf.value > 360f)
                 {
-                    result.AddWarning(
+                    result.AddError(
                         $"{ctx}.{trackName}.keyframes[{k}]: " +
-                        $"arcSweepDeg value {kf.value} is outside (0..360]. " +
+                        $"arcSweepDeg value {kf.value} is outside (0..360] (export-blocking). " +
                         $"360 = full ring; value must be positive.");
                 }
             }
         }
 
-        // Warns if any widthDeg keyframe value is <= 0 (degenerate lane).
+        // Errors (export-blocking) if any widthDeg keyframe value is <= 0 (degenerate lane).
+        // Sanity range enforced per task §1C; zero/negative width makes hit-testing undefined.
         private static void WarnIfWidthDegInvalid(
             FloatTrack track,
             string ctx,
@@ -671,9 +691,9 @@ namespace RhythmicFlow.Shared
 
                 if (kf.value <= 0f)
                 {
-                    result.AddWarning(
+                    result.AddError(
                         $"{ctx}.{trackName}.keyframes[{k}]: " +
-                        $"widthDeg value {kf.value} must be > 0 for a non-degenerate lane.");
+                        $"widthDeg value {kf.value} must be > 0 for a non-degenerate lane (export-blocking).");
                 }
             }
         }
