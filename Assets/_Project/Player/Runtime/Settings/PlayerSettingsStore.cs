@@ -1,0 +1,128 @@
+// PlayerSettingsStore.cs
+// Persists player-configurable settings across sessions using Unity PlayerPrefs.
+//
+// Settings exposed in v0 (spec §8.3):
+//   UserOffsetMs         — timing offset applied on top of chart audioOffsetMs (spec §3.3)
+//   PlayerSpeedMultiplier — visual note approach speed scale factor (spec §6.1)
+//   FlickMinDistanceNorm  — minimum playfield-plane distance for flick gesture (spec §8.3)
+//   FlickMinVelocityNormPerSec — minimum velocity for flick gesture (spec §8.3)
+//   FlickMaxGestureTimeMs — maximum gesture duration for flick recognition (spec §8.3)
+//
+// Sign convention for UserOffsetMs (locked, spec §3.3):
+//   Positive = judge LATER (notes occur later relative to audio).
+//   effectiveChartTimeMs = songDspTimeMs + audioOffsetMs + UserOffsetMs
+
+using UnityEngine;
+
+namespace RhythmicFlow.Player
+{
+    public static class PlayerSettingsStore
+    {
+        // -------------------------------------------------------------------
+        // PlayerPrefs keys
+        // -------------------------------------------------------------------
+
+        private const string KeyUserOffsetMs           = "rf.UserOffsetMs";
+        private const string KeyPlayerSpeedMultiplier  = "rf.PlayerSpeedMultiplier";
+        private const string KeyFlickMinDistNorm       = "rf.FlickMinDistNorm";
+        private const string KeyFlickMinVelNormPerSec  = "rf.FlickMinVelNormPerSec";
+        private const string KeyFlickMaxGestureTimeMs  = "rf.FlickMaxGestureTimeMs";
+
+        // -------------------------------------------------------------------
+        // Defaults (locked for v0, spec §8.3)
+        // -------------------------------------------------------------------
+
+        // Spec §3.3: default timing offset is 0.
+        public const int   DefaultUserOffsetMs          = 0;
+
+        // Spec §6.1: speed multiplier default (1.0 = normal speed).
+        public const float DefaultPlayerSpeedMultiplier = 1.0f;
+
+        // Spec §8.3: flick recognition defaults (locked for v0).
+        public const float DefaultFlickMinDistanceNorm      = 0.03f;
+        public const float DefaultFlickMinVelocityNormPerSec = 0.8f;
+        public const int   DefaultFlickMaxGestureTimeMs     = 120;
+
+        // -------------------------------------------------------------------
+        // UserOffsetMs  (int, range -1000..+1000 ms in practice; UI clips to -200..+200)
+        // -------------------------------------------------------------------
+
+        // Spec §3.3: timing offset applied on top of chart audioOffsetMs.
+        public static int UserOffsetMs
+        {
+            get => PlayerPrefs.GetInt(KeyUserOffsetMs, DefaultUserOffsetMs);
+            set
+            {
+                PlayerPrefs.SetInt(KeyUserOffsetMs, value);
+                PlayerPrefs.Save();
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // PlayerSpeedMultiplier  (float, > 0)
+        // -------------------------------------------------------------------
+
+        // Spec §6.1: scales BaseApproachSpeed for visual note approach.
+        public static float PlayerSpeedMultiplier
+        {
+            get => PlayerPrefs.GetFloat(KeyPlayerSpeedMultiplier, DefaultPlayerSpeedMultiplier);
+            set
+            {
+                // Clamp to a safe positive range to prevent degenerate values.
+                float clamped = Mathf.Max(0.1f, value);
+                PlayerPrefs.SetFloat(KeyPlayerSpeedMultiplier, clamped);
+                PlayerPrefs.Save();
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Flick recognition thresholds (spec §8.3, locked defaults for v0)
+        // -------------------------------------------------------------------
+
+        // Minimum normalized playfield-plane distance the finger must travel.
+        public static float FlickMinDistanceNorm
+        {
+            get => PlayerPrefs.GetFloat(KeyFlickMinDistNorm, DefaultFlickMinDistanceNorm);
+            set
+            {
+                PlayerPrefs.SetFloat(KeyFlickMinDistNorm, Mathf.Max(0f, value));
+                PlayerPrefs.Save();
+            }
+        }
+
+        // Minimum velocity in normalized playfield units per second.
+        public static float FlickMinVelocityNormPerSec
+        {
+            get => PlayerPrefs.GetFloat(KeyFlickMinVelNormPerSec, DefaultFlickMinVelocityNormPerSec);
+            set
+            {
+                PlayerPrefs.SetFloat(KeyFlickMinVelNormPerSec, Mathf.Max(0f, value));
+                PlayerPrefs.Save();
+            }
+        }
+
+        // Maximum duration (ms) from first movement to gesture completion.
+        public static int FlickMaxGestureTimeMs
+        {
+            get => PlayerPrefs.GetInt(KeyFlickMaxGestureTimeMs, DefaultFlickMaxGestureTimeMs);
+            set
+            {
+                PlayerPrefs.SetInt(KeyFlickMaxGestureTimeMs, Mathf.Max(1, value));
+                PlayerPrefs.Save();
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Convenience: reset all settings to defaults
+        // -------------------------------------------------------------------
+
+        public static void ResetToDefaults()
+        {
+            UserOffsetMs              = DefaultUserOffsetMs;
+            PlayerSpeedMultiplier     = DefaultPlayerSpeedMultiplier;
+            FlickMinDistanceNorm      = DefaultFlickMinDistanceNorm;
+            FlickMinVelocityNormPerSec = DefaultFlickMinVelocityNormPerSec;
+            FlickMaxGestureTimeMs     = DefaultFlickMaxGestureTimeMs;
+        }
+    }
+}
