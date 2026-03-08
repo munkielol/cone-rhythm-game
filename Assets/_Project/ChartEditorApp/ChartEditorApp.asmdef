@@ -1,0 +1,16 @@
+{
+    "name": "EditorApp",
+    "rootNamespace": "",
+    "references": [
+        "GUID:59d23bc165ec3c5499da55e934f0a634"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
