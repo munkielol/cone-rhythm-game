@@ -17,3 +17,11 @@ Thumbs.db
 
 # Addressables cache (optional)
 [Aa]ssets/[Aa]ddressableAssetsData/*/*.bin*
+
+# Generated C# project/solution files
+*.csproj
+*.sln
+*.slnx
+*.unityproj
+*.pidb
+*.booproj
