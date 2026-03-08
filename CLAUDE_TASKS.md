@@ -1,4 +1,9 @@
 # CLAUDE_TASKS.md — Overnight v0 implementation (scripts-only, strict spec compliance)
+If you stop early for any reason, print:
+- the last completed task number
+- the next task to run
+- `git log -10 --oneline`
+Then stop (no push).
 
 ## Enabled safe-default prompt improvements (1,2,3,4,6,7,11,12,13,16,19)
 - (1) Hard denylist for Unity YAML/binaries + auto-revert
