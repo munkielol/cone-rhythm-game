@@ -65,16 +65,12 @@ namespace RhythmicFlow.Player
             // Spec §5.5 §4: "If arcSweepDeg >= 360, arc test passes."
             if (arcSweepDeg >= 360f) { return true; }
 
-            float start = Normalize360(arcStartDeg);
-            float angle = Normalize360(angleDeg);
+            // CCW distance from arcStart to angle in [0, 360).
+            // Using ShortestSignedAngleDeltaDeg would cap at 180°, which breaks
+            // arcs with sweep > 180° (F1 fix). Instead, measure raw CCW distance.
+            float ccwDist = Mathf.Repeat(Normalize360(angleDeg) - Normalize360(arcStartDeg), 360f);
 
-            // Signed delta from start to the test angle, range [-180, +180].
-            float delta = ShortestSignedAngleDeltaDeg(start, angle);
-
-            // The arc spans CCW from 0 to arcSweepDeg.
-            // A point is inside if delta >= 0 AND delta <= arcSweepDeg.
-            // We clamp arcSweepDeg to (0, 360] per validation rules.
-            return delta >= 0f && delta <= arcSweepDeg;
+            return ccwDist <= arcSweepDeg;
         }
     }
 }

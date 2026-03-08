@@ -39,6 +39,11 @@ namespace RhythmicFlow.Player
         // Chart-level audio offset from song metadata (spec §3.3).
         private int _chartAudioOffsetMs;
 
+        // Last computed SongDspTimeMs captured just before Stop() (F5 fix).
+        // Returned by SongDspTimeMs when !_isPlaying so callers see a frozen
+        // value rather than 0. Reset to 0 by Reset().
+        private double _lastKnownSongDspTimeMs;
+
         // -----------------------------------------------------------------------
         // Public properties
         // -----------------------------------------------------------------------
@@ -50,15 +55,22 @@ namespace RhythmicFlow.Player
 
         /// <summary>
         /// Milliseconds of song audio elapsed since StartPlaying(), based on DSP time.
-        /// Returns 0 when not playing.
+        /// Frozen at the last known value when not playing (i.e. after Stop()).
+        /// Returns 0 only before the first StartPlaying call (or after Reset()).
         /// Spec: DSP-time driven (spec §3.3 / §1 "Audio clock: DSP-time driven conductor").
+        ///
+        /// IMPORTANT: callers must ensure the AudioSource is stopped before reading
+        /// this after Stop() — the conductor clock and the audio output are independent
+        /// and must be halted together to stay in sync.
         /// </summary>
         public double SongDspTimeMs
         {
             get
             {
-                if (!_isPlaying) { return 0.0; }
-                return (AudioSettings.dspTime - _startDspTimeSec) * 1000.0;
+                if (!_isPlaying) { return _lastKnownSongDspTimeMs; }
+
+                _lastKnownSongDspTimeMs = (AudioSettings.dspTime - _startDspTimeSec) * 1000.0;
+                return _lastKnownSongDspTimeMs;
             }
         }
 
@@ -101,9 +113,10 @@ namespace RhythmicFlow.Player
         /// </summary>
         public void Reset()
         {
-            _isPlaying          = false;
-            _startDspTimeSec    = 0.0;
-            _chartAudioOffsetMs = 0;
+            _isPlaying               = false;
+            _startDspTimeSec         = 0.0;
+            _chartAudioOffsetMs      = 0;
+            _lastKnownSongDspTimeMs  = 0.0;
         }
     }
 }

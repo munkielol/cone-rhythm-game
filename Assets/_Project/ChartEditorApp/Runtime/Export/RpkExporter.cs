@@ -160,13 +160,9 @@ namespace RhythmicFlow.ChartEditor
             }
 
             // ------------------------------------------------------------------
-            // Step 3: Generate songinfo.json content (spec §13.3).
-            // ------------------------------------------------------------------
-
-            string songInfoJson = BuildSongInfoJson(project);
-
-            // ------------------------------------------------------------------
-            // Step 4: Write the .rpk zip file.
+            // Step 3: Write the .rpk zip file.
+            // songinfo.json is generated after the jacket decision so we know
+            // whether to include the jacket reference (F4 fix, spec §13.2).
             // ------------------------------------------------------------------
 
             try
@@ -183,9 +179,6 @@ namespace RhythmicFlow.ChartEditor
 
                 using (ZipArchive archive = ZipFile.Open(outputPath, ZipArchiveMode.Create))
                 {
-                    // songinfo.json
-                    WriteTextEntry(archive, "songinfo.json", songInfoJson);
-
                     // audio/song.ogg
                     WriteBinaryEntry(archive, AudioEntryPath, File.ReadAllBytes(audioPath));
 
@@ -193,6 +186,7 @@ namespace RhythmicFlow.ChartEditor
                     // TODO: Jacket auto-resize (spec §13.4) is not yet implemented.
                     //       For v0, copy source as jacket_256.png if jacket source exists.
                     string jacketSource = project.Data.jacketSourcePath;
+                    bool jacketWritten = false;
 
                     if (!string.IsNullOrEmpty(jacketSource) && File.Exists(jacketSource))
                     {
@@ -202,6 +196,7 @@ namespace RhythmicFlow.ChartEditor
                         {
                             WriteBinaryEntry(archive, "jacket/jacket_256.png",
                                 File.ReadAllBytes(jacketSource));
+                            jacketWritten = true;
                         }
                         else
                         {
@@ -214,6 +209,9 @@ namespace RhythmicFlow.ChartEditor
                     {
                         result.Warnings.Add("No jacket source set. Jacket omitted from .rpk.");
                     }
+
+                    // songinfo.json — written after jacket so we know whether jacket exists (F4 fix).
+                    WriteTextEntry(archive, "songinfo.json", BuildSongInfoJson(project, jacketWritten));
 
                     // charts/<difficultyId>.json
                     foreach (DifficultyRecord diff in project.Data.difficulties)
@@ -242,7 +240,11 @@ namespace RhythmicFlow.ChartEditor
         // songinfo.json builder (spec §13.3)
         // -------------------------------------------------------------------
 
-        private static string BuildSongInfoJson(EditorProject project)
+        /// <param name="jacketWritten">
+        /// True when a jacket image was actually written into the ZIP.
+        /// When false, the jacket section is omitted from songinfo.json (F4 fix).
+        /// </param>
+        private static string BuildSongInfoJson(EditorProject project, bool jacketWritten)
         {
             RprojFile data = project.Data;
 
@@ -267,10 +269,10 @@ namespace RhythmicFlow.ChartEditor
                 lengthMs       = data.lengthMs,
                 bpmDisplay     = new BpmDisplayOut { min = data.bpmDisplayMin, max = data.bpmDisplayMax },
                 audio          = new AudioOut { path = AudioEntryPath },
-                jacket         = new JacketOut
-                {
-                    images = new[] { new JacketImageOut { size = 256, path = "jacket/jacket_256.png" } }
-                },
+                // Only include jacket section when the file was actually written (spec §13.2).
+                jacket         = jacketWritten
+                    ? new JacketOut { images = new[] { new JacketImageOut { size = 256, path = "jacket/jacket_256.png" } } }
+                    : null,
                 charts   = charts.ToArray(),
                 preview  = new PreviewOut
                 {

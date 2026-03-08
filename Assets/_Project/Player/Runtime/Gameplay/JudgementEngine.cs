@@ -98,7 +98,8 @@ namespace RhythmicFlow.Player
     {
         private readonly JudgementWindows            _windows;
         private readonly PlayfieldTransform          _playfieldTransform;
-        private readonly Dictionary<string, RuntimeLane> _laneMap;  // laneId → RuntimeLane
+        private readonly Dictionary<string, RuntimeLane> _laneMap;      // laneId → RuntimeLane
+        private readonly Dictionary<string, string>      _laneToArena;  // laneId → arenaId (F2 fix)
 
         // Reusable candidate buffer (avoids per-frame allocation).
         private readonly List<NoteCandidate> _candidates = new List<NoteCandidate>(16);
@@ -107,10 +108,16 @@ namespace RhythmicFlow.Player
         // Construction
         // -------------------------------------------------------------------
 
+        /// <param name="laneIdToArenaId">
+        /// Maps every laneId to the arenaId that owns it. Required for correct
+        /// multi-arena hit-testing (F2 fix — see IsInsideLane). Build this from
+        /// ChartJsonV1.arenas[*].lanes[*] at chart-load time.
+        /// </param>
         public JudgementEngine(
             GameplayMode       mode,
             PlayfieldTransform playfieldTransform,
-            IEnumerable<RuntimeLane> lanes)
+            IEnumerable<RuntimeLane> lanes,
+            IReadOnlyDictionary<string, string> laneIdToArenaId)
         {
             _windows            = JudgementWindows.ForMode(mode);
             _playfieldTransform = playfieldTransform;
@@ -120,6 +127,14 @@ namespace RhythmicFlow.Player
             foreach (RuntimeLane lane in lanes)
             {
                 _laneMap[lane.LaneId] = lane;
+            }
+
+            // Copy into a mutable dict so we don't hold a reference to the caller's object.
+            _laneToArena = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var kvp in laneIdToArenaId)
+            {
+                _laneToArena[kvp.Key] = kvp.Value;
             }
         }
 
@@ -360,24 +375,10 @@ namespace RhythmicFlow.Player
 
             if (!laneGeometries.TryGetValue(laneId, out LaneGeometry laneGeo)) { return false; }
 
-            // Find the arena this lane belongs to (resolved at chart load via ChartLane.arenaId).
-            // Here we require the caller to include the arena's geometry in arenaGeometries
-            // keyed by the lane's arenaId.
-            // Simplified: try a "best-guess" lookup by laneId prefix or external mapping.
-            // TODO: JudgementEngine needs a laneId→arenaId map provided at construction time.
-            //       For now, look through all provided arenas for the one that contains this lane.
-            ArenaGeometry arenaGeo = default;
-            bool foundArena = false;
-
-            foreach (var kvp in arenaGeometries)
-            {
-                // This is a fallback scan; in real usage pass a laneId→arenaId dictionary.
-                arenaGeo = kvp.Value;
-                foundArena = true;
-                break;
-            }
-
-            if (!foundArena) { return false; }
+            // Resolve which arena owns this lane using the construction-time map (F2 fix).
+            // Previously this always picked the first arena in the dict, breaking multi-arena charts.
+            if (!_laneToArena.TryGetValue(laneId, out string arenaId)) { return false; }
+            if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return false; }
 
             if (!ArenaHitTester.IsInsideArenaBand(hitLocal, arenaGeo, _playfieldTransform,
                 out thetaDeg)) { return false; }
