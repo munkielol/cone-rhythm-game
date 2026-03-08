@@ -56,7 +56,8 @@ Guardrail G1 — Forbidden file changes:
 - If any exist: **immediately auto-revert** them (e.g., `git checkout -- <file>`) and continue scripts-only. Do not commit forbidden files.
 
 Guardrail G2 — No pushing:
-- Do not run `git push` at any time.
+- Do not run `git push`, `git pull`, `git fetch`, `git clone`, `git submodule`, or any command that contacts the network at any time.
+- Do not run those commands indirectly via PowerShell.
 
 Guardrail G3 — Small, reviewable commits:
 - Each task is a separate commit.
