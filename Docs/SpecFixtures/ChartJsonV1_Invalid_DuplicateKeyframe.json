@@ -1,0 +1,66 @@
+{
+  "formatVersion": 1,
+  "song": {
+    "songId": "fixture-dup-keyframe",
+    "difficultyId": "normal",
+    "audioFile": "audio/song.ogg",
+    "audioOffsetMs": 0
+  },
+  "tempo": {
+    "segments": [
+      { "type": "constant", "startTimeMs": 0, "bpm": 120.0, "endTimeMs": 0, "startBpm": 0.0, "endBpm": 0.0 }
+    ]
+  },
+  "arenas": [
+    {
+      "arenaId": "arena-a",
+      "enabled":       { "keyframes": [ { "timeMs": 0, "value": 1.0, "easing": "hold" } ] },
+      "opacity":       { "keyframes": [ { "timeMs": 0, "value": 1.0, "easing": "hold" } ] },
+      "centerX":       { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
+      "centerY":       { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
+      "outerRadius":   { "keyframes": [ { "timeMs": 0, "value": 0.4, "easing": "hold" } ] },
+      "bandThickness": { "keyframes": [ { "timeMs": 0, "value": 0.1, "easing": "hold" } ] },
+      "arcStartDeg": {
+        "keyframes": [
+          { "timeMs": 0, "value": 0.0,  "easing": "hold" },
+          { "timeMs": 0, "value": 45.0, "easing": "hold" }
+        ]
+      },
+      "arcSweepDeg":   { "keyframes": [ { "timeMs": 0, "value": 360.0, "easing": "hold" } ] }
+    }
+  ],
+  "lanes": [
+    {
+      "laneId": "lane-1",
+      "arenaId": "arena-a",
+      "priority": 0,
+      "enabled":   { "keyframes": [ { "timeMs": 0, "value": 1.0, "easing": "hold" } ] },
+      "opacity":   { "keyframes": [ { "timeMs": 0, "value": 1.0, "easing": "hold" } ] },
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 90.0, "easing": "hold" } ] },
+      "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30.0, "easing": "hold" } ] }
+    }
+  ],
+  "camera": {
+    "enabled":     { "keyframes": [] },
+    "posX":        { "keyframes": [] },
+    "posY":        { "keyframes": [] },
+    "posZ":        { "keyframes": [] },
+    "rotPitchDeg": { "keyframes": [] },
+    "rotYawDeg":   { "keyframes": [] },
+    "rotRollDeg":  { "keyframes": [] },
+    "fovDeg":      { "keyframes": [] }
+  },
+  "notes": [
+    {
+      "noteId": "note-00000001",
+      "laneId": "lane-1",
+      "type": "tap",
+      "judging": true,
+      "timeMs": 1000,
+      "direction": "",
+      "startTimeMs": 0,
+      "endTimeMs": 0,
+      "tickTimesMs": []
+    }
+  ]
+}
