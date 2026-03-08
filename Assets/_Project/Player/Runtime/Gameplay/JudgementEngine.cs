@@ -266,6 +266,115 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // Flick judgement (spec §7.3 / §7.3.1)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Evaluates an active touch against all Active Flick notes.
+        ///
+        /// A flick is judged when BOTH of the following are true:
+        ///   1) Arming: the touch is currently inside the lane within the timing window.
+        ///   2) Gesture: the accumulated gesture from <paramref name="gestureTracker"/>
+        ///      satisfies distance, velocity, and elapsed-time thresholds.
+        ///
+        /// Call every frame for all active touches while flick notes are in the window.
+        /// The touch does NOT need to be new (IsNew=false is fine — spec §7.3).
+        ///
+        /// Spec §7.3: Flick is Perfect-or-Miss only (Perfect+ display supported).
+        /// </summary>
+        /// <param name="touch">Current touch state (any phase).</param>
+        /// <param name="gestureTracker">
+        ///   Shared FlickGestureTracker fed by the input layer each frame.
+        /// </param>
+        /// <param name="flickMinDistanceNorm">
+        ///   Min gesture distance in normalized playfield units (spec §8.3).
+        /// </param>
+        /// <param name="flickMinVelocityNormPerSec">
+        ///   Min peak velocity in normalized units/second (spec §8.3).
+        /// </param>
+        /// <param name="flickMaxGestureTimeMs">
+        ///   Max elapsed time for the gesture in ms (spec §8.3).
+        /// </param>
+        public bool TryJudgeFlick(
+            TouchSnapshot              touch,
+            IReadOnlyList<RuntimeNote> activeNotes,
+            double                     effectiveChartTimeMs,
+            IDictionary<string, LaneGeometry>  laneGeometries,
+            IDictionary<string, ArenaGeometry> arenaGeometries,
+            FlickGestureTracker        gestureTracker,
+            float                      flickMinDistanceNorm,
+            float                      flickMinVelocityNormPerSec,
+            int                        flickMaxGestureTimeMs,
+            out JudgementRecord        record)
+        {
+            record = default;
+
+            // No gesture state for this touch → nothing to evaluate.
+            if (!gestureTracker.TryGetGesture(touch.TouchId, out FlickGestureSnapshot gesture))
+            {
+                return false;
+            }
+
+            // Gesture threshold gate (spec §7.3.1).
+            // All three must be satisfied before we look at any note candidate.
+            if (gesture.ElapsedMs > flickMaxGestureTimeMs)            { return false; }
+            if (gesture.DistanceNorm < flickMinDistanceNorm)           { return false; }
+            if (gesture.VelocityNormPerSec < flickMinVelocityNormPerSec) { return false; }
+
+            _candidates.Clear();
+
+            foreach (RuntimeNote note in activeNotes)
+            {
+                if (note.Type != NoteType.Flick) { continue; }
+                if (!note.Judging)               { continue; }
+
+                double timingError = effectiveChartTimeMs - note.TimeMs;
+
+                if (!_windows.IsHittable(timingError)) { continue; }
+
+                // Arming: touch must be inside the lane at the moment of gesture recognition
+                // (spec §7.3 — "touch is inside lane within the flick's timing window").
+                if (!IsInsideLane(touch.HitLocalXY, note.LaneId, laneGeometries, arenaGeometries,
+                    out float thetaDeg)) { continue; }
+
+                // Direction check (spec §7.3.1): skip if no direction specified on the note.
+                if (!string.IsNullOrEmpty(note.FlickDirection))
+                {
+                    if (!laneGeometries.TryGetValue(note.LaneId, out LaneGeometry laneGeo))
+                    {
+                        continue;
+                    }
+
+                    if (!IsFlickDirectionMatch(gesture.DisplacementNorm, note.FlickDirection,
+                        laneGeo.CenterDeg)) { continue; }
+                }
+
+                _candidates.Add(new NoteCandidate
+                {
+                    Note               = note,
+                    AbsTimingErrorMs   = Math.Abs(timingError),
+                    AngularDistanceDeg = GetAngularDistance(thetaDeg, note.LaneId, laneGeometries),
+                    LanePriority       = GetLanePriority(note.LaneId)
+                });
+            }
+
+            if (_candidates.Count == 0) { return false; }
+
+            RuntimeNote best      = Arbitrate(_candidates);
+            double      bestError = effectiveChartTimeMs - best.TimeMs;
+
+            // Spec §7.3: Flick is Perfect-or-Miss only.
+            // Perfect+ is display-only (spec §4.3); no score change.
+            bool isPlus = Math.Abs(bestError) <= _windows.PerfectPlusWindowMs;
+
+            best.State = NoteState.Hit;
+            record     = MakeRecord(best, JudgementTier.Perfect, isPlus, bestError);
+
+            LogFlickJudgement(record, gesture);
+            return true;
+        }
+
+        // -------------------------------------------------------------------
         // Hold start binding (spec §7.5)
         // -------------------------------------------------------------------
 
@@ -429,6 +538,48 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // Helper: flick direction match (spec §7.3.1)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Returns true if <paramref name="displacementNorm"/> is within 45° of the
+        /// expected lane-relative direction for the flick note.
+        ///
+        /// Lane-relative basis vectors at lane center angle θ (spec §7.3.1):
+        ///   U (radial-out)  = ( cos θ,  sin θ)   — outward from arena center
+        ///   D (radial-in)   = (-cos θ, -sin θ)   — inward toward arena center
+        ///   L (CCW tangent) = (-sin θ,  cos θ)   — counter-clockwise around arena
+        ///   R (CW  tangent) = ( sin θ, -cos θ)   — clockwise around arena
+        ///
+        /// A match requires dot(normalised displacement, expected basis) >= cos(45°) ≈ 0.707.
+        /// </summary>
+        private static bool IsFlickDirectionMatch(
+            Vector2 displacementNorm,
+            string  requiredDir,
+            float   laneCenterDeg)
+        {
+            if (displacementNorm.magnitude < 1e-4f) { return false; }
+
+            float rad  = laneCenterDeg * Mathf.Deg2Rad;
+            float cosA = Mathf.Cos(rad);
+            float sinA = Mathf.Sin(rad);
+
+            // Lane-relative basis in normalized playfield XY (spec §7.3.1).
+            Vector2 expected;
+            switch (requiredDir)
+            {
+                case FlickDirection.Up:    expected = new Vector2( cosA,  sinA); break; // radial-out
+                case FlickDirection.Down:  expected = new Vector2(-cosA, -sinA); break; // radial-in
+                case FlickDirection.Left:  expected = new Vector2(-sinA,  cosA); break; // CCW tangent
+                case FlickDirection.Right: expected = new Vector2( sinA, -cosA); break; // CW  tangent
+                default:                   return true;                                  // no constraint
+            }
+
+            // Gesture must point within 45° of the expected basis vector.
+            return Vector2.Dot(displacementNorm.normalized, expected) >= 0.707f;
+        }
+
+        // -------------------------------------------------------------------
         // Headless verification log (spec task requirement: "log judgements for headless verification")
         // -------------------------------------------------------------------
 
@@ -439,6 +590,25 @@ namespace RhythmicFlow.Player
                 $"[Judgement] {r.Note.Type} id={r.Note.NoteId} " +
                 $"tier={r.Tier}{plusTag} " +
                 $"timingErr={r.TimingErrorMs:F1}ms");
+        }
+
+        // Flick-specific log with gesture diagnostics (spec task: "log judgements for headless verification").
+        private static void LogFlickJudgement(JudgementRecord r, FlickGestureSnapshot gesture)
+        {
+            string plusTag           = r.IsPerfectPlus ? "+" : "";
+            string dirDetected       = gesture.Direction.ToString();
+            string dirRequired       = string.IsNullOrEmpty(r.Note.FlickDirection)
+                ? "any"
+                : r.Note.FlickDirection;
+
+            Debug.Log(
+                $"[Judgement] Flick id={r.Note.NoteId} " +
+                $"tier={r.Tier}{plusTag} " +
+                $"timingErr={r.TimingErrorMs:F1}ms " +
+                $"dist={gesture.DistanceNorm:F4}norm " +
+                $"vel={gesture.VelocityNormPerSec:F2}norm/s " +
+                $"elapsed={gesture.ElapsedMs:F0}ms " +
+                $"dir={dirDetected} required={dirRequired}");
         }
     }
 }
