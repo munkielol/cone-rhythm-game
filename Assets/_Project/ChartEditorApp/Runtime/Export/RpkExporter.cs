@@ -288,7 +288,7 @@ namespace RhythmicFlow.ChartEditor
 
         private static void WriteTextEntry(ZipArchive archive, string entryName, string text)
         {
-            ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+            ZipArchiveEntry entry = archive.CreateEntry(entryName, System.IO.Compression.CompressionLevel.Optimal);
 
             using (Stream stream = entry.Open())
             using (var writer = new StreamWriter(stream, Encoding.UTF8))
@@ -299,7 +299,7 @@ namespace RhythmicFlow.ChartEditor
 
         private static void WriteBinaryEntry(ZipArchive archive, string entryName, byte[] bytes)
         {
-            ZipArchiveEntry entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+            ZipArchiveEntry entry = archive.CreateEntry(entryName, System.IO.Compression.CompressionLevel.Optimal);
 
             using (Stream stream = entry.Open())
             {
