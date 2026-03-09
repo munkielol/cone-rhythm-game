@@ -143,6 +143,29 @@ namespace RhythmicFlow.Player
         /// </summary>
         public static bool FlickPerfectWindowCoversGreatWindow = false;
 
+        /// <summary>
+        /// Input Band Expansion — inner edge (touch hit-testing only, spec §5.5.1 / §8.3.1).
+        ///
+        /// Expands the arena band inward by (InputBandExpandInnerNorm * minDimLocal) local units
+        /// for touch arming and judgement hit-testing.
+        ///
+        /// Does NOT change visual geometry, chart-authored geometry, or the judgement ring position.
+        /// Default: 0.00 (no inner expansion).
+        /// </summary>
+        public static float InputBandExpandInnerNorm = 0.00f;
+
+        /// <summary>
+        /// Input Band Expansion — outer edge (touch hit-testing only, spec §5.5.1 / §8.3.1).
+        ///
+        /// Expands the arena band outward by (InputBandExpandOuterNorm * minDimLocal) local units
+        /// for touch arming and judgement hit-testing.  Accounts for finger imprecision when
+        /// tapping the outer rim of the arena.
+        ///
+        /// Does NOT change visual geometry, chart-authored geometry, or the judgement ring position.
+        /// Default: 0.03 (3 % of minDimLocal — forgiving but not excessive).
+        /// </summary>
+        public static float InputBandExpandOuterNorm = 0.03f;
+
         // -------------------------------------------------------------------
         // Convenience: reset all settings to defaults
         // -------------------------------------------------------------------

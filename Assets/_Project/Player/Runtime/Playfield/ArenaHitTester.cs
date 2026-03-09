@@ -127,12 +127,33 @@ namespace RhythmicFlow.Player
         /// Returns true if <paramref name="hitLocalXY"/> is inside the given arena band and arc.
         /// Does NOT test lane membership — use IsInsideLane for the full check.
         /// Spec §5.5 steps 3–4.
+        ///
+        /// <para><b>Input Band Expansion (touch hit-testing only, spec §5.5.1):</b><br/>
+        /// When <paramref name="expandInnerLocal"/> or <paramref name="expandOuterLocal"/> are
+        /// non-zero the radial band is enlarged for touch arming / judgement, without changing
+        /// visual geometry or chart-authored geometry.<br/>
+        ///   expandedInner = innerLocal − expandInnerLocal<br/>
+        ///   expandedOuter = outerLocal + expandOuterLocal<br/>
+        /// Default values of 0 reproduce the unmodified spec §5.5 behaviour.
+        /// </para>
         /// </summary>
+        /// <param name="expandInnerLocal">
+        /// Extra local-unit margin subtracted from innerLocal (inward expansion).
+        /// Pass <c>PlayerSettingsStore.InputBandExpandInnerNorm * playfieldTransform.MinDimLocal</c>.
+        /// Default: 0 (no expansion).
+        /// </param>
+        /// <param name="expandOuterLocal">
+        /// Extra local-unit margin added to outerLocal (outward expansion).
+        /// Pass <c>PlayerSettingsStore.InputBandExpandOuterNorm * playfieldTransform.MinDimLocal</c>.
+        /// Default: 0 (no expansion).
+        /// </param>
         public static bool IsInsideArenaBand(
             Vector2            hitLocalXY,
             ArenaGeometry      arena,
             PlayfieldTransform playfieldTransform,
-            out float          thetaDeg)
+            out float          thetaDeg,
+            float              expandInnerLocal = 0f,
+            float              expandOuterLocal = 0f)
         {
             Vector2 centerLocal = playfieldTransform.NormalizedToLocal(
                 new Vector2(arena.CenterXNorm, arena.CenterYNorm));
@@ -146,8 +167,13 @@ namespace RhythmicFlow.Player
             float bandLocal  = playfieldTransform.NormRadiusToLocal(arena.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
 
-            // Step 3: Radial band test (spec §5.5).
-            if (r < innerLocal || r > outerLocal) { return false; }
+            // Step 3: Radial band test (spec §5.5 / §5.5.1 with optional input expansion).
+            // expandInnerLocal / expandOuterLocal are non-zero only for touch hit-testing
+            // (passed from JudgementEngine.IsInsideLane).  Debug/visual callers pass 0.
+            if (r < innerLocal - expandInnerLocal || r > outerLocal + expandOuterLocal)
+            {
+                return false;
+            }
 
             // Step 4: Arena arc test — wrap-safe (spec §5.5).
             return AngleUtil.IsAngleInArc(thetaDeg, arena.ArcStartDeg, arena.ArcSweepDeg);

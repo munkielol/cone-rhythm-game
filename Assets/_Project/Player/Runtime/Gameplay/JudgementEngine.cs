@@ -359,6 +359,18 @@ namespace RhythmicFlow.Player
                         Vector2 posNorm = _playfieldTransform.LocalToNormalized(touch.HitLocalXY);
                         gestureTracker.ResetGesture(touch.TouchId, effectiveChartTimeMs, posNorm);
                         _flickArmedSet.Add(ak);
+
+                        if (DebugLogFlick)
+                        {
+                            float minDim   = _playfieldTransform.MinDimLocal;
+                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
+                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+                            Debug.Log(
+                                $"[FlickArm] Armed  noteId={armNote.NoteId}" +
+                                $"  touchId={touch.TouchId}  t={effectiveChartTimeMs:F0}ms" +
+                                $"  laneId={armNote.LaneId}  mode=free-touch" +
+                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
+                        }
                     }
                 }
             }
@@ -381,7 +393,20 @@ namespace RhythmicFlow.Player
                         if (!IsInsideLane(touch.HitLocalXY, armNote.LaneId,
                             laneGeometries, arenaGeometries, out _)) { continue; }
 
-                        _flickArmedSet.Add($"ARM:{armNote.NoteId}:{touch.TouchId}");
+                        string rbArmKey = $"ARM:{armNote.NoteId}:{touch.TouchId}";
+                        bool   newlyArmed = _flickArmedSet.Add(rbArmKey);
+
+                        if (newlyArmed && DebugLogFlick)
+                        {
+                            float minDim   = _playfieldTransform.MinDimLocal;
+                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
+                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+                            Debug.Log(
+                                $"[FlickArm] Armed  noteId={armNote.NoteId}" +
+                                $"  touchId={touch.TouchId}  t={effectiveChartTimeMs:F0}ms" +
+                                $"  laneId={armNote.LaneId}  mode=require-begin" +
+                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
+                        }
                     }
                 }
             }
@@ -470,12 +495,16 @@ namespace RhythmicFlow.Player
                         if (DebugLogFlick && _flickDebugLogged.Add(
                             $"EOUT:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
                         {
+                            float minDim   = _playfieldTransform.MinDimLocal;
+                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
+                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
                             Debug.Log(
                                 $"[FlickDebug] Note  noteId={note.NoteId}" +
                                 $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
                                 $"  outside_lane_ignored (armed)" +
                                 $"  evtHitLocal=({evtHitLocal.x:F3},{evtHitLocal.y:F3})" +
-                                $"  eventTime={evt.EventTimeMs:F0}ms");
+                                $"  eventTime={evt.EventTimeMs:F0}ms" +
+                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
                         }
                         // Use lane center as fallback so angular-distance tie-break = 0.
                         if (laneGeometries.TryGetValue(note.LaneId, out LaneGeometry fallbackGeo))
@@ -673,8 +702,14 @@ namespace RhythmicFlow.Player
             if (!_laneToArena.TryGetValue(laneId, out string arenaId)) { return false; }
             if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return false; }
 
+            // Input Band Expansion (spec §5.5.1 / §8.3.1): expand the radial band for touch
+            // arming and judgement without changing visual/chart geometry.
+            float minDim   = _playfieldTransform.MinDimLocal;
+            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
+            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+
             if (!ArenaHitTester.IsInsideArenaBand(hitLocal, arenaGeo, _playfieldTransform,
-                out thetaDeg)) { return false; }
+                out thetaDeg, expInner, expOuter)) { return false; }
 
             return ArenaHitTester.IsInsideLane(thetaDeg, laneGeo);
         }
