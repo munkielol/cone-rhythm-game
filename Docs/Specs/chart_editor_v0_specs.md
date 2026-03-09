@@ -388,6 +388,8 @@ Flick playtest uses the same **event-based** model as the player: each qualifyin
 | `FlickPerfectWindowCoversGreatWindow` | `false` | When true, suppresses the Great tier for flick during playtest — all in-window flicks score Perfect. Useful for verifying lenient flick-feel charting. |
 | `InputBandExpandInnerNorm` | `0.00` | Expands the arena band inward during playtest hit-testing. Matches the player setting (see player spec §8.3.1). Does not affect exported chart geometry. |
 | `InputBandExpandOuterNorm` | `0.03` | Expands the arena band outward during playtest hit-testing to account for outer-rim finger imprecision. Matches the player setting. Does not affect exported chart geometry. |
+| `JudgementInsetNorm` | `0.03` | **Visual/skin.** Insets the judgement ring inside chart `outerLocal` during playtest. Notes approach and land on this inset ring. Matches the player setting (see player spec §5.8 / §8.3.1). Does not affect exported chart geometry or hit-testing. |
+| `VisualOuterExpandNorm` | `0.00` | **Visual/skin.** Extends the arena mesh/arc rim beyond chart `outerLocal` during playtest. Matches the player setting. Default 0 = rim at `outerLocal`. Does not affect exported chart geometry or hit-testing. |
 
 ---
 
