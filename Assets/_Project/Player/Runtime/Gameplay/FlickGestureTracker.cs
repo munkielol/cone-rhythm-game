@@ -212,6 +212,28 @@ namespace RhythmicFlow.Player
             _pool.Push(state);
         }
 
+        /// <summary>
+        /// Resets the gesture baseline for a tracked touch to the given time and position.
+        /// All accumulated metrics (max distance, max velocity) are cleared.
+        ///
+        /// Called by JudgementEngine when a touch first becomes eligible for a flick note
+        /// in free-touch mode (FlickRequireTouchBegin = false), so that ElapsedMs is measured
+        /// from the moment of eligibility rather than the original touch-down time.
+        ///
+        /// No-op if <paramref name="touchId"/> is not currently tracked.
+        /// </summary>
+        public void ResetGesture(int touchId, double timeMs, Vector2 posNorm)
+        {
+            if (!_states.TryGetValue(touchId, out TouchGestureState state)) { return; }
+
+            state.StartTimeMs           = timeMs;
+            state.StartPosNorm          = posNorm;
+            state.LastPosNorm           = posNorm;
+            state.LastTimeMs            = timeMs;
+            state.MaxDistanceNorm       = 0f;
+            state.MaxVelocityNormPerSec = 0f;
+        }
+
         // -------------------------------------------------------------------
         // Snapshot query
         // -------------------------------------------------------------------

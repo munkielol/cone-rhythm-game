@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using RhythmicFlow.Shared;
 
 namespace RhythmicFlow.Player
 {
@@ -65,11 +66,23 @@ namespace RhythmicFlow.Player
         [Tooltip("If true, show notes within noteLeadTimeMs even when outside the narrow judgement window.")]
         [SerializeField] private bool showNotesOutsideWindow = true;
 
+        [Header("Flick Direction Arrows (DEBUG)")]
+
+        [Tooltip("Draw a short arrow at each visible flick note showing its expected gesture direction.")]
+        [SerializeField] private bool showFlickDirectionArrows = true;
+
+        [Tooltip("Arrow length in normalized playfield units (same scale as arena radii).")]
+        [SerializeField] private float flickArrowLengthNorm = 0.08f;
+
+        [Tooltip("Extra local Z added to the arrow above the note marker surface, to prevent z-fighting.")]
+        [SerializeField] private float flickArrowZBias = 0.002f;
+
         [Header("Colors")]
-        [SerializeField] private Color arenaColor = Color.cyan;
-        [SerializeField] private Color laneColor  = Color.yellow;
-        [SerializeField] private Color noteColor  = Color.white;
-        [SerializeField] private Color touchColor = Color.red;
+        [SerializeField] private Color arenaColor     = Color.cyan;
+        [SerializeField] private Color laneColor      = Color.yellow;
+        [SerializeField] private Color noteColor      = Color.white;
+        [SerializeField] private Color touchColor     = Color.red;
+        [SerializeField] private Color flickArrowColor = Color.green;
 
         // -------------------------------------------------------------------
         // Internal state
@@ -96,6 +109,9 @@ namespace RhythmicFlow.Player
 
         // Single touch-hit marker LineRenderer.
         private LineRenderer _touchLR;
+
+        // Pool of flick direction arrow LineRenderers (parallel to _notePool; index-aligned).
+        private LineRenderer[] _flickArrowPool;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -169,6 +185,15 @@ namespace RhythmicFlow.Player
                 _notePool[i] = CreateLineRenderer($"NoteMarker_{i}", noteColor);
                 _notePool[i].positionCount = 5;       // diamond: 4 corners + close
                 _notePool[i].gameObject.SetActive(false);
+            }
+
+            // Flick direction arrow pool (parallel to _notePool, index-aligned).
+            _flickArrowPool = new LineRenderer[maxNoteMarkers];
+            for (int i = 0; i < maxNoteMarkers; i++)
+            {
+                _flickArrowPool[i] = CreateLineRenderer($"FlickArrow_{i}", flickArrowColor);
+                _flickArrowPool[i].positionCount = 2;
+                _flickArrowPool[i].gameObject.SetActive(false);
             }
 
             // Touch hit marker (diamond).
@@ -337,21 +362,68 @@ namespace RhythmicFlow.Player
 
                     _notePool[poolIdx].gameObject.SetActive(true);
                     SetDiamondPositions(_notePool[poolIdx], worldPos, pfRoot);
+
+                    // Flick direction arrow — VISUAL ONLY, no hit-testing impact.
+                    // Arrow mapping MUST match JudgementEngine.IsFlickDirectionMatch.
+                    if (showFlickDirectionArrows
+                        && note.Type == NoteType.Flick
+                        && !string.IsNullOrEmpty(note.FlickDirection))
+                    {
+                        // Arrow length in PlayfieldRoot local units (spec §5.5).
+                        float arrowLenLocal = pfT.NormRadiusToLocal(flickArrowLengthNorm);
+
+                        // Expected direction via JudgementEngine helper (keeps mapping in sync).
+                        Vector2 expectedDir = JudgementEngine.DebugFlickExpectedDir(
+                            note.FlickDirection, AngleUtil.Normalize360(lane.CenterDeg));
+
+                        // Slight Z bias above note marker surface to prevent z-fighting. VISUAL ONLY.
+                        float   arrowZ      = VisualOnlyLocalZ(s01Note) + flickArrowZBias;
+                        Vector2 endPt       = localPt + expectedDir * arrowLenLocal;
+                        Vector3 arrowStart  = pfRoot.TransformPoint(localPt.x, localPt.y, arrowZ);
+                        Vector3 arrowEnd    = pfRoot.TransformPoint(endPt.x,   endPt.y,   arrowZ);
+
+                        Color ac = flickArrowColor;
+                        ac.a = c.a; // fade with note marker opacity
+                        _flickArrowPool[poolIdx].startColor = ac;
+                        _flickArrowPool[poolIdx].endColor   = ac;
+                        _flickArrowPool[poolIdx].SetPosition(0, arrowStart);
+                        _flickArrowPool[poolIdx].SetPosition(1, arrowEnd);
+                        _flickArrowPool[poolIdx].gameObject.SetActive(true);
+                    }
+                    else
+                    {
+                        _flickArrowPool[poolIdx].gameObject.SetActive(false);
+                    }
+
                     poolIdx++;
                 }
             }
 
             // Disable unused pool entries.
             DisableNoteMarkersFrom(poolIdx);
+            DisableFlickArrowsFrom(poolIdx);
         }
 
-        private void DisableAllNoteMarkers()  => DisableNoteMarkersFrom(0);
+        private void DisableAllNoteMarkers()
+        {
+            DisableNoteMarkersFrom(0);
+            DisableFlickArrowsFrom(0);
+        }
 
         private void DisableNoteMarkersFrom(int startIdx)
         {
             for (int i = startIdx; i < _notePool.Length; i++)
             {
                 _notePool[i].gameObject.SetActive(false);
+            }
+        }
+
+        private void DisableFlickArrowsFrom(int startIdx)
+        {
+            if (_flickArrowPool == null) { return; }
+            for (int i = startIdx; i < _flickArrowPool.Length; i++)
+            {
+                _flickArrowPool[i].gameObject.SetActive(false);
             }
         }
 

@@ -113,6 +113,26 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // v0 debug/playtest toggles (not persisted; set in code or Inspector)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// DEBUG: When true, the Perfect tier window is extended to cover the full GreatWindowMs.
+        /// Great tier is suppressed — every in-window hit becomes Perfect (or Perfect+ if within
+        /// PerfectPlusWindowMs). Perfect+ sub-window is NOT enlarged.
+        /// Default: false.
+        /// </summary>
+        public static bool PerfectWindowCoversGreatWindow = false;
+
+        /// <summary>
+        /// DEBUG: When true, flick notes can only be triggered by a new touch (IsNew/TouchBegin).
+        /// When false, any active touch can arm a flick note; the gesture baseline is reset
+        /// the first time the touch becomes eligible (in-window + in-lane) for each note.
+        /// Default: true.
+        /// </summary>
+        public static bool FlickRequireTouchBegin = true;
+
+        // -------------------------------------------------------------------
         // Convenience: reset all settings to defaults
         // -------------------------------------------------------------------
 

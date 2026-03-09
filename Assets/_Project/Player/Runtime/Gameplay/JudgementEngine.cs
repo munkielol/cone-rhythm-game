@@ -105,6 +105,30 @@ namespace RhythmicFlow.Player
         private readonly List<NoteCandidate> _candidates = new List<NoteCandidate>(16);
 
         // -------------------------------------------------------------------
+        // Debug: flick logging (disabled by default)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// DEBUG: Set true to log why each flick gesture or note candidate is rejected.
+        /// Normal value: false. Toggle via the Inspector or in code before gameplay.
+        /// Each (note, touch) pair and each gesture attempt is logged at most once per
+        /// session to avoid per-frame spam. Toggle off then on to effectively reset.
+        /// </summary>
+        public bool DebugLogFlick = true;
+
+        // Tracks already-logged keys so we only emit one log per failure per (note, touch).
+        // Key format:  "G:{touchId}"          — gesture threshold failures
+        //              "N:{noteId}:{touchId}" — per-note skip reasons
+        private readonly HashSet<string> _flickDebugLogged =
+            new HashSet<string>(StringComparer.Ordinal);
+
+        // Armed set for free-touch flick arming (FlickRequireTouchBegin = false).
+        // Key format: "ARM:{noteId}:{touchId}"
+        // Cleared when a note leaves the timing window or is judged.
+        private readonly HashSet<string> _flickArmedSet =
+            new HashSet<string>(StringComparer.Ordinal);
+
+        // -------------------------------------------------------------------
         // Construction
         // -------------------------------------------------------------------
 
@@ -188,7 +212,8 @@ namespace RhythmicFlow.Player
 
             RuntimeNote best = Arbitrate(_candidates);
             double bestError = effectiveChartTimeMs - best.TimeMs;
-            var (tier, isPlus) = _windows.Evaluate(bestError);
+            var (tier, isPlus) = _windows.Evaluate(
+                bestError, PlayerSettingsStore.PerfectWindowCoversGreatWindow);
 
             best.State = NoteState.Hit;
             record = MakeRecord(best, tier, isPlus, bestError);
@@ -309,17 +334,81 @@ namespace RhythmicFlow.Player
         {
             record = default;
 
+            // FlickRequireTouchBegin toggle: restrict flick to newly-begun touches only.
+            if (PlayerSettingsStore.FlickRequireTouchBegin && !touch.IsNew) { return false; }
+
             // No gesture state for this touch → nothing to evaluate.
             if (!gestureTracker.TryGetGesture(touch.TouchId, out FlickGestureSnapshot gesture))
             {
                 return false;
             }
 
+            // Free-touch arming (FlickRequireTouchBegin = false):
+            // Scan active flick notes. For any (note, touch) pair that first becomes
+            // eligible (in-window + in-lane), reset the gesture baseline so ElapsedMs
+            // starts from the moment of eligibility, not from the original touch-down.
+            if (!PlayerSettingsStore.FlickRequireTouchBegin)
+            {
+                bool anyReset = false;
+                foreach (RuntimeNote armNote in activeNotes)
+                {
+                    if (armNote.Type != NoteType.Flick || !armNote.Judging) { continue; }
+                    double armTe = effectiveChartTimeMs - armNote.TimeMs;
+                    if (!_windows.IsHittable(armTe))
+                    {
+                        // Note left the window — remove stale arm entry.
+                        _flickArmedSet.Remove($"ARM:{armNote.NoteId}:{touch.TouchId}");
+                        continue;
+                    }
+                    if (!IsInsideLane(touch.HitLocalXY, armNote.LaneId,
+                        laneGeometries, arenaGeometries, out _)) { continue; }
+
+                    string ak = $"ARM:{armNote.NoteId}:{touch.TouchId}";
+                    if (!_flickArmedSet.Contains(ak))
+                    {
+                        // First time eligible: reset gesture baseline and mark armed.
+                        Vector2 posNorm = _playfieldTransform.LocalToNormalized(touch.HitLocalXY);
+                        gestureTracker.ResetGesture(touch.TouchId, effectiveChartTimeMs, posNorm);
+                        _flickArmedSet.Add(ak);
+                        anyReset = true;
+                    }
+                }
+                // Re-fetch snapshot if baseline was reset this frame.
+                if (anyReset && !gestureTracker.TryGetGesture(touch.TouchId, out gesture))
+                {
+                    return false;
+                }
+            }
+
             // Gesture threshold gate (spec §7.3.1).
             // All three must be satisfied before we look at any note candidate.
-            if (gesture.ElapsedMs > flickMaxGestureTimeMs)            { return false; }
-            if (gesture.DistanceNorm < flickMinDistanceNorm)           { return false; }
-            if (gesture.VelocityNormPerSec < flickMinVelocityNormPerSec) { return false; }
+            bool gestureOk = gesture.ElapsedMs          <= flickMaxGestureTimeMs
+                          && gesture.DistanceNorm        >= flickMinDistanceNorm
+                          && gesture.VelocityNormPerSec  >= flickMinVelocityNormPerSec;
+
+            if (!gestureOk)
+            {
+                if (DebugLogFlick && _flickDebugLogged.Add($"G:{touch.TouchId}"))
+                {
+                    string failReason =
+                        gesture.ElapsedMs > flickMaxGestureTimeMs
+                            ? $"too late (elapsed={gesture.ElapsedMs:F0}ms > max={flickMaxGestureTimeMs}ms)"
+                        : gesture.DistanceNorm < flickMinDistanceNorm
+                            ? $"too short (dist={gesture.DistanceNorm:F4} < min={flickMinDistanceNorm:F4})"
+                            : $"velocity too low (vel={gesture.VelocityNormPerSec:F3}/s < min={flickMinVelocityNormPerSec:F3}/s)";
+
+                    Debug.Log(
+                        $"[FlickDebug] Gesture FAIL  touchId={touch.TouchId}  {failReason}\n" +
+                        $"  elapsed={gesture.ElapsedMs:F0}ms  dist={gesture.DistanceNorm:F4}norm" +
+                        $"  vel={gesture.VelocityNormPerSec:F3}norm/s  dir={gesture.Direction}" +
+                        $"  disp=({gesture.DisplacementNorm.x:F4},{gesture.DisplacementNorm.y:F4})\n" +
+                        $"  thresholds: maxElapsed={flickMaxGestureTimeMs}ms" +
+                        $"  minDist={flickMinDistanceNorm:F4}norm" +
+                        $"  minVel={flickMinVelocityNormPerSec:F3}norm/s");
+                }
+
+                return false;
+            }
 
             _candidates.Clear();
 
@@ -330,12 +419,41 @@ namespace RhythmicFlow.Player
 
                 double timingError = effectiveChartTimeMs - note.TimeMs;
 
-                if (!_windows.IsHittable(timingError)) { continue; }
+                if (!_windows.IsHittable(timingError))
+                {
+                    if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
+                    {
+                        Debug.Log(
+                            $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
+                            $"  touchId={touch.TouchId}  reason=timing_window\n" +
+                            $"  timingErr={timingError:F1}ms  window=±{_windows.GreatWindowMs:F0}ms\n" +
+                            $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
+                            $"  elapsed={gesture.ElapsedMs:F0}ms");
+                    }
+                    // Note left window — remove its arm entry (free-touch mode).
+                    if (!PlayerSettingsStore.FlickRequireTouchBegin)
+                    {
+                        _flickArmedSet.Remove($"ARM:{note.NoteId}:{touch.TouchId}");
+                    }
+                    continue;
+                }
 
                 // Arming: touch must be inside the lane at the moment of gesture recognition
                 // (spec §7.3 — "touch is inside lane within the flick's timing window").
                 if (!IsInsideLane(touch.HitLocalXY, note.LaneId, laneGeometries, arenaGeometries,
-                    out float thetaDeg)) { continue; }
+                    out float thetaDeg))
+                {
+                    if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
+                    {
+                        Debug.Log(
+                            $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
+                            $"  touchId={touch.TouchId}  reason=outside_lane\n" +
+                            $"  hitLocal=({touch.HitLocalXY.x:F3},{touch.HitLocalXY.y:F3})\n" +
+                            $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
+                            $"  elapsed={gesture.ElapsedMs:F0}ms");
+                    }
+                    continue;
+                }
 
                 // Direction check (spec §7.3.1): skip if no direction specified on the note.
                 if (!string.IsNullOrEmpty(note.FlickDirection))
@@ -346,7 +464,21 @@ namespace RhythmicFlow.Player
                     }
 
                     if (!IsFlickDirectionMatch(gesture.DisplacementNorm, note.FlickDirection,
-                        laneGeo.CenterDeg)) { continue; }
+                        laneGeo.CenterDeg))
+                    {
+                        if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
+                        {
+                            Debug.Log(
+                                $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
+                                $"  touchId={touch.TouchId}  reason=direction_mismatch\n" +
+                                $"  required={note.FlickDirection}  detected={gesture.Direction}" +
+                                $"  disp=({gesture.DisplacementNorm.x:F4},{gesture.DisplacementNorm.y:F4})" +
+                                $"  laneCenterDeg={laneGeo.CenterDeg:F1}\n" +
+                                $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
+                                $"  elapsed={gesture.ElapsedMs:F0}ms");
+                        }
+                        continue;
+                    }
                 }
 
                 _candidates.Add(new NoteCandidate
@@ -369,6 +501,12 @@ namespace RhythmicFlow.Player
 
             best.State = NoteState.Hit;
             record     = MakeRecord(best, JudgementTier.Perfect, isPlus, bestError);
+
+            // Clean up arm entry for the judged note.
+            if (!PlayerSettingsStore.FlickRequireTouchBegin)
+            {
+                _flickArmedSet.Remove($"ARM:{best.NoteId}:{touch.TouchId}");
+            }
 
             LogFlickJudgement(record, gesture);
             return true;
@@ -425,7 +563,8 @@ namespace RhythmicFlow.Player
 
             RuntimeNote best = Arbitrate(_candidates);
             double bestError = effectiveChartTimeMs - best.StartTimeMs;
-            var (tier, isPlus) = _windows.Evaluate(bestError);
+            var (tier, isPlus) = _windows.Evaluate(
+                bestError, PlayerSettingsStore.PerfectWindowCoversGreatWindow);
 
             best.HoldBind    = HoldBindState.Bound;
             best.BoundTouchId = touch.TouchId;
@@ -545,11 +684,11 @@ namespace RhythmicFlow.Player
         /// Returns true if <paramref name="displacementNorm"/> is within 45° of the
         /// expected lane-relative direction for the flick note.
         ///
-        /// Lane-relative basis vectors at lane center angle θ (spec §7.3.1):
-        ///   U (radial-out)  = ( cos θ,  sin θ)   — outward from arena center
-        ///   D (radial-in)   = (-cos θ, -sin θ)   — inward toward arena center
-        ///   L (CCW tangent) = (-sin θ,  cos θ)   — counter-clockwise around arena
-        ///   R (CW  tangent) = ( sin θ, -cos θ)   — clockwise around arena
+        /// Lane-relative basis vectors at lane center angle θ (player-facing-inward frame):
+        ///   U (radial-in)   = (-cos θ, -sin θ)   — inward toward arena center
+        ///   D (radial-out)  = ( cos θ,  sin θ)   — outward from arena center
+        ///   L (CW  tangent) = ( sin θ, -cos θ)   — clockwise (left when facing inward)
+        ///   R (CCW tangent) = (-sin θ,  cos θ)   — counter-clockwise (right when facing inward)
         ///
         /// A match requires dot(normalised displacement, expected basis) >= cos(45°) ≈ 0.707.
         /// </summary>
@@ -564,19 +703,47 @@ namespace RhythmicFlow.Player
             float cosA = Mathf.Cos(rad);
             float sinA = Mathf.Sin(rad);
 
-            // Lane-relative basis in normalized playfield XY (spec §7.3.1).
+            // Lane-relative basis in normalized playfield XY (player-facing-inward frame).
             Vector2 expected;
             switch (requiredDir)
             {
-                case FlickDirection.Up:    expected = new Vector2( cosA,  sinA); break; // radial-out
-                case FlickDirection.Down:  expected = new Vector2(-cosA, -sinA); break; // radial-in
-                case FlickDirection.Left:  expected = new Vector2(-sinA,  cosA); break; // CCW tangent
-                case FlickDirection.Right: expected = new Vector2( sinA, -cosA); break; // CW  tangent
+                case FlickDirection.Up:    expected = new Vector2(-cosA, -sinA); break; // radial-in
+                case FlickDirection.Down:  expected = new Vector2( cosA,  sinA); break; // radial-out
+                case FlickDirection.Left:  expected = new Vector2( sinA, -cosA); break; // CW tangent
+                case FlickDirection.Right: expected = new Vector2(-sinA,  cosA); break; // CCW tangent
                 default:                   return true;                                  // no constraint
             }
 
             // Gesture must point within 45° of the expected basis vector.
             return Vector2.Dot(displacementNorm.normalized, expected) >= 0.707f;
+        }
+
+        // -------------------------------------------------------------------
+        // Debug helper: flick direction → playfield XY basis vector
+        // MUST stay in sync with IsFlickDirectionMatch — same mapping.
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// DEBUG: Returns the expected normalized playfield-XY direction for the given
+        /// chart direction string and lane center angle (player-facing-inward frame).
+        /// Returns Vector2.zero for unknown/empty directions.
+        ///
+        /// IMPORTANT: mapping MUST stay in sync with <see cref="IsFlickDirectionMatch"/>.
+        /// </summary>
+        public static Vector2 DebugFlickExpectedDir(string flickDir, float laneCenterDeg)
+        {
+            float rad  = laneCenterDeg * Mathf.Deg2Rad;
+            float cosA = Mathf.Cos(rad);
+            float sinA = Mathf.Sin(rad);
+
+            switch (flickDir)
+            {
+                case FlickDirection.Up:    return new Vector2(-cosA, -sinA); // radial-in
+                case FlickDirection.Down:  return new Vector2( cosA,  sinA); // radial-out
+                case FlickDirection.Left:  return new Vector2( sinA, -cosA); // CW tangent
+                case FlickDirection.Right: return new Vector2(-sinA,  cosA); // CCW tangent
+                default:                   return Vector2.zero;
+            }
         }
 
         // -------------------------------------------------------------------

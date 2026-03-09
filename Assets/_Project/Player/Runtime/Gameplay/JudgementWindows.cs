@@ -133,12 +133,23 @@ namespace RhythmicFlow.Player
         /// Spec §4.1: |timingErrorMs| &lt;= PerfectWindowMs → Perfect
         ///             |timingErrorMs| &lt;= GreatWindowMs   → Great
         ///             otherwise                           → Miss
+        ///
+        /// When <paramref name="perfectCoversGreat"/> is true (v0 toggle
+        /// PlayerSettingsStore.PerfectWindowCoversGreatWindow), the effective
+        /// Perfect window is stretched to GreatWindowMs so Great never occurs.
+        /// Perfect+ sub-window is not affected.
         /// </summary>
-        public (JudgementTier tier, bool isPerfectPlus) Evaluate(double timingErrorMs)
+        public (JudgementTier tier, bool isPerfectPlus) Evaluate(
+            double timingErrorMs,
+            bool   perfectCoversGreat = false)
         {
             double absError = System.Math.Abs(timingErrorMs);
 
-            if (absError <= PerfectWindowMs)
+            // When the toggle is on, treat every in-window hit as Perfect.
+            // Perfect+ sub-window stays fixed at PerfectPlusWindowMs.
+            int effectivePerfect = perfectCoversGreat ? GreatWindowMs : PerfectWindowMs;
+
+            if (absError <= effectivePerfect)
             {
                 bool isPlus = absError <= PerfectPlusWindowMs;
                 return (JudgementTier.Perfect, isPlus);

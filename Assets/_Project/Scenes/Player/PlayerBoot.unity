@@ -601,10 +601,14 @@ MonoBehaviour:
   noteLeadTimeMs: 2000
   spawnRadiusFactor: 0.25
   showNotesOutsideWindow: 1
+  showFlickDirectionArrows: 1
+  flickArrowLengthNorm: 0.08
+  flickArrowZBias: 0.002
   arenaColor: {r: 0, g: 1, b: 1, a: 1}
   laneColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   noteColor: {r: 1, g: 1, b: 1, a: 1}
   touchColor: {r: 1, g: 0, b: 0, a: 1}
+  flickArrowColor: {r: 0, g: 1, b: 0, a: 1}
 --- !u!4 &714554979
 Transform:
   m_ObjectHideFlags: 0
@@ -629,5 +633,5 @@ SceneRoots:
   - {fileID: 58450158}
   - {fileID: 692284758}
   - {fileID: 514609552}
-  - {fileID: 714554979}
   - {fileID: 412451163}
+  - {fileID: 714554979}
