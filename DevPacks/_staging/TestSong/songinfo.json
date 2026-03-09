@@ -1,0 +1,18 @@
+{
+  "packageVersion": 1,
+  "songId": "test_song",
+  "title": "Test Song",
+  "artist": "You",
+  "lengthMs": 60000,
+  "bpmDisplay": { "min": 120, "max": 120 },
+  "audio": { "path": "audio/song.ogg" },
+  "jacket": {
+    "images": [
+      { "size": 256, "path": "jacket/jacket_256.png" }
+    ]
+  },
+  "charts": [
+    { "difficultyId": "standard", "path": "charts/standard.json" }
+  ],
+  "preview": { "startTimeMs": 10000, "endTimeMs": 20000 }
+}

@@ -1,0 +1,47 @@
+{
+  "formatVersion": 1,
+  "song": {
+    "songId": "test_song",
+    "difficultyId": "standard",
+    "audioFile": "audio/song.ogg",
+    "audioOffsetMs": 0
+  },
+  "tempo": {
+    "segments": [
+      { "startTimeMs": 0, "bpm": 120 }
+    ]
+  },
+  "arenas": [
+    {
+      "arenaId": "arena-a",
+      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "centerX": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
+      "centerY": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
+      "outerRadius": { "keyframes": [ { "timeMs": 0, "value": 0.45, "easing": "hold" } ] },
+      "bandThickness": { "keyframes": [ { "timeMs": 0, "value": 0.12, "easing": "hold" } ] },
+      "arcStartDeg": { "keyframes": [ { "timeMs": 0, "value": 190, "easing": "hold" } ] },
+      "arcSweepDeg": { "keyframes": [ { "timeMs": 0, "value": 160, "easing": "hold" } ] }
+    }
+  ],
+  "lanes": [
+    {
+      "laneId": "lane-0",
+      "arenaId": "arena-a",
+      "priority": 0,
+      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 270, "easing": "hold" } ] },
+      "widthDeg": { "keyframes": [ { "timeMs": 0, "value": 40, "easing": "hold" } ] }
+    }
+  ],
+  "camera": { },
+  "notes": [
+    {
+      "noteId": "n1",
+      "laneId": "lane-0",
+      "type": "Tap",
+      "timeMs": 2000
+    }
+  ]
+}
