@@ -143,6 +143,13 @@ namespace RhythmicFlow.Player
 
         private string _lastJudgementText = "—";
 
+        /// <summary>
+        /// Fires each time a note is judged (tap / catch / flick).
+        /// Subscribed by PlayerDebugRenderer for judgement flash visuals.
+        /// Does NOT fire for sweep-misses (those bypass StoreJudgement).
+        /// </summary>
+        public event Action<JudgementRecord> OnJudgement;
+
         // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
         // All members prefixed "Debug" to signal scaffolding status.
@@ -681,6 +688,7 @@ namespace RhythmicFlow.Player
             string plus = r.IsPerfectPlus ? "+" : "";
             _lastJudgementText = $"{r.Note.Type}  {r.Tier}{plus}  " +
                                  $"({r.TimingErrorMs:+0.0;-0.0} ms)";
+            OnJudgement?.Invoke(r);
         }
 
         private void SetError(string msg)

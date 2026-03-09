@@ -84,6 +84,18 @@ namespace RhythmicFlow.Player
         [SerializeField] private Color touchColor     = Color.red;
         [SerializeField] private Color flickArrowColor = Color.green;
 
+        [Header("Judgement Flashes (DEBUG)")]
+        [Tooltip("Duration in seconds that each judgement flash remains visible.")]
+        [SerializeField] private float flashDuration         = 0.35f;
+
+        [Tooltip("Half-size of judgement flash diamond markers in world units.")]
+        [SerializeField] private float flashHalfSize         = 0.08f;
+
+        [SerializeField] private Color flashPerfectPlusColor = new Color(1f, 0.9f, 0f); // gold
+        [SerializeField] private Color flashPerfectColor     = Color.yellow;
+        [SerializeField] private Color flashGreatColor       = Color.cyan;
+        [SerializeField] private Color flashMissColor        = Color.red;
+
         // -------------------------------------------------------------------
         // Internal state
         // -------------------------------------------------------------------
@@ -114,6 +126,32 @@ namespace RhythmicFlow.Player
         private LineRenderer[] _flickArrowPool;
 
         // -------------------------------------------------------------------
+        // Judgement flash state (ring buffer — no per-flash allocation)
+        // -------------------------------------------------------------------
+
+        // One flash record per recent judgement.
+        private struct JudgementFlash
+        {
+            /// <summary>LaneId of the judged note; used to look up world position.</summary>
+            public string        LaneId;
+
+            /// <summary>Judgement tier for colour selection.</summary>
+            public JudgementTier Tier;
+
+            /// <summary>True when Tier == Perfect and hit was within PerfectPlus sub-window.</summary>
+            public bool          IsPerfectPlus;
+
+            /// <summary>Time.time value at which this flash should stop rendering.</summary>
+            public float         ExpireTime;
+        }
+
+        // Fixed capacity — overwrites oldest entry when full.
+        private const int               MaxFlashes = 16;
+        private readonly JudgementFlash[] _flashes = new JudgementFlash[MaxFlashes];
+        private int                       _flashHead = 0;     // next write index (ring)
+        private LineRenderer[]            _flashPool;         // built in TryBuildStaticGeometry
+
+        // -------------------------------------------------------------------
         // Unity lifecycle
         // -------------------------------------------------------------------
 
@@ -127,6 +165,33 @@ namespace RhythmicFlow.Player
         private void OnDestroy()
         {
             if (_lineMat != null) { Destroy(_lineMat); }
+        }
+
+        private void OnEnable()
+        {
+            if (playerAppController != null)
+                playerAppController.OnJudgement += OnJudgementReceived;
+        }
+
+        private void OnDisable()
+        {
+            if (playerAppController != null)
+                playerAppController.OnJudgement -= OnJudgementReceived;
+        }
+
+        // Called by PlayerAppController.OnJudgement; writes into the ring buffer.
+        // Allocation-free: no new structs on the heap (JudgementFlash is a value type).
+        private void OnJudgementReceived(JudgementRecord record)
+        {
+            int slot = _flashHead % MaxFlashes;
+            _flashes[slot] = new JudgementFlash
+            {
+                LaneId        = record.Note.LaneId,
+                Tier          = record.Tier,
+                IsPerfectPlus = record.IsPerfectPlus,
+                ExpireTime    = Time.time + flashDuration,
+            };
+            _flashHead++;
         }
 
         private void LateUpdate()
@@ -146,6 +211,7 @@ namespace RhythmicFlow.Player
 
             UpdateNoteMarkers();
             UpdateTouchMarker();
+            UpdateJudgementFlashes();
         }
 
         // -------------------------------------------------------------------
@@ -200,6 +266,15 @@ namespace RhythmicFlow.Player
             _touchLR = CreateLineRenderer("TouchMarker", touchColor);
             _touchLR.positionCount = 5;
             _touchLR.gameObject.SetActive(false);
+
+            // Judgement flash pool (ring buffer; colours set per-flash in UpdateJudgementFlashes).
+            _flashPool = new LineRenderer[MaxFlashes];
+            for (int i = 0; i < MaxFlashes; i++)
+            {
+                _flashPool[i] = CreateLineRenderer($"FlashMarker_{i}", Color.white);
+                _flashPool[i].positionCount = 5;
+                _flashPool[i].gameObject.SetActive(false);
+            }
 
             _geometryBuilt = true;
         }
@@ -522,6 +597,96 @@ namespace RhythmicFlow.Player
         {
             Vector3 r = pfRoot.right * markerHalfSize;
             Vector3 u = pfRoot.up   * markerHalfSize;
+
+            lr.positionCount = 5;
+            lr.SetPosition(0, worldCenter + u);   // top
+            lr.SetPosition(1, worldCenter + r);   // right
+            lr.SetPosition(2, worldCenter - u);   // bottom
+            lr.SetPosition(3, worldCenter - r);   // left
+            lr.SetPosition(4, worldCenter + u);   // top (close loop)
+        }
+
+        // -------------------------------------------------------------------
+        // Per-frame: judgement flash markers
+        // -------------------------------------------------------------------
+
+        // Iterates the ring buffer each frame and renders active (non-expired) flashes.
+        // Each flash is drawn as a diamond at the outer ring of its lane center,
+        // expanding and fading over flashDuration seconds.  VISUAL ONLY.
+        private void UpdateJudgementFlashes()
+        {
+            if (_flashPool == null) { return; }
+
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
+            IReadOnlyDictionary<string, string>        lToA   = playerAppController.DebugLaneToArena;
+            PlayfieldTransform                         pfT    = playerAppController.DebugPlayfieldTransform;
+            Transform                                  pfRoot = playerAppController.playfieldRoot;
+
+            if (arenas == null || lanes == null || lToA == null || pfT == null) { return; }
+
+            float now = Time.time;
+
+            for (int i = 0; i < MaxFlashes; i++)
+            {
+                JudgementFlash flash = _flashes[i];
+
+                // Slot is empty or expired — hide and skip.
+                if (flash.ExpireTime <= now || string.IsNullOrEmpty(flash.LaneId))
+                {
+                    _flashPool[i].gameObject.SetActive(false);
+                    continue;
+                }
+
+                // Resolve geometry for this lane.
+                if (!lanes.TryGetValue(flash.LaneId,  out LaneGeometry  lane)  ||
+                    !lToA.TryGetValue(flash.LaneId,   out string arenaId)       ||
+                    !arenas.TryGetValue(arenaId,       out ArenaGeometry arena))
+                {
+                    _flashPool[i].gameObject.SetActive(false);
+                    continue;
+                }
+
+                // World position: outer ring at lane center. VISUAL ONLY — not used for hit-testing.
+                float   outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                Vector2 center     = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+                float   thetaRad   = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
+                Vector2 localPt    = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * outerLocal;
+                Vector3 worldPos   = pfRoot.TransformPoint(localPt.x, localPt.y, VisualOnlyLocalZ(1f)); // VISUAL ONLY
+
+                // Expand-and-fade: lifeRatio 1→0 over flashDuration.
+                float lifeRatio = Mathf.Clamp01((flash.ExpireTime - now) / flashDuration);
+
+                Color c = FlashColor(flash.Tier, flash.IsPerfectPlus);
+                c.a = lifeRatio; // fade out
+                _flashPool[i].startColor = c;
+                _flashPool[i].endColor   = c;
+
+                // Diamond grows from 60 % to 100 % of flashHalfSize as it fades out.
+                float halfSize = Mathf.Lerp(flashHalfSize, flashHalfSize * 0.6f, lifeRatio);
+                SetDiamondPositionsScaled(_flashPool[i], worldPos, pfRoot, halfSize);
+                _flashPool[i].gameObject.SetActive(true);
+            }
+        }
+
+        // Returns the colour for a flash based on tier and perfect-plus flag.
+        private Color FlashColor(JudgementTier tier, bool isPerfectPlus)
+        {
+            if (isPerfectPlus)              { return flashPerfectPlusColor; }
+            switch (tier)
+            {
+                case JudgementTier.Perfect: return flashPerfectColor;
+                case JudgementTier.Great:   return flashGreatColor;
+                default:                    return flashMissColor;
+            }
+        }
+
+        // Like SetDiamondPositions but with an explicit half-size (for flash scaling).
+        private void SetDiamondPositionsScaled(
+            LineRenderer lr, Vector3 worldCenter, Transform pfRoot, float halfSize)
+        {
+            Vector3 r = pfRoot.right * halfSize;
+            Vector3 u = pfRoot.up   * halfSize;
 
             lr.positionCount = 5;
             lr.SetPosition(0, worldCenter + u);   // top
