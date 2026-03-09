@@ -259,7 +259,6 @@ namespace RhythmicFlow.Player
 
             // --- Note lifecycle ---
             _scheduler.AdvanceActive(chartTimeMs, ActivationLeadMs);
-            _scheduler.SweepMissed(chartTimeMs, _judgementEngine.Windows.GreatWindowMs);
             _scheduler.GetActiveInWindow(chartTimeMs, _judgementEngine.Windows.GreatWindowMs,
                 _activeNotes);
 
@@ -300,6 +299,10 @@ namespace RhythmicFlow.Player
                     StoreJudgement(flickRec);
                 }
             }
+
+            // --- Miss sweep: runs after all judgement so notes at the late edge are
+            //     not swept before this frame's input can hit them. ---
+            _scheduler.SweepMissed(chartTimeMs, _judgementEngine.Windows.GreatWindowMs);
 
             // --- Clean up ended touches ---
             foreach (int id in _endedTouches)
