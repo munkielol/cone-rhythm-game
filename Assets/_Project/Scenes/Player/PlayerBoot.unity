@@ -547,6 +547,9 @@ MonoBehaviour:
   lineWidth: 0.01
   markerHalfSize: 0.04
   maxNoteMarkers: 32
+  noteLeadTimeMs: 2000
+  spawnRadiusFactor: 0.25
+  showNotesOutsideWindow: 1
   arenaColor: {r: 0, g: 1, b: 1, a: 1}
   laneColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   noteColor: {r: 1, g: 1, b: 1, a: 1}

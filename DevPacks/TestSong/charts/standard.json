@@ -31,17 +31,47 @@
       "priority": 0,
       "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
-      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 270, "easing": "hold" } ] },
-      "widthDeg": { "keyframes": [ { "timeMs": 0, "value": 40, "easing": "hold" } ] }
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 210, "easing": "hold" } ] },
+      "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
+    },
+    {
+      "laneId": "lane-1",
+      "arenaId": "arena-a",
+      "priority": 1,
+      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 250, "easing": "hold" } ] },
+      "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
+    },
+    {
+      "laneId": "lane-2",
+      "arenaId": "arena-a",
+      "priority": 2,
+      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 290, "easing": "hold" } ] },
+      "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
+    },
+    {
+      "laneId": "lane-3",
+      "arenaId": "arena-a",
+      "priority": 3,
+      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
+      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 330, "easing": "hold" } ] },
+      "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
     }
   ],
   "camera": { },
   "notes": [
-    {
-      "noteId": "n1",
-      "laneId": "lane-0",
-      "type": "tap",
-      "timeMs": 2000
-    }
+    { "noteId": "n1",  "laneId": "lane-0", "type": "tap", "timeMs": 2000 },
+    { "noteId": "n2",  "laneId": "lane-1", "type": "tap", "timeMs": 2500 },
+    { "noteId": "n3",  "laneId": "lane-2", "type": "tap", "timeMs": 3000 },
+    { "noteId": "n4",  "laneId": "lane-3", "type": "tap", "timeMs": 3500 },
+
+    { "noteId": "n5",  "laneId": "lane-2", "type": "tap", "timeMs": 4200 },
+    { "noteId": "n6",  "laneId": "lane-0", "type": "tap", "timeMs": 4700 },
+    { "noteId": "n7",  "laneId": "lane-3", "type": "tap", "timeMs": 5200 },
+    { "noteId": "n8",  "laneId": "lane-1", "type": "tap", "timeMs": 5700 }
   ]
 }
