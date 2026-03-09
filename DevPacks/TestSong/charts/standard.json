@@ -68,10 +68,9 @@
     { "noteId": "n2",  "laneId": "lane-1", "type": "tap", "timeMs": 2500 },
     { "noteId": "n3",  "laneId": "lane-2", "type": "tap", "timeMs": 3000 },
     { "noteId": "n4",  "laneId": "lane-3", "type": "tap", "timeMs": 3500 },
-
-    { "noteId": "n5",  "laneId": "lane-2", "type": "tap", "timeMs": 4200 },
-    { "noteId": "n6",  "laneId": "lane-0", "type": "tap", "timeMs": 4700 },
-    { "noteId": "n7",  "laneId": "lane-3", "type": "tap", "timeMs": 5200 },
-    { "noteId": "n8",  "laneId": "lane-1", "type": "tap", "timeMs": 5700 }
+    { "noteId": "f1", "laneId": "lane-1", "type": "flick", "timeMs": 6000, "direction": "U" },
+    { "noteId": "f2", "laneId": "lane-1", "type": "flick", "timeMs": 7000, "direction": "D" },
+    { "noteId": "f3", "laneId": "lane-1", "type": "flick", "timeMs": 8000, "direction": "L" },
+    { "noteId": "f4", "laneId": "lane-1", "type": "flick", "timeMs": 9000, "direction": "R" }
   ]
 }
