@@ -278,12 +278,18 @@ Camera tracks are authored in timeMs and exported as chart camera tracks.
 
 ### **9.3 Flick**
 
-* Fields: `timeMs`, `direction`  
-* `direction` enum: `"L" | "R" | "U" | "D"`  
-* Meaning is **lane-relative** at the note time:  
-  * L/R \= tangential (CCW/CW)  
-  * U/D \= radial (out/in)  
-    (Exact mapping is runtime-defined; chart editor displays a consistent preview arrow.)
+* Fields: `timeMs`, `direction`
+* `direction` enum: `"L" | "R" | "U" | "D"`
+* Meaning is **lane-relative** at the note time (player-facing-inward frame; see player spec §7.3.1):
+
+| direction | meaning |
+|---|---|
+| `U` | inward toward arena center |
+| `D` | outward from arena center |
+| `L` | clockwise tangential (left when facing inward) |
+| `R` | counter-clockwise tangential (right when facing inward) |
+
+* Chart editor preview arrow **must use the same mapping** (derive expected vector from lane center angle θ exactly as in player spec §7.3.1).
 
 **Judgement intent (for playtest/readability):**
 
@@ -357,16 +363,25 @@ You already say tickTimes are `int` ms, but you haven’t specified rounding beh
 
 ## **11\) chart editor playtest (v0)**
 
-* Runs gameplay simulation using the same:  
-  * timeMs chart evaluation  
-  * lane hit-testing (**aspect-safe local math derived from normalized params**, matching the player)  
-  * judgement windows/scoring profile behavior as closely as possible  
-* **Input:** single touch only (mouse)  
-* Debug overlays (recommended):  
-  * show note IDs  
-  * show timing error in ms  
-  * show lane boundaries at playhead time  
+* Runs gameplay simulation using the same:
+  * timeMs chart evaluation
+  * lane hit-testing (**aspect-safe local math derived from normalized params**, matching the player)
+  * judgement windows/scoring profile behavior as closely as possible
+* **Input:** single touch only (mouse)
+* Debug overlays (recommended):
+  * show note IDs
+  * show timing error in ms
+  * show lane boundaries at playhead time
   * show whether a lane is enabled vs only visible
+
+### **11.1 v0 playtest toggles**
+
+The chart editor playtest should expose the same v0 debug toggles as the player (see player spec §8.3.1). These do not affect the exported chart.
+
+| Toggle | Default | Playtest effect |
+|---|---|---|
+| `PerfectWindowCoversGreatWindow` | `false` | Suppresses Great tier during playtest to verify lenient-feel charting. |
+| `FlickRequireTouchBegin` | `true` | When false, allows playtesting flick notes with mouse-down held (single-touch emulation only). |
 
 ---
 

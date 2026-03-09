@@ -138,12 +138,14 @@ Two modes in v0:
 
 ### **4.2 Judgement tiers (internal IDs)**
 
-* `Perfect`, `Great`, `Miss`  
+* `Perfect`, `Great`, `Miss`
 * Display strings are placeholders in v0 (renameable later).
+* **v0 toggle — `PerfectWindowCoversGreatWindow` (default false):** when true, the effective Perfect window is extended to `GreatWindowMs`; Great tier is suppressed and every in-window hit becomes Perfect. Perfect+ sub-window is not affected (see §8.3.1).
 
 ### **4.3 Perfect+**
 
 * A **sub-window** inside Perfect for display/stats only (no score change in v0).
+* Perfect+ sub-window (`PerfectPlusWindowMs`) is never enlarged by the `PerfectWindowCoversGreatWindow` toggle.
 
 ### **4.4 Holds and catches scoring**
 
@@ -372,26 +374,44 @@ Judgement is time-based; speed never affects judgement.
 
 ### **7.3 Flick (lane-relative, Perfect-or-Miss)**
 
-* Flick can be triggered by **any active touch** (not required to begin exactly at note time).  
-* Requirements:  
-  * touch is inside lane within the flick’s timing window (arming)  
-  * touch movement satisfies direction \+ thresholds (gesture)  
-* Flick direction is **lane-relative**:  
-  * L/R \= tangential (CCW/CW)  
-  * U/D \= radial (out/in)  
+* Flick can be triggered by **any active touch** (not required to begin exactly at note time).
+* Requirements:
+  * touch is inside lane within the flick’s timing window (arming)
+  * touch movement satisfies direction \+ thresholds (gesture)
+* Flick direction is **lane-relative** (player-facing-inward frame — see §7.3.1).
 * Flick judgement label: Perfect or Miss only (Perfect+ display supported).
+* **v0 toggle — `FlickRequireTouchBegin` (default true):** when true, only a new touch (`TouchBegin`) can arm a flick. When false, any active touch can arm; the gesture baseline is reset the first time the touch becomes eligible (see §8.3.1).
 
-### **7.3.1) Flick recognition details (lock it for v0)**
+### **7.3.1) Flick recognition details (locked for v0)**
 
-You already state lane-relative \+ Perfect/Miss, but the “when” and “how” are still ambiguous.
+* Flick is recognized from touch movement in **playfield-plane coordinates** (not raw screen pixels).
+* Lane-relative basis is evaluated at **note time** using the lane’s center angle θ (degrees).
 
-* Flick is recognized from touch movement in **playfield-plane coordinates** (not raw screen pixels).  
-* Lane-relative basis is evaluated at **note time** using the lane’s center angle:  
-  * Tangent axis \= clockwise/counterclockwise around arena center  
-  * Radial axis \= outward/inward from arena center  
-* Flick “arming” window:  
-  * The touch must be inside the lane at least once within `[timeMs - GreatWindowMs, timeMs + GreatWindowMs]`.  
-* Judgement time:  
+#### Flick direction basis vectors (player-facing-inward frame, locked for v0)
+
+Given lane center angle θ:
+
+```
+radialOut     = ( cos θ,  sin θ)   outward from arena center
+radialIn      = (-cos θ, -sin θ)   inward toward arena center
+tangentialCCW = (-sin θ,  cos θ)   counter-clockwise around arena
+tangentialCW  = ( sin θ, -cos θ)   clockwise around arena
+```
+
+Chart `direction` field → expected basis vector:
+
+| direction | vector | meaning |
+|---|---|---|
+| `U` | `radialIn` | toward arena center (“up” when facing inward) |
+| `D` | `radialOut` | away from arena center (“down” when facing inward) |
+| `L` | `tangentialCW` | clockwise (“left” when facing inward) |
+| `R` | `tangentialCCW` | counter-clockwise (“right” when facing inward) |
+
+Match threshold: `dot(normalised_displacement, expected) >= cos(45°) ≈ 0.707`.
+
+* Flick “arming” window:
+  * The touch must be inside the lane at least once within `[timeMs - GreatWindowMs, timeMs + GreatWindowMs]`.
+* Judgement time:
   * Use the moment the gesture crosses thresholds (“recognition time”) to compute Perfect+ display (optional), but judgement label remains Perfect/Miss.
 
 ### **7.4 Catch (single note, Perfect-or-Miss)**
@@ -459,9 +479,9 @@ This tie-break is used for Tap/Flick/Catch and for Hold-start binding.
 
 ### **8.3 Settings / Calibration**
 
-* `UserOffsetMs` slider (e.g., \-200..+200)  
-* Note speed setting:  
-  * `PlayerSpeedMultiplier`  
+* `UserOffsetMs` slider (e.g., \-200..+200)
+* Note speed setting:
+  * `PlayerSpeedMultiplier`
 * Flick thresholds (advanced / optional):
   * Measured in normalized playfield-plane units (see §5.3).
   * Defaults (locked for v0):
@@ -469,6 +489,15 @@ This tie-break is used for Tap/Flick/Catch and for Hold-start binding.
     * `minVelocityNormPerSec = 0.8`
     * `maxGestureTimeMs = 120`
   * Expose these as settings sliders, but these defaults must ship in v0.
+
+### **8.3.1 v0 debug/playtest toggles**
+
+These are not persisted PlayerPrefs settings. They are simple static fields in `PlayerSettingsStore`, set in code or via a debug Inspector during playtesting. They do not affect exported charts.
+
+| Toggle | Default | Effect |
+|---|---|---|
+| `PerfectWindowCoversGreatWindow` | `false` | Extends effective Perfect window to `GreatWindowMs`. Great tier is suppressed; every in-window hit scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. |
+| `FlickRequireTouchBegin` | `true` | When true, only a new touch (`IsNew`/`TouchBegin`) can trigger a flick. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for that note. |
 
 ### **8.4 Gameplay**
 
