@@ -16,6 +16,7 @@
 //   2) Add component PlayerDebugRenderer.
 //   3) Assign the existing PlayerAppController to the Inspector field.
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
