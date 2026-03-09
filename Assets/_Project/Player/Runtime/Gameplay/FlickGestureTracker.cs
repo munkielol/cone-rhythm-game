@@ -360,6 +360,23 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
+        /// Returns true and fills <paramref name="beginTimeMs"/> with the chart time (ms) at which
+        /// BeginTouch was called for this touch. Returns false if touchId is not tracked.
+        /// Used by JudgementEngine to gate FlickRequireTouchBegin arming without relying on
+        /// the single-frame IsNew flag.
+        /// </summary>
+        public bool TryGetTouchBeginTimeMs(int touchId, out double beginTimeMs)
+        {
+            if (_states.TryGetValue(touchId, out TouchGestureState state))
+            {
+                beginTimeMs = state.TouchBeginTimeMs;
+                return true;
+            }
+            beginTimeMs = 0;
+            return false;
+        }
+
+        /// <summary>
         /// Returns true and fills <paramref name="snapshot"/> if the touchId is tracked.
         /// Returns false if the touchId is unknown (BeginTouch was never called).
         /// </summary>

@@ -327,13 +327,16 @@ namespace RhythmicFlow.Player
         {
             record = default;
 
-            // Free-touch arming (FlickRequireTouchBegin = false):
-            // When a touch first becomes eligible for a flick note (in-window + in-lane),
-            // reset the gesture baseline so distance/elapsed are measured from that moment.
-            // This ensures a long-held resting touch can still trigger a flick once it enters
-            // the note's timing window.
+            // ---- Arming pass ----
+            // A note is "armed" for a touch when the touch has been inside the note's lane
+            // within the timing window. Once armed, FlickEvents may be judged even if the
+            // event position is outside the lane (the swipe naturally leaves the lane).
+
             if (!PlayerSettingsStore.FlickRequireTouchBegin)
             {
+                // Free-touch mode: arm on first frame the touch is in-lane + in-window.
+                // Also reset the gesture baseline at that moment so elapsed/distance are
+                // measured from eligibility, not from the original touch-down.
                 foreach (RuntimeNote armNote in activeNotes)
                 {
                     if (armNote.Type != NoteType.Flick || !armNote.Judging) { continue; }
@@ -356,6 +359,29 @@ namespace RhythmicFlow.Player
                         Vector2 posNorm = _playfieldTransform.LocalToNormalized(touch.HitLocalXY);
                         gestureTracker.ResetGesture(touch.TouchId, effectiveChartTimeMs, posNorm);
                         _flickArmedSet.Add(ak);
+                    }
+                }
+            }
+            else
+            {
+                // Require-begin mode: arm on any frame where the touch is in-lane + in-window,
+                // provided the touch began recently (within FlickMaxGestureTimeMs).
+                // This handles the case where the timing window opens a few frames after the
+                // touch starts — IsNew would be false by then, so we can't gate on it.
+                if (gestureTracker.TryGetTouchBeginTimeMs(touch.TouchId, out double beginTimeMs) &&
+                    (effectiveChartTimeMs - beginTimeMs) <= PlayerSettingsStore.FlickMaxGestureTimeMs)
+                {
+                    foreach (RuntimeNote armNote in activeNotes)
+                    {
+                        if (armNote.Type != NoteType.Flick || !armNote.Judging) { continue; }
+
+                        double armTe = effectiveChartTimeMs - armNote.TimeMs;
+                        if (!_windows.IsHittable(armTe)) { continue; }
+
+                        if (!IsInsideLane(touch.HitLocalXY, armNote.LaneId,
+                            laneGeometries, arenaGeometries, out _)) { continue; }
+
+                        _flickArmedSet.Add($"ARM:{armNote.NoteId}:{touch.TouchId}");
                     }
                 }
             }
@@ -411,16 +437,16 @@ namespace RhythmicFlow.Player
                                 $"  window=±{_windows.GreatWindowMs:F0}ms" +
                                 $"  eventTime={evt.EventTimeMs:F0}ms");
                         }
-                        if (!PlayerSettingsStore.FlickRequireTouchBegin)
-                        {
-                            _flickArmedSet.Remove($"ARM:{note.NoteId}:{touch.TouchId}");
-                        }
+                        // Remove stale arm entry regardless of toggle mode.
+                        _flickArmedSet.Remove($"ARM:{note.NoteId}:{touch.TouchId}");
                         continue;
                     }
 
-                    // Lane check: touch must be inside the lane at event time.
-                    if (!IsInsideLane(evtHitLocal, note.LaneId, laneGeometries, arenaGeometries,
-                        out float thetaDeg))
+                    // Arming check: the touch must have entered this lane within the timing
+                    // window at some earlier point. Once armed the event position may be
+                    // anywhere — the swipe is allowed to exit the lane after arming.
+                    string armKey = $"ARM:{note.NoteId}:{touch.TouchId}";
+                    if (!_flickArmedSet.Contains(armKey))
                     {
                         if (DebugLogFlick && _flickDebugLogged.Add(
                             $"ESKIP:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
@@ -428,11 +454,34 @@ namespace RhythmicFlow.Player
                             Debug.Log(
                                 $"[FlickDebug] Note SKIP  noteId={note.NoteId}" +
                                 $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
-                                $"  reason=outside_lane" +
-                                $"  evtHitLocal=({evtHitLocal.x:F3},{evtHitLocal.y:F3})" +
+                                $"  reason=not_armed" +
                                 $"  eventTime={evt.EventTimeMs:F0}ms");
                         }
                         continue;
+                    }
+
+                    // Compute thetaDeg for arbitration (angular distance to lane center).
+                    // If the event position is outside the lane (touch left after arming),
+                    // fall back to the lane center angle so AngularDistanceDeg = 0.
+                    bool insideAtEvent = IsInsideLane(evtHitLocal, note.LaneId,
+                        laneGeometries, arenaGeometries, out float thetaDeg);
+                    if (!insideAtEvent)
+                    {
+                        if (DebugLogFlick && _flickDebugLogged.Add(
+                            $"EOUT:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
+                        {
+                            Debug.Log(
+                                $"[FlickDebug] Note  noteId={note.NoteId}" +
+                                $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
+                                $"  outside_lane_ignored (armed)" +
+                                $"  evtHitLocal=({evtHitLocal.x:F3},{evtHitLocal.y:F3})" +
+                                $"  eventTime={evt.EventTimeMs:F0}ms");
+                        }
+                        // Use lane center as fallback so angular-distance tie-break = 0.
+                        if (laneGeometries.TryGetValue(note.LaneId, out LaneGeometry fallbackGeo))
+                        {
+                            thetaDeg = fallbackGeo.CenterDeg;
+                        }
                     }
 
                     // Direction check (spec §7.3.1).
@@ -498,11 +547,8 @@ namespace RhythmicFlow.Player
                 best.State = NoteState.Hit;
                 record     = MakeRecord(best, tier, isPlus, bestError);
 
-                // Clean up arm entry for the judged note.
-                if (!PlayerSettingsStore.FlickRequireTouchBegin)
-                {
-                    _flickArmedSet.Remove($"ARM:{best.NoteId}:{touch.TouchId}");
-                }
+                // Clean up arm entry for the judged note (both toggle modes).
+                _flickArmedSet.Remove($"ARM:{best.NoteId}:{touch.TouchId}");
 
                 LogFlickJudgement(record, evt);
                 return true; // One note judged per call; caller loops to process more events.
