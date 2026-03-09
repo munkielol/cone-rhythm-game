@@ -130,7 +130,7 @@ namespace RhythmicFlow.Player
         /// the first time the touch becomes eligible (in-window + in-lane) for each note.
         /// Default: true.
         /// </summary>
-        public static bool FlickRequireTouchBegin = true;
+        public static bool FlickRequireTouchBegin = false;
 
         // -------------------------------------------------------------------
         // Convenience: reset all settings to defaults
