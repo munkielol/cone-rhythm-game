@@ -77,6 +77,13 @@ namespace RhythmicFlow.Player
         [Tooltip("Extra local Z added to the arrow above the note marker surface, to prevent z-fighting.")]
         [SerializeField] private float flickArrowZBias = 0.002f;
 
+        [Header("Hit Band Arcs (DEBUG)")]
+        [Tooltip("Draw inner and outer hit-band arcs per arena (input-only; never affects judgement).")]
+        [SerializeField] private bool showHitBandArcs = true;
+
+        [Tooltip("Color of the hit-band inner and outer debug arcs.")]
+        [SerializeField] private Color hitBandColor = Color.green;
+
         [Header("Colors")]
         [SerializeField] private Color arenaColor         = Color.cyan;
         [SerializeField] private Color laneColor          = Color.yellow;
@@ -107,8 +114,10 @@ namespace RhythmicFlow.Player
         // Shared unlit material — visible in Game view on all platforms.
         private Material _lineMat;
 
-        // Per-arena: 4 LineRenderers — [0] outer arc, [1] inner arc,
-        //                              [2] start-angle ray, [3] end-angle ray.
+        // Per-arena: 7 LineRenderers — [0] outer arc, [1] inner arc,
+        //                              [2] start-angle ray, [3] end-angle ray,
+        //                              [4] judgement ring arc,
+        //                              [5] hit band inner arc, [6] hit band outer arc.
         private readonly Dictionary<string, LineRenderer[]> _arenaLRs =
             new Dictionary<string, LineRenderer[]>(StringComparer.Ordinal);
 
@@ -284,12 +293,14 @@ namespace RhythmicFlow.Player
         // Arena builders
         // -------------------------------------------------------------------
 
-        // Builds 5 LineRenderers for one arena:
+        // Builds 7 LineRenderers for one arena:
         //   [0] outer arc polyline at visualOuterLocal  (chart outer + VisualOuterExpandNorm)
         //   [1] inner arc polyline at innerLocal
-        //   [2] radial ray at arcStartDeg     (inner → visualOuterLocal)
-        //   [3] radial ray at arcStartDeg + arcSweepDeg  (inner → visualOuterLocal)
+        //   [2] radial ray at arcStartDeg               (inner → visualOuterLocal)
+        //   [3] radial ray at arcStartDeg + arcSweepDeg (inner → visualOuterLocal)
         //   [4] judgement ring arc at judgementRadiusLocal  (outerLocal − JudgementInsetNorm)
+        //   [5] hit band inner arc at hitInnerLocal  (INPUT-ONLY — never used for hit-testing)
+        //   [6] hit band outer arc at hitOuterLocal  (INPUT-ONLY — never used for hit-testing)
         private void BuildArenaLineRenderers(
             string arenaId, ArenaGeometry geo, PlayfieldTransform pfT, Transform pfRoot)
         {
@@ -297,22 +308,41 @@ namespace RhythmicFlow.Player
             float outerLocal = pfT.NormRadiusToLocal(geo.OuterRadiusNorm);
             float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
+            float minDim     = pfT.MinDimLocal;
 
             // Visual outer rim: extends beyond chart outerLocal (default expand = 0 → same as outerLocal).
             float visualOuterLocal = outerLocal
-                + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal; // VISUAL ONLY
+                + PlayerSettingsStore.VisualOuterExpandNorm * minDim; // VISUAL ONLY
 
             // Judgement ring inset inside chart outerLocal. Notes land here visually.
             float judgementRadiusLocal = outerLocal
-                - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;   // VISUAL ONLY
+                - PlayerSettingsStore.JudgementInsetNorm * minDim;    // VISUAL ONLY
             float s01Judgement = (outerLocal > innerLocal)
                 ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
                 : 0f;
 
+            // Hit band inner/outer radii (INPUT-ONLY, spec §5.5.2).
+            // Mirrors JudgementEngine.IsInsideLane — keep in sync.
+            float hitInnerLocal = Mathf.Max(
+                judgementRadiusLocal - (PlayerSettingsStore.HitBandInnerInsetNorm
+                                        + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
+                innerLocal);                                                   // INPUT ONLY
+            float hitOuterLocal = judgementRadiusLocal
+                + (PlayerSettingsStore.HitBandOuterInsetNorm
+                   + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;   // INPUT ONLY
+
+            // s01 values for frustum Z (clamped — hitOuter may exceed outerLocal).
+            float s01HitInner = (outerLocal > innerLocal)
+                ? Mathf.Clamp01((hitInnerLocal - innerLocal) / (outerLocal - innerLocal))
+                : 0f;
+            float s01HitOuter = (outerLocal > innerLocal)
+                ? Mathf.Clamp01((hitOuterLocal - innerLocal) / (outerLocal - innerLocal))
+                : 1f;
+
             // Arena center in PlayfieldRoot local XY (spec §5.5).
             Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
 
-            var lrs = new LineRenderer[5];
+            var lrs = new LineRenderer[7];
 
             // Outer arc drawn at the visual outer rim.
             lrs[0] = CreateLineRenderer($"Arena_{arenaId}_OuterArc", arenaColor);
@@ -334,6 +364,17 @@ namespace RhythmicFlow.Player
             lrs[4] = CreateLineRenderer($"Arena_{arenaId}_JudgementRing", judgementRingColor);
             SetArcPositions(lrs[4], center, judgementRadiusLocal,
                             geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01Judgement);
+
+            // Hit band inner/outer arcs: show the actual input acceptance zone. INPUT-ONLY DEBUG.
+            lrs[5] = CreateLineRenderer($"Arena_{arenaId}_HitBandInner", hitBandColor);
+            SetArcPositions(lrs[5], center, hitInnerLocal,
+                            geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitInner);
+            lrs[5].gameObject.SetActive(showHitBandArcs);
+
+            lrs[6] = CreateLineRenderer($"Arena_{arenaId}_HitBandOuter", hitBandColor);
+            SetArcPositions(lrs[6], center, hitOuterLocal,
+                            geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitOuter);
+            lrs[6].gameObject.SetActive(showHitBandArcs);
 
             _arenaLRs[arenaId] = lrs;
         }

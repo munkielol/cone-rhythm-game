@@ -167,25 +167,44 @@ namespace RhythmicFlow.Player
         public static float VisualOuterExpandNorm = 0.00f;
 
         /// <summary>
-        /// Input Band Expansion — inner edge (touch hit-testing only, spec §5.5.1 / §8.3.1).
+        /// Hit Band — inner inset from the judgement ring (input-only, spec §5.5.2 / §8.3.1).
         ///
-        /// Expands the arena band inward by (InputBandExpandInnerNorm * minDimLocal) local units
-        /// for touch arming and judgement hit-testing.
+        /// hitInnerLocal = max(judgementRadiusLocal − HitBandInnerInsetNorm × minDimLocal, chartInnerLocal)
         ///
-        /// Does NOT change visual geometry, chart-authored geometry, or the judgement ring position.
-        /// Default: 0.00 (no inner expansion).
+        /// A touch must be at or outward of hitInnerLocal to count as "inside lane".
+        /// Clamped to chartInnerLocal so the hit band never extends past the chart inner edge.
+        /// Default: 0.02 (2 % of minDimLocal inward from the judgement ring).
+        /// </summary>
+        public static float HitBandInnerInsetNorm = 0.02f;
+
+        /// <summary>
+        /// Hit Band — outer inset from the judgement ring (input-only, spec §5.5.2 / §8.3.1).
+        ///
+        /// hitOuterLocal = judgementRadiusLocal + HitBandOuterInsetNorm × minDimLocal
+        ///
+        /// A touch must be at or inward of hitOuterLocal to count as "inside lane".
+        /// More tolerant outward than inward — designed for outer-rim finger comfort.
+        /// Default: 0.04 (4 % of minDimLocal outward from the judgement ring).
+        /// </summary>
+        public static float HitBandOuterInsetNorm = 0.04f;
+
+        /// <summary>
+        /// Additional inner expansion applied on top of the hit band (input-only, spec §5.5.1 / §8.3.1).
+        ///
+        /// finalHitInner = max(judgementRadius − (HitBandInnerInsetNorm + InputBandExpandInnerNorm) × minDimLocal, chartInner)
+        ///
+        /// Kept for fine-tuning; with the hit band system the primary tolerance is HitBandInnerInsetNorm.
+        /// Default: 0.00 (no extra inner expansion beyond the hit band).
         /// </summary>
         public static float InputBandExpandInnerNorm = 0.00f;
 
         /// <summary>
-        /// Input Band Expansion — outer edge (touch hit-testing only, spec §5.5.1 / §8.3.1).
+        /// Additional outer expansion applied on top of the hit band (input-only, spec §5.5.1 / §8.3.1).
         ///
-        /// Expands the arena band outward by (InputBandExpandOuterNorm * minDimLocal) local units
-        /// for touch arming and judgement hit-testing.  Accounts for finger imprecision when
-        /// tapping the outer rim of the arena.
+        /// finalHitOuter = judgementRadius + (HitBandOuterInsetNorm + InputBandExpandOuterNorm) × minDimLocal
         ///
-        /// Does NOT change visual geometry, chart-authored geometry, or the judgement ring position.
-        /// Default: 0.03 (3 % of minDimLocal — forgiving but not excessive).
+        /// Kept for fine-tuning; with the hit band system the primary tolerance is HitBandOuterInsetNorm.
+        /// Default: 0.03 (3 % of minDimLocal extra outward beyond the hit band).
         /// </summary>
         public static float InputBandExpandOuterNorm = 0.03f;
 

@@ -362,14 +362,11 @@ namespace RhythmicFlow.Player
 
                         if (DebugLogFlick)
                         {
-                            float minDim   = _playfieldTransform.MinDimLocal;
-                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
-                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
                             Debug.Log(
                                 $"[FlickArm] Armed  noteId={armNote.NoteId}" +
                                 $"  touchId={touch.TouchId}  t={effectiveChartTimeMs:F0}ms" +
                                 $"  laneId={armNote.LaneId}  mode=free-touch" +
-                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
+                                $"  {DebugHitBandStr(armNote.LaneId, arenaGeometries)}");
                         }
                     }
                 }
@@ -398,14 +395,11 @@ namespace RhythmicFlow.Player
 
                         if (newlyArmed && DebugLogFlick)
                         {
-                            float minDim   = _playfieldTransform.MinDimLocal;
-                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
-                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
                             Debug.Log(
                                 $"[FlickArm] Armed  noteId={armNote.NoteId}" +
                                 $"  touchId={touch.TouchId}  t={effectiveChartTimeMs:F0}ms" +
                                 $"  laneId={armNote.LaneId}  mode=require-begin" +
-                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
+                                $"  {DebugHitBandStr(armNote.LaneId, arenaGeometries)}");
                         }
                     }
                 }
@@ -495,16 +489,13 @@ namespace RhythmicFlow.Player
                         if (DebugLogFlick && _flickDebugLogged.Add(
                             $"EOUT:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
                         {
-                            float minDim   = _playfieldTransform.MinDimLocal;
-                            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
-                            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
                             Debug.Log(
                                 $"[FlickDebug] Note  noteId={note.NoteId}" +
                                 $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
                                 $"  outside_lane_ignored (armed)" +
                                 $"  evtHitLocal=({evtHitLocal.x:F3},{evtHitLocal.y:F3})" +
                                 $"  eventTime={evt.EventTimeMs:F0}ms" +
-                                $"  bandExpand=({expInner:F4},{expOuter:F4})");
+                                $"  {DebugHitBandStr(note.LaneId, arenaGeometries)}");
                         }
                         // Use lane center as fallback so angular-distance tie-break = 0.
                         if (laneGeometries.TryGetValue(note.LaneId, out LaneGeometry fallbackGeo))
@@ -702,16 +693,54 @@ namespace RhythmicFlow.Player
             if (!_laneToArena.TryGetValue(laneId, out string arenaId)) { return false; }
             if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return false; }
 
-            // Input Band Expansion (spec §5.5.1 / §8.3.1): expand the radial band for touch
-            // arming and judgement without changing visual/chart geometry.
-            float minDim   = _playfieldTransform.MinDimLocal;
-            float expInner = PlayerSettingsStore.InputBandExpandInnerNorm * minDim;
-            float expOuter = PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+            // Hit band centred on the judgement ring (spec §5.5.2 / §8.3.1).
+            // InputBandExpand* are additive fine-tune on top of the hit band.
+            float minDim     = _playfieldTransform.MinDimLocal;
+            float chartOuter = _playfieldTransform.NormRadiusToLocal(arenaGeo.OuterRadiusNorm);
+            float chartBand  = _playfieldTransform.NormRadiusToLocal(arenaGeo.BandThicknessNorm);
+            float chartInner = chartOuter - chartBand;
+            float judgement  = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
 
+            float hitInner = Mathf.Max(
+                judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
+                             + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
+                chartInner);
+            float hitOuter = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
+                                          + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+
+            // Express as expansion relative to chart bounds for IsInsideArenaBand API.
+            // Negative expandInner = narrow the band inward (valid, spec §5.5.2 note).
             if (!ArenaHitTester.IsInsideArenaBand(hitLocal, arenaGeo, _playfieldTransform,
-                out thetaDeg, expInner, expOuter)) { return false; }
+                out thetaDeg,
+                expandInnerLocal: chartInner - hitInner,
+                expandOuterLocal: hitOuter - chartOuter)) { return false; }
 
             return ArenaHitTester.IsInsideLane(thetaDeg, laneGeo);
+        }
+
+        // -------------------------------------------------------------------
+        // Helper: hit band debug string (used in FlickArm / EOUT logs)
+        // -------------------------------------------------------------------
+
+        // Returns a concise string of judgement radius and hit-band inner/outer
+        // local values for a given lane's arena. Used only for debug logging.
+        private string DebugHitBandStr(string laneId, IDictionary<string, ArenaGeometry> arenaGeometries)
+        {
+            if (!_laneToArena.TryGetValue(laneId, out string arenaId))            { return "hitBand=?"; }
+            if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return "hitBand=?"; }
+
+            float minDim     = _playfieldTransform.MinDimLocal;
+            float chartOuter = _playfieldTransform.NormRadiusToLocal(arenaGeo.OuterRadiusNorm);
+            float chartBand  = _playfieldTransform.NormRadiusToLocal(arenaGeo.BandThicknessNorm);
+            float chartInner = chartOuter - chartBand;
+            float judgement  = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
+            float hitInner   = Mathf.Max(
+                judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
+                             + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
+                chartInner);
+            float hitOuter   = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
+                                            + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+            return $"judgement={judgement:F4}  hitBand=({hitInner:F4},{hitOuter:F4})";
         }
 
         // -------------------------------------------------------------------

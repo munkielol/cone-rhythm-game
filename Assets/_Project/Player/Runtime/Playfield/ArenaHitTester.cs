@@ -128,24 +128,25 @@ namespace RhythmicFlow.Player
         /// Does NOT test lane membership — use IsInsideLane for the full check.
         /// Spec §5.5 steps 3–4.
         ///
-        /// <para><b>Input Band Expansion (touch hit-testing only, spec §5.5.1):</b><br/>
-        /// When <paramref name="expandInnerLocal"/> or <paramref name="expandOuterLocal"/> are
-        /// non-zero the radial band is enlarged for touch arming / judgement, without changing
-        /// visual geometry or chart-authored geometry.<br/>
-        ///   expandedInner = innerLocal − expandInnerLocal<br/>
-        ///   expandedOuter = outerLocal + expandOuterLocal<br/>
-        /// Default values of 0 reproduce the unmodified spec §5.5 behaviour.
+        /// <para><b>Hit Band / Input Band (touch hit-testing only, spec §5.5.2 / §5.5.1):</b><br/>
+        /// Pass pre-computed expansion values relative to the chart band edges:<br/>
+        ///   effectiveInner = innerLocal − expandInnerLocal<br/>
+        ///   effectiveOuter = outerLocal + expandOuterLocal<br/>
+        /// <b>Negative values are valid</b>: a negative expandInnerLocal narrows the band inward
+        /// (e.g. when the hit band inner edge is farther out than chartInnerLocal).
+        /// Default values of 0 reproduce the unmodified spec §5.5 behaviour.<br/>
+        /// Callers (JudgementEngine.IsInsideLane) derive these from the hit-band formula:<br/>
+        ///   expandInnerLocal = chartInner − hitInner  (may be negative)<br/>
+        ///   expandOuterLocal = hitOuter  − chartOuter (may be negative)
         /// </para>
         /// </summary>
         /// <param name="expandInnerLocal">
-        /// Extra local-unit margin subtracted from innerLocal (inward expansion).
-        /// Pass <c>PlayerSettingsStore.InputBandExpandInnerNorm * playfieldTransform.MinDimLocal</c>.
-        /// Default: 0 (no expansion).
+        /// Local-unit adjustment subtracted from innerLocal. Negative = narrow inward.
+        /// Default: 0 (no change).
         /// </param>
         /// <param name="expandOuterLocal">
-        /// Extra local-unit margin added to outerLocal (outward expansion).
-        /// Pass <c>PlayerSettingsStore.InputBandExpandOuterNorm * playfieldTransform.MinDimLocal</c>.
-        /// Default: 0 (no expansion).
+        /// Local-unit adjustment added to outerLocal. Negative = narrow outward.
+        /// Default: 0 (no change).
         /// </param>
         public static bool IsInsideArenaBand(
             Vector2            hitLocalXY,
