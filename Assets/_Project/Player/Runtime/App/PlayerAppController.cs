@@ -54,6 +54,18 @@ namespace RhythmicFlow.Player
         [Tooltip("AudioSource that will receive the extracted OGG clip.")]
         public AudioSource musicAudioSource;
 
+        [Header("Pack Location")]
+        [Tooltip("Sub-folder under Application.persistentDataPath used in builds.")]
+        public string packsSubfolderName = "Packs";
+
+        [Tooltip("When true and running in the Unity Editor, load packs from " +
+                 "<project-root>/<editorPacksFolderName> instead of persistentDataPath. " +
+                 "Has no effect in builds.")]
+        public bool useEditorProjectRootPacks = true;
+
+        [Tooltip("Folder name under the project root (repo) used when the Editor override is active.")]
+        public string editorPacksFolderName = "DevPacks";
+
         [Header("Gameplay")]
         [Tooltip("Timing window set — Standard (30/90 ms) or Challenger (22/60 ms). Spec §4.1.")]
         public GameplayMode gameplayMode = GameplayMode.Standard;
@@ -148,14 +160,12 @@ namespace RhythmicFlow.Player
             _conductor          = new Conductor();
             _catalog            = new PackCatalog();
 
-            // PackScanner always scans persistentDataPath/Packs/ (spec §2.6).
-            // TODO: expose custom subfolder path when PackScanner adds an overload.
-            PackScanner.Scan(_catalog);
+            string packsRoot = ResolvePacksDirectory();
+            PackScanner.Scan(_catalog, packsRoot);
 
             if (_catalog.Count == 0)
             {
-                SetError("No valid packs found in:\n" +
-                         Path.Combine(Application.persistentDataPath, "Packs") +
+                SetError($"No valid packs found in:\n{packsRoot}" +
                          "\n\nCopy at least one .rpk file there and restart.");
                 return;
             }
@@ -499,6 +509,30 @@ namespace RhythmicFlow.Player
             }
 
             _boundHolds.Remove(touchId);
+        }
+
+        // ===================================================================
+        // Pack directory resolution
+        // ===================================================================
+
+        // In Editor with useEditorProjectRootPacks=true:
+        //   <project-root>/<editorPacksFolderName>    (e.g. …/cone-rhythm-game/DevPacks)
+        // In builds (or when override is off):
+        //   Application.persistentDataPath/<packsSubfolderName>
+        private string ResolvePacksDirectory()
+        {
+#if UNITY_EDITOR
+            if (useEditorProjectRootPacks)
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                string dir         = Path.Combine(projectRoot, editorPacksFolderName);
+                Debug.Log($"[PlayerApp] Pack location: EDITOR OVERRIDE → {dir}");
+                return dir;
+            }
+#endif
+            string buildDir = Path.Combine(Application.persistentDataPath, packsSubfolderName);
+            Debug.Log($"[PlayerApp] Pack location: {buildDir}");
+            return buildDir;
         }
 
         // ===================================================================

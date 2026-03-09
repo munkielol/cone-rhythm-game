@@ -41,16 +41,30 @@ namespace RhythmicFlow.Player
         /// Scans Application.persistentDataPath/Packs/ for .rpk files.
         /// Clears and repopulates <paramref name="catalog"/> with all valid packs.
         /// Invalid packs are logged and excluded (spec §2.6).
+        /// To override the directory (e.g. for an Editor DevPacks folder) use
+        /// <see cref="Scan(PackCatalog,string)"/>.
         /// </summary>
         public static void Scan(PackCatalog catalog)
         {
+            Scan(catalog, Path.Combine(Application.persistentDataPath, "Packs"));
+        }
+
+        /// <summary>
+        /// Scans <paramref name="packsDirectory"/> for .rpk files.
+        /// Clears and repopulates <paramref name="catalog"/> with all valid packs.
+        /// The directory is created if it does not exist (no files are written).
+        /// Invalid packs are logged and excluded (spec §2.6).
+        /// </summary>
+        public static void Scan(PackCatalog catalog, string packsDirectory)
+        {
             catalog.Clear();
 
-            string packsDir = Path.Combine(Application.persistentDataPath, "Packs");
+            string packsDir = packsDirectory;
 
             if (!Directory.Exists(packsDir))
             {
-                Debug.Log($"[PackScanner] Packs directory does not exist: {packsDir}");
+                Directory.CreateDirectory(packsDir);
+                Debug.Log($"[PackScanner] Created packs directory: {packsDir}");
                 return;
             }
 
