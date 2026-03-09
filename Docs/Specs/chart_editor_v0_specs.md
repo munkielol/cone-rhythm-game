@@ -293,7 +293,8 @@ Camera tracks are authored in timeMs and exported as chart camera tracks.
 
 **Judgement intent (for playtest/readability):**
 
-* Flicks are **Perfect-or-Miss** (no Great tier label), and can be triggered by an already-active touch in the lane.
+* Flick is **event-based**: each distinct qualifying gesture during a continuous touch can match a separate note (supports rapid U→D patterns without lifting). See player spec §7.3.
+* Default tiers: **Perfect / Great / Miss** based on timing. Toggle `FlickPerfectWindowCoversGreatWindow` to suppress the Great tier so all in-window flicks score Perfect.
 
 ### **9.4 Catch (single note)**
 
@@ -378,10 +379,13 @@ You already say tickTimes are `int` ms, but you haven’t specified rounding beh
 
 The chart editor playtest should expose the same v0 debug toggles as the player (see player spec §8.3.1). These do not affect the exported chart.
 
+Flick playtest uses the same **event-based** model as the player: each qualifying gesture emits a `FlickEvent` that is matched to a note. Rapid flick sequences can be authored and tested within a single continuous mouse-down.
+
 | Toggle | Default | Playtest effect |
 |---|---|---|
-| `PerfectWindowCoversGreatWindow` | `false` | Suppresses Great tier during playtest to verify lenient-feel charting. |
-| `FlickRequireTouchBegin` | `true` | When false, allows playtesting flick notes with mouse-down held (single-touch emulation only). |
+| `PerfectWindowCoversGreatWindow` | `false` | Suppresses Great tier for tap/hold during playtest to verify lenient-feel charting. Does not affect flick. |
+| `FlickRequireTouchBegin` | `false` | When true, only gestures completed within `FlickMaxGestureTimeMs` of mouse-down are eligible. When false (default), allows testing flick notes with mouse-down held throughout (single-touch emulation). |
+| `FlickPerfectWindowCoversGreatWindow` | `false` | When true, suppresses the Great tier for flick during playtest — all in-window flicks score Perfect. Useful for verifying lenient flick-feel charting. |
 
 ---
 

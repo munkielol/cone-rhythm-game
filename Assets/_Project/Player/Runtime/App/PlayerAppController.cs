@@ -292,11 +292,9 @@ namespace RhythmicFlow.Player
                     StoreJudgement(holdRec);
                 }
 
-                if (_judgementEngine.TryJudgeFlick(touch, _activeNotes, chartTimeMs,
+                // Loop: each call processes one FlickEvent; loop until no more events for this touch.
+                while (_judgementEngine.TryJudgeFlick(touch, _activeNotes, chartTimeMs,
                     _laneGeos, _arenaGeos, _flickTracker,
-                    PlayerSettingsStore.FlickMinDistanceNorm,
-                    PlayerSettingsStore.FlickMinVelocityNormPerSec,
-                    PlayerSettingsStore.FlickMaxGestureTimeMs,
                     out JudgementRecord flickRec))
                 {
                     StoreJudgement(flickRec);

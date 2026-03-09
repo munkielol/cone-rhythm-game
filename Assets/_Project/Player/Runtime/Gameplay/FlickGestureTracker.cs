@@ -82,6 +82,53 @@ namespace RhythmicFlow.Player
     }
 
     // -----------------------------------------------------------------------
+    // FlickEvent — discrete gesture event emitted by FlickGestureTracker
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Represents a single recognized flick gesture from one touch.
+    /// Emitted by FlickGestureTracker.UpdateTouch when distance, velocity, and elapsed-time
+    /// thresholds are all satisfied (spec §7.3 event-based model).
+    ///
+    /// After emission the tracker immediately resets the gesture baseline for that touch,
+    /// so a subsequent gesture can produce a new FlickEvent without lifting.
+    /// </summary>
+    public struct FlickEvent
+    {
+        /// <summary>Touch that produced this event.</summary>
+        public int TouchId;
+
+        /// <summary>Chart time (ms) when the gesture crossed the thresholds.</summary>
+        public double EventTimeMs;
+
+        /// <summary>
+        /// Touch position in normalized playfield coords at event time.
+        /// JudgementEngine converts this to PlayfieldLocal XY for lane hit testing.
+        /// </summary>
+        public Vector2 PosNorm;
+
+        /// <summary>
+        /// Displacement from the current gesture baseline to the event position,
+        /// in normalized playfield coords. Used for flick direction matching.
+        /// </summary>
+        public Vector2 DispNorm;
+
+        /// <summary>Peak distance from the gesture baseline (normalized units) during this gesture.</summary>
+        public float DistanceNorm;
+
+        /// <summary>Peak instantaneous velocity (normalized units/sec) during this gesture.</summary>
+        public float VelocityNormPerSec;
+
+        /// <summary>
+        /// Chart time (ms) when BeginTouch was called for this touch.
+        /// Used by JudgementEngine to gate FlickRequireTouchBegin behaviour:
+        /// events where (EventTimeMs - TouchBeginTimeMs) &gt; FlickMaxGestureTimeMs
+        /// are discarded when the toggle is true.
+        /// </summary>
+        public double TouchBeginTimeMs;
+    }
+
+    // -----------------------------------------------------------------------
     // FlickGestureTracker
     // -----------------------------------------------------------------------
 
@@ -98,6 +145,11 @@ namespace RhythmicFlow.Player
         // Below this displacement magnitude, direction = None.
         private const float DirectionEpsilon = 1e-4f;
 
+        // Minimum interval (ms) between consecutive FlickEvents from the same touch.
+        // Prevents duplicate events on frames with very high velocity (60fps = ~16ms, so 30ms
+        // means at most one event every 2 frames per touch).
+        private const double MinEventIntervalMs = 30.0;
+
         // -------------------------------------------------------------------
         // Internal per-touch state
         // -------------------------------------------------------------------
@@ -112,6 +164,29 @@ namespace RhythmicFlow.Player
             public float   MaxDistanceNorm;
             public float   MaxVelocityNormPerSec;
 
+            // ------- Event-based additions -------
+
+            /// <summary>
+            /// Chart time (ms) when BeginTouch was called for this touch.
+            /// Set only by Reset (i.e. BeginTouch); NOT reset by ResetGesture.
+            /// Carried into each FlickEvent so JudgementEngine can gate
+            /// FlickRequireTouchBegin: events are invalid if
+            /// (EventTimeMs - TouchBeginTimeMs) > FlickMaxGestureTimeMs.
+            /// </summary>
+            public double TouchBeginTimeMs;
+
+            /// <summary>
+            /// Chart time (ms) of the most recently emitted FlickEvent.
+            /// Enforces the MinEventIntervalMs anti-spam guard.
+            /// </summary>
+            public double LastEventTimeMs;
+
+            /// <summary>
+            /// FIFO queue of FlickEvents awaiting consumption by JudgementEngine.
+            /// Allocated once per TouchGestureState; cleared on Reset.
+            /// </summary>
+            public readonly Queue<FlickEvent> EventQueue = new Queue<FlickEvent>(4);
+
             public void Reset(int id, double timeMs, Vector2 posNorm)
             {
                 TouchId               = id;
@@ -121,6 +196,9 @@ namespace RhythmicFlow.Player
                 LastTimeMs            = timeMs;
                 MaxDistanceNorm       = 0f;
                 MaxVelocityNormPerSec = 0f;
+                TouchBeginTimeMs      = timeMs;
+                LastEventTimeMs       = double.NegativeInfinity; // Allow first event immediately.
+                EventQueue.Clear();
             }
         }
 
@@ -189,6 +267,49 @@ namespace RhythmicFlow.Player
 
             state.LastPosNorm = posNorm;
             state.LastTimeMs  = timeMs;
+
+            // ------- Event emission (event-based flick model, spec §7.3) -------
+            // If all three gesture thresholds are met AND the anti-spam guard passes,
+            // enqueue a FlickEvent and immediately reset the baseline so the next
+            // motion can produce a new event (enables U→D patterns without lifting).
+
+            double elapsedMs   = timeMs - state.StartTimeMs;
+            bool   timeOk      = elapsedMs           <= PlayerSettingsStore.FlickMaxGestureTimeMs;
+            bool   distOk      = state.MaxDistanceNorm        >= PlayerSettingsStore.FlickMinDistanceNorm;
+            bool   velOk       = state.MaxVelocityNormPerSec  >= PlayerSettingsStore.FlickMinVelocityNormPerSec;
+            bool   antiSpamOk  = (timeMs - state.LastEventTimeMs) >= MinEventIntervalMs;
+
+            if (timeOk && distOk && velOk && antiSpamOk)
+            {
+                Vector2 disp = posNorm - state.StartPosNorm;
+
+                var newEvt = new FlickEvent
+                {
+                    TouchId            = touchId,
+                    EventTimeMs        = timeMs,
+                    PosNorm            = posNorm,
+                    DispNorm           = disp,
+                    DistanceNorm       = state.MaxDistanceNorm,
+                    VelocityNormPerSec = state.MaxVelocityNormPerSec,
+                    TouchBeginTimeMs   = state.TouchBeginTimeMs,
+                };
+                state.EventQueue.Enqueue(newEvt);
+                state.LastEventTimeMs = timeMs;
+
+                // Reset baseline so next motion is measured fresh.
+                // (LastPosNorm and LastTimeMs are already current; only clear accumulations.)
+                state.StartTimeMs           = timeMs;
+                state.StartPosNorm          = posNorm;
+                state.MaxDistanceNorm       = 0f;
+                state.MaxVelocityNormPerSec = 0f;
+
+                Debug.Log(
+                    $"[FlickEvent] touchId={touchId}  t={timeMs:F0}ms" +
+                    $"  dist={newEvt.DistanceNorm:F4}norm" +
+                    $"  vel={newEvt.VelocityNormPerSec:F3}norm/s" +
+                    $"  elapsed={elapsedMs:F0}ms" +
+                    $"  disp=({disp.x:F4},{disp.y:F4})");
+            }
         }
 
         /// <summary>
@@ -259,6 +380,27 @@ namespace RhythmicFlow.Player
                 Direction          = ClassifyDirection(displacement),
             };
 
+            return true;
+        }
+
+        // -------------------------------------------------------------------
+        // Event dequeue API
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Removes and returns the oldest queued <see cref="FlickEvent"/> for the given touch.
+        /// Returns true if an event was available; false if the touch has no queued events
+        /// or is not currently tracked.
+        ///
+        /// Call from JudgementEngine once per TryJudgeFlick invocation to consume events
+        /// one at a time (the caller loops until this returns false to handle rapid sequences).
+        /// </summary>
+        public bool TryDequeueEvent(int touchId, out FlickEvent evt)
+        {
+            evt = default;
+            if (!_states.TryGetValue(touchId, out TouchGestureState state)) { return false; }
+            if (state.EventQueue.Count == 0) { return false; }
+            evt = state.EventQueue.Dequeue();
             return true;
         }
 

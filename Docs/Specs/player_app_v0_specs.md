@@ -372,19 +372,24 @@ Judgement is time-based; speed never affects judgement.
 * Hittable if within GreatWindowMs.  
 * Judged as Perfect/Great/Miss; Perfect+ display if within sub-window.
 
-### **7.3 Flick (lane-relative, Perfect-or-Miss)**
+### **7.3 Flick (lane-relative, event-based)**
 
-* Flick can be triggered by **any active touch** (not required to begin exactly at note time).
-* Requirements:
-  * touch is inside lane within the flick’s timing window (arming)
-  * touch movement satisfies direction \+ thresholds (gesture)
+* Flick recognition is **event-based**: a `FlickEvent` is produced by the gesture tracker when a touch gesture exceeds distance, velocity, and elapsed-time thresholds (spec §8.3 / §7.3.1).
+* **Multiple FlickEvents can occur during one continuous touch** (e.g. U then D without lifting), because the gesture baseline resets immediately after each event is emitted.
+* Each Flick note consumes at most one FlickEvent per judgement.
+* Requirements for a FlickEvent to match a note:
+  * the touch position at event time is inside the note’s lane
+  * event time is within `[noteTimeMs − GreatWindowMs, noteTimeMs + GreatWindowMs]`
+  * gesture displacement matches the note’s required direction (see §7.3.1)
 * Flick direction is **lane-relative** (player-facing-inward frame — see §7.3.1).
-* Flick judgement label: Perfect or Miss only (Perfect+ display supported).
-* **v0 toggle — `FlickRequireTouchBegin` (default true):** when true, only a new touch (`TouchBegin`) can arm a flick. When false, any active touch can arm; the gesture baseline is reset the first time the touch becomes eligible (see §8.3.1).
+* Flick judgement tiers: **Perfect, Great, or Miss** based on timing (same windows as tap). See `FlickPerfectWindowCoversGreatWindow` toggle in §8.3.1 to suppress the Great tier.
+* **v0 toggle — `FlickRequireTouchBegin` (default false):** when true, only FlickEvents that completed within `FlickMaxGestureTimeMs` of the original `TouchBegin` are eligible. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for each note.
 
 ### **7.3.1) Flick recognition details (locked for v0)**
 
 * Flick is recognized from touch movement in **playfield-plane coordinates** (not raw screen pixels).
+* A `FlickEvent` captures the gesture displacement, position, and time at the moment thresholds were crossed.
+* JudgementEngine matches each FlickEvent to the best note candidate using the event’s time, position, and displacement — not the current frame’s touch state.
 * Lane-relative basis is evaluated at **note time** using the lane’s center angle θ (degrees).
 
 #### Flick direction basis vectors (player-facing-inward frame, locked for v0)
@@ -496,8 +501,9 @@ These are not persisted PlayerPrefs settings. They are simple static fields in `
 
 | Toggle | Default | Effect |
 |---|---|---|
-| `PerfectWindowCoversGreatWindow` | `false` | Extends effective Perfect window to `GreatWindowMs`. Great tier is suppressed; every in-window hit scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. |
-| `FlickRequireTouchBegin` | `true` | When true, only a new touch (`IsNew`/`TouchBegin`) can trigger a flick. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for that note. |
+| `PerfectWindowCoversGreatWindow` | `false` | Extends effective Perfect window to `GreatWindowMs` for **tap and hold**. Great tier is suppressed; every in-window hit scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. Does **not** affect flick. |
+| `FlickRequireTouchBegin` | `false` | When true, only FlickEvents completed within `FlickMaxGestureTimeMs` of a new touch (`TouchBegin`) are eligible. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for each note. |
+| `FlickPerfectWindowCoversGreatWindow` | `false` | **Flick only.** When true, the flick Perfect window expands to `GreatWindowMs`; Great tier is suppressed for flick — every in-window flick scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. When false (default), flick timing evaluates normally (Perfect / Great / Miss). |
 
 ### **8.4 Gameplay**
 

@@ -10,12 +10,13 @@
 //
 // Note type rules:
 //   Tap   — TouchBegin inside lane within GreatWindowMs (spec §7.2)
-//   Flick — arming + gesture threshold check (spec §7.3 / §7.3.1)
+//   Flick — event-based: FlickGestureTracker emits FlickEvents; engine matches each to a note
+//           (spec §7.3). Supports rapid consecutive flicks without lifting.
 //   Catch — any touch inside lane within [timeMs-Great, timeMs+Great] (spec §7.4.1)
 //   Hold  — TouchBegin inside lane within GreatWindowMs of startTimeMs (spec §7.5)
 //
 // Hold ticks and Catch: Perfect-or-Miss only (spec §4.4).
-// Flick: Perfect-or-Miss only (spec §7.3).
+// Flick: Perfect/Great/Miss by timing; FlickPerfectWindowCoversGreatWindow suppresses Great (spec §7.3).
 //
 // This class is allocation-light: candidate lists are reused across calls.
 
@@ -103,6 +104,10 @@ namespace RhythmicFlow.Player
 
         // Reusable candidate buffer (avoids per-frame allocation).
         private readonly List<NoteCandidate> _candidates = new List<NoteCandidate>(16);
+
+        // Reusable candidate buffer for flick event matching (inner loop per event).
+        // Separate from _candidates so arming + event loops don't interfere.
+        private readonly List<NoteCandidate> _flickCandidates = new List<NoteCandidate>(8);
 
         // -------------------------------------------------------------------
         // Debug: flick logging (disabled by default)
@@ -295,31 +300,22 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Evaluates an active touch against all Active Flick notes.
+        /// Evaluates a touch against all Active Flick notes using the event-based model (spec §7.3).
         ///
-        /// A flick is judged when BOTH of the following are true:
-        ///   1) Arming: the touch is currently inside the lane within the timing window.
-        ///   2) Gesture: the accumulated gesture from <paramref name="gestureTracker"/>
-        ///      satisfies distance, velocity, and elapsed-time thresholds.
+        /// A FlickEvent is produced by <see cref="FlickGestureTracker"/> when a gesture exceeds
+        /// distance, velocity, and elapsed-time thresholds.  Multiple FlickEvents can occur during
+        /// one continuous touch, enabling rapid sequences (e.g. U then D without lifting).
         ///
-        /// Call every frame for all active touches while flick notes are in the window.
-        /// The touch does NOT need to be new (IsNew=false is fine — spec §7.3).
+        /// Call once per touch per frame.  Returns true for the FIRST event that matches a note;
+        /// call again in a loop until false to consume all queued events for the same touch.
         ///
-        /// Spec §7.3: Flick is Perfect-or-Miss only (Perfect+ display supported).
+        /// Flick tier selection is governed by
+        /// <see cref="PlayerSettingsStore.FlickPerfectWindowCoversGreatWindow"/> (spec §8.3.1):
+        ///   false (default): Perfect / Great / Miss based on timing windows.
+        ///   true:            Perfect covers full GreatWindowMs; Great suppressed.
         /// </summary>
         /// <param name="touch">Current touch state (any phase).</param>
-        /// <param name="gestureTracker">
-        ///   Shared FlickGestureTracker fed by the input layer each frame.
-        /// </param>
-        /// <param name="flickMinDistanceNorm">
-        ///   Min gesture distance in normalized playfield units (spec §8.3).
-        /// </param>
-        /// <param name="flickMinVelocityNormPerSec">
-        ///   Min peak velocity in normalized units/second (spec §8.3).
-        /// </param>
-        /// <param name="flickMaxGestureTimeMs">
-        ///   Max elapsed time for the gesture in ms (spec §8.3).
-        /// </param>
+        /// <param name="gestureTracker">Shared FlickGestureTracker fed by the input layer.</param>
         public bool TryJudgeFlick(
             TouchSnapshot              touch,
             IReadOnlyList<RuntimeNote> activeNotes,
@@ -327,32 +323,21 @@ namespace RhythmicFlow.Player
             IDictionary<string, LaneGeometry>  laneGeometries,
             IDictionary<string, ArenaGeometry> arenaGeometries,
             FlickGestureTracker        gestureTracker,
-            float                      flickMinDistanceNorm,
-            float                      flickMinVelocityNormPerSec,
-            int                        flickMaxGestureTimeMs,
             out JudgementRecord        record)
         {
             record = default;
 
-            // FlickRequireTouchBegin toggle: restrict flick to newly-begun touches only.
-            if (PlayerSettingsStore.FlickRequireTouchBegin && !touch.IsNew) { return false; }
-
-            // No gesture state for this touch → nothing to evaluate.
-            if (!gestureTracker.TryGetGesture(touch.TouchId, out FlickGestureSnapshot gesture))
-            {
-                return false;
-            }
-
             // Free-touch arming (FlickRequireTouchBegin = false):
-            // Scan active flick notes. For any (note, touch) pair that first becomes
-            // eligible (in-window + in-lane), reset the gesture baseline so ElapsedMs
-            // starts from the moment of eligibility, not from the original touch-down.
+            // When a touch first becomes eligible for a flick note (in-window + in-lane),
+            // reset the gesture baseline so distance/elapsed are measured from that moment.
+            // This ensures a long-held resting touch can still trigger a flick once it enters
+            // the note's timing window.
             if (!PlayerSettingsStore.FlickRequireTouchBegin)
             {
-                bool anyReset = false;
                 foreach (RuntimeNote armNote in activeNotes)
                 {
                     if (armNote.Type != NoteType.Flick || !armNote.Judging) { continue; }
+
                     double armTe = effectiveChartTimeMs - armNote.TimeMs;
                     if (!_windows.IsHittable(armTe))
                     {
@@ -360,6 +345,7 @@ namespace RhythmicFlow.Player
                         _flickArmedSet.Remove($"ARM:{armNote.NoteId}:{touch.TouchId}");
                         continue;
                     }
+
                     if (!IsInsideLane(touch.HitLocalXY, armNote.LaneId,
                         laneGeometries, arenaGeometries, out _)) { continue; }
 
@@ -370,146 +356,159 @@ namespace RhythmicFlow.Player
                         Vector2 posNorm = _playfieldTransform.LocalToNormalized(touch.HitLocalXY);
                         gestureTracker.ResetGesture(touch.TouchId, effectiveChartTimeMs, posNorm);
                         _flickArmedSet.Add(ak);
-                        anyReset = true;
                     }
-                }
-                // Re-fetch snapshot if baseline was reset this frame.
-                if (anyReset && !gestureTracker.TryGetGesture(touch.TouchId, out gesture))
-                {
-                    return false;
                 }
             }
 
-            // Gesture threshold gate (spec §7.3.1).
-            // All three must be satisfied before we look at any note candidate.
-            bool gestureOk = gesture.ElapsedMs          <= flickMaxGestureTimeMs
-                          && gesture.DistanceNorm        >= flickMinDistanceNorm
-                          && gesture.VelocityNormPerSec  >= flickMinVelocityNormPerSec;
-
-            if (!gestureOk)
+            // Process FlickEvents one at a time.  Each call to TryJudgeFlick consumes at most
+            // one event (the first that matches a note), so the caller must loop.
+            while (gestureTracker.TryDequeueEvent(touch.TouchId, out FlickEvent evt))
             {
-                if (DebugLogFlick && _flickDebugLogged.Add($"G:{touch.TouchId}"))
+                // FlickRequireTouchBegin gate:
+                // Only allow events where the gesture was completed within FlickMaxGestureTimeMs
+                // of the original touch-begin.  Events from gestures on an ongoing (non-new)
+                // touch are discarded.
+                if (PlayerSettingsStore.FlickRequireTouchBegin)
                 {
-                    string failReason =
-                        gesture.ElapsedMs > flickMaxGestureTimeMs
-                            ? $"too late (elapsed={gesture.ElapsedMs:F0}ms > max={flickMaxGestureTimeMs}ms)"
-                        : gesture.DistanceNorm < flickMinDistanceNorm
-                            ? $"too short (dist={gesture.DistanceNorm:F4} < min={flickMinDistanceNorm:F4})"
-                            : $"velocity too low (vel={gesture.VelocityNormPerSec:F3}/s < min={flickMinVelocityNormPerSec:F3}/s)";
-
-                    Debug.Log(
-                        $"[FlickDebug] Gesture FAIL  touchId={touch.TouchId}  {failReason}\n" +
-                        $"  elapsed={gesture.ElapsedMs:F0}ms  dist={gesture.DistanceNorm:F4}norm" +
-                        $"  vel={gesture.VelocityNormPerSec:F3}norm/s  dir={gesture.Direction}" +
-                        $"  disp=({gesture.DisplacementNorm.x:F4},{gesture.DisplacementNorm.y:F4})\n" +
-                        $"  thresholds: maxElapsed={flickMaxGestureTimeMs}ms" +
-                        $"  minDist={flickMinDistanceNorm:F4}norm" +
-                        $"  minVel={flickMinVelocityNormPerSec:F3}norm/s");
-                }
-
-                return false;
-            }
-
-            _candidates.Clear();
-
-            foreach (RuntimeNote note in activeNotes)
-            {
-                if (note.Type != NoteType.Flick) { continue; }
-                if (!note.Judging)               { continue; }
-
-                double timingError = effectiveChartTimeMs - note.TimeMs;
-
-                if (!_windows.IsHittable(timingError))
-                {
-                    if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
+                    double timeSinceBegin = evt.EventTimeMs - evt.TouchBeginTimeMs;
+                    if (timeSinceBegin > PlayerSettingsStore.FlickMaxGestureTimeMs)
                     {
-                        Debug.Log(
-                            $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
-                            $"  touchId={touch.TouchId}  reason=timing_window\n" +
-                            $"  timingErr={timingError:F1}ms  window=±{_windows.GreatWindowMs:F0}ms\n" +
-                            $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
-                            $"  elapsed={gesture.ElapsedMs:F0}ms");
-                    }
-                    // Note left window — remove its arm entry (free-touch mode).
-                    if (!PlayerSettingsStore.FlickRequireTouchBegin)
-                    {
-                        _flickArmedSet.Remove($"ARM:{note.NoteId}:{touch.TouchId}");
-                    }
-                    continue;
-                }
-
-                // Arming: touch must be inside the lane at the moment of gesture recognition
-                // (spec §7.3 — "touch is inside lane within the flick's timing window").
-                if (!IsInsideLane(touch.HitLocalXY, note.LaneId, laneGeometries, arenaGeometries,
-                    out float thetaDeg))
-                {
-                    if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
-                    {
-                        Debug.Log(
-                            $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
-                            $"  touchId={touch.TouchId}  reason=outside_lane\n" +
-                            $"  hitLocal=({touch.HitLocalXY.x:F3},{touch.HitLocalXY.y:F3})\n" +
-                            $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
-                            $"  elapsed={gesture.ElapsedMs:F0}ms");
-                    }
-                    continue;
-                }
-
-                // Direction check (spec §7.3.1): skip if no direction specified on the note.
-                if (!string.IsNullOrEmpty(note.FlickDirection))
-                {
-                    if (!laneGeometries.TryGetValue(note.LaneId, out LaneGeometry laneGeo))
-                    {
-                        continue;
-                    }
-
-                    if (!IsFlickDirectionMatch(gesture.DisplacementNorm, note.FlickDirection,
-                        laneGeo.CenterDeg))
-                    {
-                        if (DebugLogFlick && _flickDebugLogged.Add($"N:{note.NoteId}:{touch.TouchId}"))
+                        if (DebugLogFlick && _flickDebugLogged.Add(
+                            $"EGATE:{touch.TouchId}:{evt.EventTimeMs:F0}"))
                         {
                             Debug.Log(
-                                $"[FlickDebug] Note SKIP  noteId={note.NoteId} laneId={note.LaneId}" +
-                                $"  touchId={touch.TouchId}  reason=direction_mismatch\n" +
-                                $"  required={note.FlickDirection}  detected={gesture.Direction}" +
-                                $"  disp=({gesture.DisplacementNorm.x:F4},{gesture.DisplacementNorm.y:F4})" +
-                                $"  laneCenterDeg={laneGeo.CenterDeg:F1}\n" +
-                                $"  dist={gesture.DistanceNorm:F4}  vel={gesture.VelocityNormPerSec:F3}/s" +
-                                $"  elapsed={gesture.ElapsedMs:F0}ms");
+                                $"[FlickDebug] Event GATE  touchId={touch.TouchId}" +
+                                $"  t={evt.EventTimeMs:F0}ms  reason=require_begin_too_late" +
+                                $"  timeSinceBegin={timeSinceBegin:F0}ms" +
+                                $"  max={PlayerSettingsStore.FlickMaxGestureTimeMs}ms");
+                        }
+                        continue; // Discard this event; check the next.
+                    }
+                }
+
+                // Find all matching flick note candidates for this event.
+                // Use event position (converted to local XY) for lane hit testing, and
+                // event displacement for direction matching.
+                _flickCandidates.Clear();
+                Vector2 evtHitLocal = _playfieldTransform.NormalizedToLocal(evt.PosNorm);
+
+                foreach (RuntimeNote note in activeNotes)
+                {
+                    if (note.Type != NoteType.Flick) { continue; }
+                    if (!note.Judging)               { continue; }
+
+                    // Timing check: event time must be within the note's great window.
+                    double timingError = evt.EventTimeMs - note.TimeMs;
+                    if (!_windows.IsHittable(timingError))
+                    {
+                        if (DebugLogFlick && _flickDebugLogged.Add(
+                            $"ESKIP:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
+                        {
+                            Debug.Log(
+                                $"[FlickDebug] Note SKIP  noteId={note.NoteId}" +
+                                $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
+                                $"  reason=timing_window  timingErr={timingError:F1}ms" +
+                                $"  window=±{_windows.GreatWindowMs:F0}ms" +
+                                $"  eventTime={evt.EventTimeMs:F0}ms");
+                        }
+                        if (!PlayerSettingsStore.FlickRequireTouchBegin)
+                        {
+                            _flickArmedSet.Remove($"ARM:{note.NoteId}:{touch.TouchId}");
                         }
                         continue;
                     }
+
+                    // Lane check: touch must be inside the lane at event time.
+                    if (!IsInsideLane(evtHitLocal, note.LaneId, laneGeometries, arenaGeometries,
+                        out float thetaDeg))
+                    {
+                        if (DebugLogFlick && _flickDebugLogged.Add(
+                            $"ESKIP:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
+                        {
+                            Debug.Log(
+                                $"[FlickDebug] Note SKIP  noteId={note.NoteId}" +
+                                $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
+                                $"  reason=outside_lane" +
+                                $"  evtHitLocal=({evtHitLocal.x:F3},{evtHitLocal.y:F3})" +
+                                $"  eventTime={evt.EventTimeMs:F0}ms");
+                        }
+                        continue;
+                    }
+
+                    // Direction check (spec §7.3.1).
+                    if (!string.IsNullOrEmpty(note.FlickDirection))
+                    {
+                        if (!laneGeometries.TryGetValue(note.LaneId, out LaneGeometry laneGeo))
+                        {
+                            continue;
+                        }
+
+                        if (!IsFlickDirectionMatch(evt.DispNorm, note.FlickDirection,
+                            laneGeo.CenterDeg))
+                        {
+                            if (DebugLogFlick && _flickDebugLogged.Add(
+                                $"ESKIP:{note.NoteId}:{touch.TouchId}:{evt.EventTimeMs:F0}"))
+                            {
+                                string det = DebugDisplacementDir(evt.DispNorm);
+                                Debug.Log(
+                                    $"[FlickDebug] Note SKIP  noteId={note.NoteId}" +
+                                    $"  laneId={note.LaneId}  touchId={touch.TouchId}" +
+                                    $"  reason=direction_mismatch" +
+                                    $"  required={note.FlickDirection}  detected={det}" +
+                                    $"  disp=({evt.DispNorm.x:F4},{evt.DispNorm.y:F4})" +
+                                    $"  laneCenterDeg={laneGeo.CenterDeg:F1}" +
+                                    $"  eventTime={evt.EventTimeMs:F0}ms");
+                            }
+                            continue;
+                        }
+                    }
+
+                    _flickCandidates.Add(new NoteCandidate
+                    {
+                        Note               = note,
+                        AbsTimingErrorMs   = Math.Abs(timingError),
+                        AngularDistanceDeg = GetAngularDistance(thetaDeg, note.LaneId, laneGeometries),
+                        LanePriority       = GetLanePriority(note.LaneId)
+                    });
                 }
 
-                _candidates.Add(new NoteCandidate
+                if (_flickCandidates.Count == 0)
                 {
-                    Note               = note,
-                    AbsTimingErrorMs   = Math.Abs(timingError),
-                    AngularDistanceDeg = GetAngularDistance(thetaDeg, note.LaneId, laneGeometries),
-                    LanePriority       = GetLanePriority(note.LaneId)
-                });
+                    if (DebugLogFlick && _flickDebugLogged.Add(
+                        $"EMISS:{touch.TouchId}:{evt.EventTimeMs:F0}"))
+                    {
+                        Debug.Log(
+                            $"[FlickDebug] Event no-match  touchId={touch.TouchId}" +
+                            $"  t={evt.EventTimeMs:F0}ms" +
+                            $"  dist={evt.DistanceNorm:F4}  vel={evt.VelocityNormPerSec:F3}/s" +
+                            $"  disp=({evt.DispNorm.x:F4},{evt.DispNorm.y:F4})");
+                    }
+                    continue; // No matching note; try next queued event.
+                }
+
+                RuntimeNote best      = Arbitrate(_flickCandidates);
+                double      bestError = evt.EventTimeMs - best.TimeMs;
+
+                // Tier selection (spec §7.3 + FlickPerfectWindowCoversGreatWindow toggle):
+                //   false (default): Perfect / Great / Miss by timing (same evaluation as tap).
+                //   true: Perfect covers full GreatWindowMs; Great suppressed.
+                var (tier, isPlus) = _windows.Evaluate(
+                    bestError, PlayerSettingsStore.FlickPerfectWindowCoversGreatWindow);
+
+                best.State = NoteState.Hit;
+                record     = MakeRecord(best, tier, isPlus, bestError);
+
+                // Clean up arm entry for the judged note.
+                if (!PlayerSettingsStore.FlickRequireTouchBegin)
+                {
+                    _flickArmedSet.Remove($"ARM:{best.NoteId}:{touch.TouchId}");
+                }
+
+                LogFlickJudgement(record, evt);
+                return true; // One note judged per call; caller loops to process more events.
             }
 
-            if (_candidates.Count == 0) { return false; }
-
-            RuntimeNote best      = Arbitrate(_candidates);
-            double      bestError = effectiveChartTimeMs - best.TimeMs;
-
-            // Spec §7.3: Flick is Perfect-or-Miss only.
-            // Perfect+ is display-only (spec §4.3); no score change.
-            bool isPlus = Math.Abs(bestError) <= _windows.PerfectPlusWindowMs;
-
-            best.State = NoteState.Hit;
-            record     = MakeRecord(best, JudgementTier.Perfect, isPlus, bestError);
-
-            // Clean up arm entry for the judged note.
-            if (!PlayerSettingsStore.FlickRequireTouchBegin)
-            {
-                _flickArmedSet.Remove($"ARM:{best.NoteId}:{touch.TouchId}");
-            }
-
-            LogFlickJudgement(record, gesture);
-            return true;
+            return false; // No events or no matching candidates.
         }
 
         // -------------------------------------------------------------------
@@ -759,12 +758,12 @@ namespace RhythmicFlow.Player
                 $"timingErr={r.TimingErrorMs:F1}ms");
         }
 
-        // Flick-specific log with gesture diagnostics (spec task: "log judgements for headless verification").
-        private static void LogFlickJudgement(JudgementRecord r, FlickGestureSnapshot gesture)
+        // Flick-specific log with event diagnostics (spec task: "log judgements for headless verification").
+        private static void LogFlickJudgement(JudgementRecord r, FlickEvent evt)
         {
-            string plusTag           = r.IsPerfectPlus ? "+" : "";
-            string dirDetected       = gesture.Direction.ToString();
-            string dirRequired       = string.IsNullOrEmpty(r.Note.FlickDirection)
+            string plusTag     = r.IsPerfectPlus ? "+" : "";
+            string dirDetected = DebugDisplacementDir(evt.DispNorm);
+            string dirRequired = string.IsNullOrEmpty(r.Note.FlickDirection)
                 ? "any"
                 : r.Note.FlickDirection;
 
@@ -772,10 +771,22 @@ namespace RhythmicFlow.Player
                 $"[Judgement] Flick id={r.Note.NoteId} " +
                 $"tier={r.Tier}{plusTag} " +
                 $"timingErr={r.TimingErrorMs:F1}ms " +
-                $"dist={gesture.DistanceNorm:F4}norm " +
-                $"vel={gesture.VelocityNormPerSec:F2}norm/s " +
-                $"elapsed={gesture.ElapsedMs:F0}ms " +
+                $"dist={evt.DistanceNorm:F4}norm " +
+                $"vel={evt.VelocityNormPerSec:F2}norm/s " +
+                $"eventTime={evt.EventTimeMs:F0}ms " +
                 $"dir={dirDetected} required={dirRequired}");
+        }
+
+        // Returns a human-readable axis-dominant direction string from a displacement vector.
+        // Used only in debug logs; does not affect gameplay logic.
+        private static string DebugDisplacementDir(Vector2 disp)
+        {
+            if (disp.magnitude < 1e-4f) { return "None"; }
+            if (Mathf.Abs(disp.x) >= Mathf.Abs(disp.y))
+            {
+                return disp.x >= 0f ? "Right" : "Left";
+            }
+            return disp.y >= 0f ? "Up" : "Down";
         }
     }
 }
