@@ -143,6 +143,37 @@ namespace RhythmicFlow.Player
 
         private string _lastJudgementText = "—";
 
+        // -------------------------------------------------------------------
+        // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
+        // All members prefixed "Debug" to signal scaffolding status.
+        // Remove when PlayerDebugRenderer is removed.
+        // -------------------------------------------------------------------
+
+        /// <summary>DEBUG: Evaluated arena geometries (null until Start() completes).</summary>
+        public IReadOnlyDictionary<string, ArenaGeometry> DebugArenaGeometries  => _arenaGeos;
+
+        /// <summary>DEBUG: Evaluated lane geometries (null until Start() completes).</summary>
+        public IReadOnlyDictionary<string, LaneGeometry>  DebugLaneGeometries   => _laneGeos;
+
+        /// <summary>DEBUG: Maps laneId → arenaId (null until Start() completes).</summary>
+        public IReadOnlyDictionary<string, string>        DebugLaneToArena      => _laneToArena;
+
+        /// <summary>DEBUG: PlayfieldTransform instance (null until Start() completes).</summary>
+        public PlayfieldTransform                         DebugPlayfieldTransform => _playfieldTransform;
+
+        /// <summary>DEBUG: Notes within the judgement window this frame (updated each Update).</summary>
+        public IReadOnlyList<RuntimeNote>                 DebugActiveNotes       => _activeNotes;
+
+        // Last successful touch hit in PlayfieldRoot local XY this frame.
+        private Vector2 _debugLastTouchLocalXY;
+        private bool    _debugHasTouchHit;
+
+        /// <summary>DEBUG: True if a touch hit the playfield plane this frame.</summary>
+        public bool    DebugHasTouchHit      => _debugHasTouchHit;
+
+        /// <summary>DEBUG: Last touch hit point in PlayfieldRoot local XY (valid when DebugHasTouchHit).</summary>
+        public Vector2 DebugLastTouchLocalXY => _debugLastTouchLocalXY;
+
         // ===================================================================
         // Unity lifecycle
         // ===================================================================
@@ -344,6 +375,7 @@ namespace RhythmicFlow.Player
         {
             _touches.Clear();
             _endedTouches.Clear();
+            _debugHasTouchHit = false; // DEBUG: reset each frame
 
 #if UNITY_EDITOR || UNITY_STANDALONE
             GatherMouseTouch(chartTimeMs);
@@ -365,6 +397,8 @@ namespace RhythmicFlow.Player
                     _flickTracker.BeginTouch(MouseId, chartTimeMs, posNorm);
                     _touchPosNorm[MouseId] = posNorm;
                     _touches.Add(MakeSnapshot(MouseId, hitLocal, isNew: true));
+                    _debugLastTouchLocalXY = hitLocal; // DEBUG
+                    _debugHasTouchHit      = true;    // DEBUG
                 }
                 _mouseWasDown = true;
             }
@@ -375,6 +409,8 @@ namespace RhythmicFlow.Player
                     _flickTracker.UpdateTouch(MouseId, chartTimeMs, posNorm);
                     _touchPosNorm[MouseId] = posNorm;
                     _touches.Add(MakeSnapshot(MouseId, hitLocal, isNew: false));
+                    _debugLastTouchLocalXY = hitLocal; // DEBUG
+                    _debugHasTouchHit      = true;    // DEBUG
                 }
             }
             else if (Input.GetMouseButtonUp(0) && _mouseWasDown)
@@ -403,6 +439,8 @@ namespace RhythmicFlow.Player
                             _flickTracker.BeginTouch(id, chartTimeMs, posNormB);
                             _touchPosNorm[id] = posNormB;
                             _touches.Add(MakeSnapshot(id, hitLocalB, isNew: true));
+                            _debugLastTouchLocalXY = hitLocalB; // DEBUG
+                            _debugHasTouchHit      = true;     // DEBUG
                         }
                         break;
 
@@ -413,6 +451,8 @@ namespace RhythmicFlow.Player
                             _flickTracker.UpdateTouch(id, chartTimeMs, posNormM);
                             _touchPosNorm[id] = posNormM;
                             _touches.Add(MakeSnapshot(id, hitLocalM, isNew: false));
+                            _debugLastTouchLocalXY = hitLocalM; // DEBUG
+                            _debugHasTouchHit      = true;     // DEBUG
                         }
                         break;
 
