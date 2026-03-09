@@ -164,6 +164,16 @@ namespace RhythmicFlow.Player
         /// <summary>DEBUG: Notes within the judgement window this frame (updated each Update).</summary>
         public IReadOnlyList<RuntimeNote>                 DebugActiveNotes       => _activeNotes;
 
+        /// <summary>DEBUG: All runtime notes sorted by PrimaryTimeMs. Active ones have entered
+        /// the ActivationLeadMs window. Use for approach visualization.</summary>
+        public IReadOnlyList<RuntimeNote>                 DebugAllNotes          => _scheduler?.AllNotes;
+
+        /// <summary>DEBUG: Current effective chart time in ms (0 before playback starts).</summary>
+        public double                                     DebugEffectiveChartTimeMs => _conductor?.EffectiveChartTimeMs ?? 0.0;
+
+        /// <summary>DEBUG: Great-window size in ms from the active gameplay mode.</summary>
+        public double                                     DebugGreatWindowMs     => _judgementEngine?.Windows.GreatWindowMs ?? 90.0;
+
         // Last successful touch hit in PlayfieldRoot local XY this frame.
         private Vector2 _debugLastTouchLocalXY;
         private bool    _debugHasTouchHit;

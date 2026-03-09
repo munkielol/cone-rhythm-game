@@ -168,6 +168,9 @@ MonoBehaviour:
   playfieldLocalMin: {x: -0.5, y: -0.5}
   playfieldLocalMax: {x: 0.5, y: 0.5}
   musicAudioSource: {fileID: 58450157}
+  packsSubfolderName: Packs
+  useEditorProjectRootPacks: 1
+  editorPacksFolderName: DevPacks
   gameplayMode: 0
 --- !u!1 &58450156
 GameObject:
@@ -472,8 +475,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 514609548}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: -0.0572711, y: 0.015571086, z: -0.00089324673, w: -0.99823684}
+  m_LocalPosition: {x: 0.0155404955, y: -0.1524679, z: -0.9505191}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -510,6 +513,59 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &714554977
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 714554979}
+  - component: {fileID: 714554978}
+  m_Layer: 0
+  m_Name: DebugRenderer
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &714554978
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 714554977}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: da45ca1a049dc074e97b4c5c866c21b6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Player::RhythmicFlow.Player.PlayerDebugRenderer
+  playerAppController: {fileID: 4343613}
+  arcSegments: 48
+  lineWidth: 0.01
+  markerHalfSize: 0.04
+  maxNoteMarkers: 32
+  arenaColor: {r: 0, g: 1, b: 1, a: 1}
+  laneColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
+  noteColor: {r: 1, g: 1, b: 1, a: 1}
+  touchColor: {r: 1, g: 0, b: 0, a: 1}
+--- !u!4 &714554979
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 714554977}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -519,3 +575,4 @@ SceneRoots:
   - {fileID: 58450158}
   - {fileID: 692284758}
   - {fileID: 514609552}
+  - {fileID: 714554979}

@@ -50,6 +50,17 @@ namespace RhythmicFlow.Player
         [Tooltip("Maximum simultaneous note markers drawn (pool size).")]
         [SerializeField] private int maxNoteMarkers = 32;
 
+        [Header("Note Approach (DEBUG)")]
+        [Tooltip("How many ms before a note's hit time it becomes visible and starts approaching.")]
+        [SerializeField] private int noteLeadTimeMs = 2000;
+
+        [Tooltip("Spawn radius as a fraction of band width from the inner edge (0 = inner, 1 = outer).")]
+        [Range(0f, 1f)]
+        [SerializeField] private float spawnRadiusFactor = 0.25f;
+
+        [Tooltip("If true, show notes within noteLeadTimeMs even when outside the narrow judgement window.")]
+        [SerializeField] private bool showNotesOutsideWindow = true;
+
         [Header("Colors")]
         [SerializeField] private Color arenaColor = Color.cyan;
         [SerializeField] private Color laneColor  = Color.yellow;
@@ -226,40 +237,93 @@ namespace RhythmicFlow.Player
         // Per-frame: note markers
         // -------------------------------------------------------------------
 
-        // Positions note diamond markers at outerLocal along each active note's lane center.
-        // Spec §5.8: hit point is always at s=1 (outer edge), so this matches the judgement radius.
+        // Draws note diamonds approaching the judgement ring (outerLocal, spec §5.8).
+        //
+        // Approach formula:
+        //   timeToHitMs = note.PrimaryTimeMs - effectiveChartTimeMs
+        //   alpha       = 1 - clamp01(timeToHitMs / noteLeadTimeMs)
+        //               → 0 at spawn (timeToHitMs == noteLeadTimeMs)
+        //               → 1 at hit   (timeToHitMs == 0)
+        //   spawnR      = innerLocal + spawnRadiusFactor * (outerLocal - innerLocal)
+        //   r           = lerp(spawnR, outerLocal, alpha)
+        //
+        // With showNotesOutsideWindow=true we read DebugAllNotes (all Active notes up to
+        // ActivationLeadMs away) and filter to noteLeadTimeMs ourselves, giving a smooth
+        // approach well before the note enters the narrow judgement window.
         private void UpdateNoteMarkers()
         {
             if (_notePool == null) { return; }
 
-            IReadOnlyList<RuntimeNote>                 activeNotes = playerAppController.DebugActiveNotes;
-            IReadOnlyDictionary<string, ArenaGeometry> arenas      = playerAppController.DebugArenaGeometries;
-            IReadOnlyDictionary<string, LaneGeometry>  lanes       = playerAppController.DebugLaneGeometries;
-            IReadOnlyDictionary<string, string>        lToA        = playerAppController.DebugLaneToArena;
-            PlayfieldTransform                         pfT         = playerAppController.DebugPlayfieldTransform;
-            Transform                                  pfRoot      = playerAppController.playfieldRoot;
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
+            IReadOnlyDictionary<string, string>        lToA   = playerAppController.DebugLaneToArena;
+            PlayfieldTransform                         pfT    = playerAppController.DebugPlayfieldTransform;
+            Transform                                  pfRoot = playerAppController.playfieldRoot;
+
+            if (arenas == null || lanes == null || lToA == null || pfT == null)
+            {
+                DisableAllNoteMarkers();
+                return;
+            }
+
+            // Broader source shows approaching notes; narrow source shows only hittable ones.
+            IReadOnlyList<RuntimeNote> noteSource = showNotesOutsideWindow
+                ? playerAppController.DebugAllNotes
+                : playerAppController.DebugActiveNotes;
+
+            double chartTimeMs   = playerAppController.DebugEffectiveChartTimeMs;
+            double greatWindowMs = playerAppController.DebugGreatWindowMs;
 
             int poolIdx = 0;
 
-            if (activeNotes != null && arenas != null && lanes != null && lToA != null && pfT != null)
+            if (noteSource != null)
             {
-                for (int i = 0; i < activeNotes.Count && poolIdx < _notePool.Length; i++)
+                for (int i = 0; i < noteSource.Count && poolIdx < _notePool.Length; i++)
                 {
-                    RuntimeNote note = activeNotes[i];
-                    if (note.IsResolved) { continue; }
+                    RuntimeNote note = noteSource[i];
 
-                    if (!lanes.TryGetValue(note.LaneId,  out LaneGeometry lane))    { continue; }
-                    if (!lToA.TryGetValue(note.LaneId,   out string arenaId))       { continue; }
-                    if (!arenas.TryGetValue(arenaId,     out ArenaGeometry arena))  { continue; }
+                    // Only draw notes that are in the Active lifecycle state.
+                    if (note.State != NoteState.Active) { continue; }
 
-                    // Judgement radius = outerLocal (spec §5.8).
-                    float outerLocal  = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
-                    Vector2 center    = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+                    // Time from now until the note should be hit (positive = future).
+                    double timeToHitMs = note.PrimaryTimeMs - chartTimeMs;
 
-                    // Lane center in local XY (spec §5.5 angle convention: 0°=+X, CCW).
-                    float   thetaRad  = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
-                    Vector2 localPos  = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * outerLocal;
-                    Vector3 worldPos  = pfRoot.TransformPoint(localPos.x, localPos.y, 0f);
+                    // Too far ahead — not yet in the approach window.
+                    if (timeToHitMs > noteLeadTimeMs) { continue; }
+
+                    // Past the miss deadline — nothing left to show.
+                    if (timeToHitMs < -greatWindowMs) { continue; }
+
+                    if (!lanes.TryGetValue(note.LaneId, out LaneGeometry lane))   { continue; }
+                    if (!lToA.TryGetValue(note.LaneId,  out string arenaId))      { continue; }
+                    if (!arenas.TryGetValue(arenaId,    out ArenaGeometry arena)) { continue; }
+
+                    float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                    float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
+                    float innerLocal = outerLocal - bandLocal;
+
+                    // Spawn radius: a fraction of the band width above the inner edge.
+                    float spawnR = innerLocal + spawnRadiusFactor * (outerLocal - innerLocal);
+
+                    // alpha 0→1 as note travels from spawn to judgement radius.
+                    // Guard against noteLeadTimeMs == 0 to avoid division by zero.
+                    float alpha = (noteLeadTimeMs > 0)
+                        ? 1f - Mathf.Clamp01((float)timeToHitMs / noteLeadTimeMs)
+                        : 1f;
+
+                    // Current radius along the lane center ray.
+                    float r = Mathf.Lerp(spawnR, outerLocal, alpha);
+
+                    Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+                    float thetaRad   = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
+                    Vector2 localPt  = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * r;
+                    Vector3 worldPos = pfRoot.TransformPoint(localPt.x, localPt.y, 0f);
+
+                    // Fade from dim (spawn) to full-bright (hit) so far notes don't clutter.
+                    Color c = noteColor;
+                    c.a = Mathf.Lerp(0.3f, 1.0f, alpha);
+                    _notePool[poolIdx].startColor = c;
+                    _notePool[poolIdx].endColor   = c;
 
                     _notePool[poolIdx].gameObject.SetActive(true);
                     SetDiamondPositions(_notePool[poolIdx], worldPos, pfRoot);
@@ -268,7 +332,14 @@ namespace RhythmicFlow.Player
             }
 
             // Disable unused pool entries.
-            for (int i = poolIdx; i < _notePool.Length; i++)
+            DisableNoteMarkersFrom(poolIdx);
+        }
+
+        private void DisableAllNoteMarkers()  => DisableNoteMarkersFrom(0);
+
+        private void DisableNoteMarkersFrom(int startIdx)
+        {
+            for (int i = startIdx; i < _notePool.Length; i++)
             {
                 _notePool[i].gameObject.SetActive(false);
             }
