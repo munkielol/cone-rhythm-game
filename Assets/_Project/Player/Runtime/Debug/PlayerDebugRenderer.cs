@@ -38,6 +38,10 @@ namespace RhythmicFlow.Player
         [Tooltip("The PlayerAppController in the scene.")]
         [SerializeField] private PlayerAppController playerAppController;
 
+        [Tooltip("Optional: if assigned, arena/lane outlines are lifted to sit on the frustum " +
+                 "surface. If null, all lines are drawn at z=0 (flat interaction plane).")]
+        [SerializeField] private PlayerDebugArenaSurface arenaSurface;
+
         [Tooltip("Number of line segments used to approximate each arc (higher = smoother).")]
         [SerializeField] private int arcSegments = 48;
 
@@ -198,10 +202,10 @@ namespace RhythmicFlow.Player
             var lrs = new LineRenderer[4];
 
             lrs[0] = CreateLineRenderer($"Arena_{arenaId}_OuterArc", arenaColor);
-            SetArcPositions(lrs[0], center, outerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot);
+            SetArcPositions(lrs[0], center, outerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 1f);
 
             lrs[1] = CreateLineRenderer($"Arena_{arenaId}_InnerArc", arenaColor);
-            SetArcPositions(lrs[1], center, innerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot);
+            SetArcPositions(lrs[1], center, innerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 0f);
 
             lrs[2] = CreateLineRenderer($"Arena_{arenaId}_StartRay", arenaColor);
             SetRadialPositions(lrs[2], center, innerLocal, outerLocal, geo.ArcStartDeg, pfRoot);
@@ -317,7 +321,13 @@ namespace RhythmicFlow.Player
                     Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
                     float thetaRad   = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
                     Vector2 localPt  = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * r;
-                    Vector3 worldPos = pfRoot.TransformPoint(localPt.x, localPt.y, 0f);
+
+                    // Lift the note marker onto the frustum surface. VISUAL ONLY — s01 derived
+                    // from current approach radius r, not used for hit-testing anywhere.
+                    float s01Note    = (outerLocal > innerLocal)
+                        ? Mathf.Clamp01((r - innerLocal) / (outerLocal - innerLocal))
+                        : 1f;
+                    Vector3 worldPos = pfRoot.TransformPoint(localPt.x, localPt.y, VisualOnlyLocalZ(s01Note));
 
                     // Fade from dim (spawn) to full-bright (hit) so far notes don't clutter.
                     Color c = noteColor;
@@ -372,17 +382,35 @@ namespace RhythmicFlow.Player
         // LineRenderer position helpers
         // -------------------------------------------------------------------
 
+        // VISUAL ONLY — never use this Z value for hit-testing or judgement.
+        // Returns the PlayfieldRoot local Z for a point at normalized band position s01:
+        //   s01 = 0  →  inner edge  (FrustumHeightInner)
+        //   s01 = 1  →  outer edge  (FrustumHeightOuter)
+        // Falls back to 0 when no arenaSurface is assigned or frustum profile is off.
+        private float VisualOnlyLocalZ(float s01)
+        {
+            if (arenaSurface != null && arenaSurface.UseFrustumProfile)
+            {
+                return Mathf.Lerp(arenaSurface.FrustumHeightInner,
+                                  arenaSurface.FrustumHeightOuter, s01);
+            }
+            return 0f;
+        }
+
         // Sets N world-space positions along a circular arc.
         // startDeg/sweepDeg are raw floats — cos/sin handle any value correctly.
+        // s01: normalized band position (0=inner, 1=outer) — used for frustum Z only.
         private void SetArcPositions(
             LineRenderer lr,
             Vector2      centerLocal,
             float        radius,
             float        startDeg,
             float        sweepDeg,
-            Transform    pfRoot)
+            Transform    pfRoot,
+            float        s01 = 0f)   // VISUAL ONLY: 0=inner edge, 1=outer edge
         {
-            int n = Mathf.Max(2, arcSegments);
+            int   n = Mathf.Max(2, arcSegments);
+            float z = VisualOnlyLocalZ(s01); // VISUAL ONLY — not used for hit-testing
             lr.positionCount = n;
 
             for (int i = 0; i < n; i++)
@@ -392,11 +420,12 @@ namespace RhythmicFlow.Player
                 float rad = deg * Mathf.Deg2Rad;
 
                 Vector2 pt = centerLocal + new Vector2(Mathf.Cos(rad), Mathf.Sin(rad)) * radius;
-                lr.SetPosition(i, pfRoot.TransformPoint(pt.x, pt.y, 0f));
+                lr.SetPosition(i, pfRoot.TransformPoint(pt.x, pt.y, z));
             }
         }
 
         // Sets 2 world-space positions: inner edge → outer edge along a radial ray.
+        // Each endpoint uses its own frustum Z so the ray lies on the cone surface.
         private void SetRadialPositions(
             LineRenderer lr,
             Vector2      centerLocal,
@@ -411,8 +440,8 @@ namespace RhythmicFlow.Player
             Vector2 outer = centerLocal + dir * outerLocal;
 
             lr.positionCount = 2;
-            lr.SetPosition(0, pfRoot.TransformPoint(inner.x, inner.y, 0f));
-            lr.SetPosition(1, pfRoot.TransformPoint(outer.x, outer.y, 0f));
+            lr.SetPosition(0, pfRoot.TransformPoint(inner.x, inner.y, VisualOnlyLocalZ(0f))); // VISUAL ONLY
+            lr.SetPosition(1, pfRoot.TransformPoint(outer.x, outer.y, VisualOnlyLocalZ(1f))); // VISUAL ONLY
         }
 
         // Sets 5 world-space positions forming a diamond in the PlayfieldRoot XY plane.

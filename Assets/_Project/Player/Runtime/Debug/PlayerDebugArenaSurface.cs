@@ -95,6 +95,20 @@ namespace RhythmicFlow.Player
         private bool _built;
 
         // -------------------------------------------------------------------
+        // Public read-only API for PlayerDebugRenderer
+        // Minimal getters — expose only what the renderer needs to match Z offsets.
+        // -------------------------------------------------------------------
+
+        /// <summary>DEBUG: Whether the frustum vertical profile is currently active.</summary>
+        public bool  UseFrustumProfile  => useFrustumProfile;
+
+        /// <summary>DEBUG: PlayfieldRoot local Z at the inner arc edge.</summary>
+        public float FrustumHeightInner => frustumHeightInner;
+
+        /// <summary>DEBUG: PlayfieldRoot local Z at the outer arc edge.</summary>
+        public float FrustumHeightOuter => frustumHeightOuter;
+
+        // -------------------------------------------------------------------
         // Unity lifecycle
         // -------------------------------------------------------------------
 

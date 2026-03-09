@@ -593,6 +593,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.PlayerDebugRenderer
   playerAppController: {fileID: 4343613}
+  arenaSurface: {fileID: 412451162}
   arcSegments: 48
   lineWidth: 0.01
   markerHalfSize: 0.04
