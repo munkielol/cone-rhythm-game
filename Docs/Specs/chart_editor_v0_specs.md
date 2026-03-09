@@ -386,6 +386,8 @@ Flick playtest uses the same **event-based** model as the player: each qualifyin
 | `PerfectWindowCoversGreatWindow` | `false` | Suppresses Great tier for tap/hold during playtest to verify lenient-feel charting. Does not affect flick. |
 | `FlickRequireTouchBegin` | `false` | When true, only gestures completed within `FlickMaxGestureTimeMs` of mouse-down are eligible. When false (default), allows testing flick notes with mouse-down held throughout (single-touch emulation). |
 | `FlickPerfectWindowCoversGreatWindow` | `false` | When true, suppresses the Great tier for flick during playtest — all in-window flicks score Perfect. Useful for verifying lenient flick-feel charting. |
+| `InputBandExpandInnerNorm` | `0.00` | Expands the arena band inward during playtest hit-testing. Matches the player setting (see player spec §8.3.1). Does not affect exported chart geometry. |
+| `InputBandExpandOuterNorm` | `0.03` | Expands the arena band outward during playtest hit-testing to account for outer-rim finger imprecision. Matches the player setting. Does not affect exported chart geometry. |
 
 ---
 

@@ -278,6 +278,21 @@ Given a touch position:
 6) Final membership:
 * Touch is inside a lane iff band test AND arc test AND lane slice test are all true.
 
+**Input Band Expansion (touch hit-testing only, spec §5.5.1):**
+
+The radial band used for touch arming and judgement may be expanded by configurable normalized margins to account for finger imprecision, especially near the outer rim:
+
+* `expandedInner = innerLocal − (InputBandExpandInnerNorm × minDimLocal)`
+* `expandedOuter = outerLocal + (InputBandExpandOuterNorm × minDimLocal)`
+
+The expanded band is used **only** for touch arming and judgement (steps 3–6 above when called from `JudgementEngine`).  It does **not** affect:
+* Visual geometry (arena arc outlines, note approach markers).
+* Chart-authored geometry (`outerRadius`, `bandThickness`).
+* The judgement ring position (notes still approach `outerLocal`).
+* Hold tick lane membership (`IsInsideFullLane` for hold tick processing).
+
+See §8.3.1 for the default values and the toggle fields.
+
 **Required helper definitions (locked):**
 * `normalize360(a)` returns angle in `[0, 360)`.
 * `shortestSignedAngleDeltaDeg(a, b)` returns the signed delta from `b` to `a` on the shortest path (range `[-180, +180]`).
@@ -504,6 +519,8 @@ These are not persisted PlayerPrefs settings. They are simple static fields in `
 | `PerfectWindowCoversGreatWindow` | `false` | Extends effective Perfect window to `GreatWindowMs` for **tap and hold**. Great tier is suppressed; every in-window hit scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. Does **not** affect flick. |
 | `FlickRequireTouchBegin` | `false` | When true, only FlickEvents completed within `FlickMaxGestureTimeMs` of a new touch (`TouchBegin`) are eligible. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for each note. |
 | `FlickPerfectWindowCoversGreatWindow` | `false` | **Flick only.** When true, the flick Perfect window expands to `GreatWindowMs`; Great tier is suppressed for flick — every in-window flick scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. When false (default), flick timing evaluates normally (Perfect / Great / Miss). |
+| `InputBandExpandInnerNorm` | `0.00` | **Input only.** Expands the arena band inward by `InputBandExpandInnerNorm × minDimLocal` local units for touch arming and judgement. Does not affect visuals or chart geometry. Default 0 = no inner expansion. |
+| `InputBandExpandOuterNorm` | `0.03` | **Input only.** Expands the arena band outward by `InputBandExpandOuterNorm × minDimLocal` local units for touch arming and judgement. Accounts for finger imprecision when tapping the outer rim. Default 0.03 = 3 % of `minDimLocal`. Does not affect visuals or chart geometry. |
 
 ### **8.4 Gameplay**
 
