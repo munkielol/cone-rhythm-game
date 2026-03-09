@@ -78,11 +78,12 @@ namespace RhythmicFlow.Player
         [SerializeField] private float flickArrowZBias = 0.002f;
 
         [Header("Colors")]
-        [SerializeField] private Color arenaColor     = Color.cyan;
-        [SerializeField] private Color laneColor      = Color.yellow;
-        [SerializeField] private Color noteColor      = Color.white;
-        [SerializeField] private Color touchColor     = Color.red;
-        [SerializeField] private Color flickArrowColor = Color.green;
+        [SerializeField] private Color arenaColor         = Color.cyan;
+        [SerializeField] private Color laneColor          = Color.yellow;
+        [SerializeField] private Color noteColor          = Color.white;
+        [SerializeField] private Color touchColor         = Color.red;
+        [SerializeField] private Color flickArrowColor    = Color.green;
+        [SerializeField] private Color judgementRingColor = new Color(0.85f, 0.6f, 1f); // purple-white
 
         [Header("Judgement Flashes (DEBUG)")]
         [Tooltip("Duration in seconds that each judgement flash remains visible.")]
@@ -283,11 +284,12 @@ namespace RhythmicFlow.Player
         // Arena builders
         // -------------------------------------------------------------------
 
-        // Builds 4 LineRenderers for one arena:
-        //   [0] outer arc polyline
-        //   [1] inner arc polyline
-        //   [2] radial ray at arcStartDeg     (inner → outer)
-        //   [3] radial ray at arcStartDeg + arcSweepDeg  (inner → outer)
+        // Builds 5 LineRenderers for one arena:
+        //   [0] outer arc polyline at visualOuterLocal  (chart outer + VisualOuterExpandNorm)
+        //   [1] inner arc polyline at innerLocal
+        //   [2] radial ray at arcStartDeg     (inner → visualOuterLocal)
+        //   [3] radial ray at arcStartDeg + arcSweepDeg  (inner → visualOuterLocal)
+        //   [4] judgement ring arc at judgementRadiusLocal  (outerLocal − JudgementInsetNorm)
         private void BuildArenaLineRenderers(
             string arenaId, ArenaGeometry geo, PlayfieldTransform pfT, Transform pfRoot)
         {
@@ -296,24 +298,42 @@ namespace RhythmicFlow.Player
             float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
 
+            // Visual outer rim: extends beyond chart outerLocal (default expand = 0 → same as outerLocal).
+            float visualOuterLocal = outerLocal
+                + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal; // VISUAL ONLY
+
+            // Judgement ring inset inside chart outerLocal. Notes land here visually.
+            float judgementRadiusLocal = outerLocal
+                - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;   // VISUAL ONLY
+            float s01Judgement = (outerLocal > innerLocal)
+                ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
+                : 0f;
+
             // Arena center in PlayfieldRoot local XY (spec §5.5).
             Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
 
-            var lrs = new LineRenderer[4];
+            var lrs = new LineRenderer[5];
 
+            // Outer arc drawn at the visual outer rim.
             lrs[0] = CreateLineRenderer($"Arena_{arenaId}_OuterArc", arenaColor);
-            SetArcPositions(lrs[0], center, outerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 1f);
+            SetArcPositions(lrs[0], center, visualOuterLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 1f);
 
             lrs[1] = CreateLineRenderer($"Arena_{arenaId}_InnerArc", arenaColor);
             SetArcPositions(lrs[1], center, innerLocal, geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 0f);
 
+            // Arc boundary rays — inner → visualOuterLocal so they bound the full visual arc.
             lrs[2] = CreateLineRenderer($"Arena_{arenaId}_StartRay", arenaColor);
-            SetRadialPositions(lrs[2], center, innerLocal, outerLocal, geo.ArcStartDeg, pfRoot);
+            SetRadialPositions(lrs[2], center, innerLocal, visualOuterLocal, geo.ArcStartDeg, pfRoot);
 
             // Raw un-normalized angle is fine — cos/sin handle any float correctly.
             lrs[3] = CreateLineRenderer($"Arena_{arenaId}_EndRay", arenaColor);
-            SetRadialPositions(lrs[3], center, innerLocal, outerLocal,
+            SetRadialPositions(lrs[3], center, innerLocal, visualOuterLocal,
                                geo.ArcStartDeg + geo.ArcSweepDeg, pfRoot);
+
+            // Judgement ring: distinct thin arc where notes land and judgement occurs. VISUAL ONLY.
+            lrs[4] = CreateLineRenderer($"Arena_{arenaId}_JudgementRing", judgementRingColor);
+            SetArcPositions(lrs[4], center, judgementRadiusLocal,
+                            geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01Judgement);
 
             _arenaLRs[arenaId] = lrs;
         }
@@ -322,7 +342,8 @@ namespace RhythmicFlow.Player
         // Lane builder
         // -------------------------------------------------------------------
 
-        // Builds 1 LineRenderer: a ray along lane.CenterDeg from inner to outer radius.
+        // Builds 1 LineRenderer: a ray along lane.CenterDeg from inner to judgement radius.
+        // The ray ends at judgementRadiusLocal so it visually marks "hit here" at the inset ring.
         private void BuildLaneLineRenderer(
             string laneId, LaneGeometry lane, ArenaGeometry arena,
             PlayfieldTransform pfT, Transform pfRoot)
@@ -332,8 +353,16 @@ namespace RhythmicFlow.Player
             float innerLocal = outerLocal - bandLocal;
             Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
+            // Lane ray ends at the judgement ring (not the chart outer edge). VISUAL ONLY.
+            float judgementRadiusLocal = outerLocal
+                - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;
+            float s01Judgement = (outerLocal > innerLocal)
+                ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
+                : 0f;
+
             LineRenderer lr = CreateLineRenderer($"Lane_{laneId}_Center", laneColor);
-            SetRadialPositions(lr, center, innerLocal, outerLocal, lane.CenterDeg, pfRoot);
+            SetRadialPositions(lr, center, innerLocal, judgementRadiusLocal,
+                               lane.CenterDeg, pfRoot, outerS01: s01Judgement);
             _laneLRs[laneId] = lr;
         }
 
@@ -341,15 +370,16 @@ namespace RhythmicFlow.Player
         // Per-frame: note markers
         // -------------------------------------------------------------------
 
-        // Draws note diamonds approaching the judgement ring (outerLocal, spec §5.8).
+        // Draws note diamonds approaching the judgement ring (judgementRadiusLocal).
+        // judgementRadiusLocal = outerLocal - JudgementInsetNorm*minDimLocal  (VISUAL ONLY).
         //
         // Approach formula:
         //   timeToHitMs = note.PrimaryTimeMs - effectiveChartTimeMs
         //   alpha       = 1 - clamp01(timeToHitMs / noteLeadTimeMs)
         //               → 0 at spawn (timeToHitMs == noteLeadTimeMs)
         //               → 1 at hit   (timeToHitMs == 0)
-        //   spawnR      = innerLocal + spawnRadiusFactor * (outerLocal - innerLocal)
-        //   r           = lerp(spawnR, outerLocal, alpha)
+        //   spawnR      = innerLocal + spawnRadiusFactor * (judgementRadiusLocal - innerLocal)
+        //   r           = lerp(spawnR, judgementRadiusLocal, alpha)
         //
         // With showNotesOutsideWindow=true we read DebugAllNotes (all Active notes up to
         // ActivationLeadMs away) and filter to noteLeadTimeMs ourselves, giving a smooth
@@ -406,8 +436,12 @@ namespace RhythmicFlow.Player
                     float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
                     float innerLocal = outerLocal - bandLocal;
 
+                    // Notes land on the inset judgement ring, not the chart outer edge. VISUAL ONLY.
+                    float judgementRadiusLocal = outerLocal
+                        - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;
+
                     // Spawn radius: a fraction of the band width above the inner edge.
-                    float spawnR = innerLocal + spawnRadiusFactor * (outerLocal - innerLocal);
+                    float spawnR = innerLocal + spawnRadiusFactor * (judgementRadiusLocal - innerLocal);
 
                     // alpha 0→1 as note travels from spawn to judgement radius.
                     // Guard against noteLeadTimeMs == 0 to avoid division by zero.
@@ -415,8 +449,8 @@ namespace RhythmicFlow.Player
                         ? 1f - Mathf.Clamp01((float)timeToHitMs / noteLeadTimeMs)
                         : 1f;
 
-                    // Current radius along the lane center ray.
-                    float r = Mathf.Lerp(spawnR, outerLocal, alpha);
+                    // Current radius along the lane center ray (targets judgement ring, not outer edge).
+                    float r = Mathf.Lerp(spawnR, judgementRadiusLocal, alpha);
 
                     Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
                     float thetaRad   = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
@@ -573,13 +607,16 @@ namespace RhythmicFlow.Player
 
         // Sets 2 world-space positions: inner edge → outer edge along a radial ray.
         // Each endpoint uses its own frustum Z so the ray lies on the cone surface.
+        // outerS01: normalized band position of the outer endpoint (default 1 = chart outer edge).
+        //   Pass s01Judgement when the ray should end at the inset judgement ring. VISUAL ONLY.
         private void SetRadialPositions(
             LineRenderer lr,
             Vector2      centerLocal,
             float        innerLocal,
             float        outerLocal,
             float        angleDeg,
-            Transform    pfRoot)
+            Transform    pfRoot,
+            float        outerS01 = 1f)  // VISUAL ONLY
         {
             float rad = angleDeg * Mathf.Deg2Rad;
             Vector2 dir   = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
@@ -587,8 +624,8 @@ namespace RhythmicFlow.Player
             Vector2 outer = centerLocal + dir * outerLocal;
 
             lr.positionCount = 2;
-            lr.SetPosition(0, pfRoot.TransformPoint(inner.x, inner.y, VisualOnlyLocalZ(0f))); // VISUAL ONLY
-            lr.SetPosition(1, pfRoot.TransformPoint(outer.x, outer.y, VisualOnlyLocalZ(1f))); // VISUAL ONLY
+            lr.SetPosition(0, pfRoot.TransformPoint(inner.x, inner.y, VisualOnlyLocalZ(0f)));       // VISUAL ONLY
+            lr.SetPosition(1, pfRoot.TransformPoint(outer.x, outer.y, VisualOnlyLocalZ(outerS01))); // VISUAL ONLY
         }
 
         // Sets 5 world-space positions forming a diamond in the PlayfieldRoot XY plane.
@@ -647,12 +684,19 @@ namespace RhythmicFlow.Player
                     continue;
                 }
 
-                // World position: outer ring at lane center. VISUAL ONLY — not used for hit-testing.
-                float   outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                // World position: judgement ring at lane center. VISUAL ONLY — not used for hit-testing.
+                float   outerLocal             = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                float   bandLocal              = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
+                float   innerLocal             = outerLocal - bandLocal;
+                float   judgementRadiusLocal   = outerLocal
+                    - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;
+                float   s01Judgement           = (outerLocal > innerLocal)
+                    ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
+                    : 1f;
                 Vector2 center     = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
                 float   thetaRad   = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
-                Vector2 localPt    = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * outerLocal;
-                Vector3 worldPos   = pfRoot.TransformPoint(localPt.x, localPt.y, VisualOnlyLocalZ(1f)); // VISUAL ONLY
+                Vector2 localPt    = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * judgementRadiusLocal;
+                Vector3 worldPos   = pfRoot.TransformPoint(localPt.x, localPt.y, VisualOnlyLocalZ(s01Judgement)); // VISUAL ONLY
 
                 // Expand-and-fade: lifeRatio 1→0 over flashDuration.
                 float lifeRatio = Mathf.Clamp01((flash.ExpireTime - now) / flashDuration);

@@ -172,6 +172,13 @@ namespace RhythmicFlow.Player
             float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
 
+            // Visual outer rim: extends beyond chart outerLocal by VisualOuterExpandNorm. VISUAL ONLY.
+            // With default VisualOuterExpandNorm = 0, visualOuterLocal == outerLocal (no change).
+            // The mesh extends to visualOuterLocal so the track surface covers the full visual band
+            // including any rim beyond the judgement ring.
+            float visualOuterLocal = outerLocal
+                + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal; // VISUAL ONLY
+
             // Arena center in PlayfieldRoot local XY (spec §5.5).
             Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
 
@@ -183,8 +190,8 @@ namespace RhythmicFlow.Player
             int N = Mathf.Max(1, arcSegments);
 
             // Vertex layout:
-            //   indices  0 .. N   → inner arc  (s = 0, at innerLocal radius, z = zInner)
-            //   indices N+1..2N+1 → outer arc  (s = 1, at outerLocal radius, z = zOuter)
+            //   indices  0 .. N   → inner arc  (s = 0, at innerLocal radius,       z = zInner)
+            //   indices N+1..2N+1 → outer arc  (s = 1, at visualOuterLocal radius, z = zOuter)
             int        vertCount = (N + 1) * 2;
             Vector3[]  vertices  = new Vector3[vertCount];
             Vector2[]  uvs       = new Vector2[vertCount];
@@ -204,9 +211,9 @@ namespace RhythmicFlow.Player
                 float rad = deg * Mathf.Deg2Rad;
                 Vector2 dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
 
-                // PlayfieldRoot local XY positions for inner and outer arc.
+                // PlayfieldRoot local XY positions for inner and outer (visual) arc.
                 Vector2 innerPt = center + dir * innerLocal;
-                Vector2 outerPt = center + dir * outerLocal;
+                Vector2 outerPt = center + dir * visualOuterLocal; // VISUAL ONLY
 
                 // Convert: pfRoot local → world → mesh GO local.
                 // This correctly handles any world placement of the ArenaSurface GO.

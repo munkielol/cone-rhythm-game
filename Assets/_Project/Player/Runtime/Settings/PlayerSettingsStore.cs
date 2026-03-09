@@ -144,6 +144,29 @@ namespace RhythmicFlow.Player
         public static bool FlickPerfectWindowCoversGreatWindow = false;
 
         /// <summary>
+        /// Visual/skin inset of the judgement ring inside the chart outerRadius (spec §5.5.2 / §8.3.1).
+        ///
+        /// judgementRadiusLocal = outerLocal − (JudgementInsetNorm × minDimLocal)
+        ///
+        /// This is where notes land visually (approach ends here) and where the judgement line
+        /// is drawn.  Chart outerLocal remains the geometry reference for hit-testing and charting.
+        /// Default: 0.03 (3 % of minDimLocal inward from the chart outer edge).
+        /// </summary>
+        public static float JudgementInsetNorm = 0.03f;
+
+        /// <summary>
+        /// Visual/skin expansion of the arena mesh rim beyond the chart outerRadius (spec §5.5.2 / §8.3.1).
+        ///
+        /// visualOuterLocal = outerLocal + (VisualOuterExpandNorm × minDimLocal)
+        ///
+        /// The arena surface mesh and outer arc line extend to visualOuterLocal so the track
+        /// looks thick beyond the judgement ring.  Does NOT affect hit-testing, charting, or
+        /// the judgement ring position.
+        /// Default: 0.00 (no extra visual rim — mesh matches chart outerLocal).
+        /// </summary>
+        public static float VisualOuterExpandNorm = 0.00f;
+
+        /// <summary>
         /// Input Band Expansion — inner edge (touch hit-testing only, spec §5.5.1 / §8.3.1).
         ///
         /// Expands the arena band inward by (InputBandExpandInnerNorm * minDimLocal) local units
