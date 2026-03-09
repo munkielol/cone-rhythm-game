@@ -152,7 +152,7 @@ namespace RhythmicFlow.Player
         /// is drawn.  Chart outerLocal remains the geometry reference for hit-testing and charting.
         /// Default: 0.03 (3 % of minDimLocal inward from the chart outer edge).
         /// </summary>
-        public static float JudgementInsetNorm = 0.03f;
+        public static float JudgementInsetNorm = 0.003f;
 
         /// <summary>
         /// Visual/skin expansion of the arena mesh rim beyond the chart outerRadius (spec §5.5.2 / §8.3.1).
