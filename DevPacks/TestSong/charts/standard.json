@@ -31,7 +31,12 @@
       "priority": 0,
       "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
-      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 210, "easing": "hold" } ] },
+      "centerDeg": {
+        "keyframes": [
+          { "timeMs": 0, "value": 250, "easing": "linear" },
+          { "timeMs": 3000, "value": 320, "easing": "linear" }
+        ]
+      },
       "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
     },
     {
