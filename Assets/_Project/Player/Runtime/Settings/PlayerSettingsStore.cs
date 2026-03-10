@@ -192,7 +192,7 @@ namespace RhythmicFlow.Player
         /// 1.0 → full inward depth down to chartInnerLocal.
         /// Default: 0.35 (35 % of the available inward depth from judgement line to chart inner edge).
         /// </summary>
-        public static float HitBandInnerCoverage01 = 0.35f;
+        public static float HitBandInnerCoverage01 = 1.0f;
 
         /// <summary>
         /// DEPRECATED — replaced by HitBandInnerCoverage01 (spec §5.5.2).

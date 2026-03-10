@@ -254,10 +254,52 @@ namespace RhythmicFlow.Player
                 return; // nothing to draw yet
             }
 
+            UpdateHitBandArcs();   // must run every frame — radii depend on runtime settings
             UpdateNoteMarkers();
             UpdateTouchMarker();
             UpdateLaneHighlights();
             UpdateJudgementFlashes();
+        }
+
+        // Refreshes lrs[5] (hitInner) and lrs[6] (hitOuter) positions each frame.
+        // Required because HitBandInnerCoverage01 and related settings are runtime-
+        // changeable statics; baking positions once at build time is not sufficient.
+        private void UpdateHitBandArcs()
+        {
+            if (!showHitBandArcs) { return; }
+
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            PlayfieldTransform pfT   = playerAppController.DebugPlayfieldTransform;
+            Transform          pfRoot = playerAppController.playfieldRoot;
+            if (arenas == null || pfT == null) { return; }
+
+            foreach (KeyValuePair<string, ArenaGeometry> kvp in arenas)
+            {
+                if (!_arenaLRs.TryGetValue(kvp.Key, out LineRenderer[] lrs)) { continue; }
+                if (lrs == null || lrs.Length < 7)                            { continue; }
+
+                ArenaGeometry geo = kvp.Value;
+
+                // Single source of truth — same call as JudgementEngine and lane highlight.
+                ArenaHitTester.ComputeHitBandLocal(geo, pfT,
+                    out float hitInner, out float hitOuter, out _, out _);
+
+                float outerLocal = pfT.NormRadiusToLocal(geo.OuterRadiusNorm);
+                float innerLocal = outerLocal - pfT.NormRadiusToLocal(geo.BandThicknessNorm);
+
+                // s01: normalized [0=inner, 1=outer] for frustum Z interpolation. VISUAL ONLY.
+                float s01HitInner = (outerLocal > innerLocal)
+                    ? Mathf.Clamp01((hitInner - innerLocal) / (outerLocal - innerLocal)) : 0f;
+                float s01HitOuter = (outerLocal > innerLocal)
+                    ? Mathf.Clamp01((hitOuter - innerLocal) / (outerLocal - innerLocal)) : 1f;
+
+                Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
+
+                SetArcPositions(lrs[5], center, hitInner,
+                    geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitInner);
+                SetArcPositions(lrs[6], center, hitOuter,
+                    geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitOuter);
+            }
         }
 
         // -------------------------------------------------------------------
@@ -904,7 +946,8 @@ namespace RhythmicFlow.Player
 
                 string line =
                     $"[{akvp.Key}] r={r:F3}  hit=[{hitInner:F3}..{hitOuter:F3}]" +
-                    $"  jdg={judgement:F3}  cov={dbgCov01:F2}  depth={dbgDepth:F3}" +
+                    $"  jdg={judgement:F3}  chart=[{dbgChartInner:F3}..{dbgChartOuter:F3}]" +
+                    $"  cov={dbgCov01:F2}  depth={dbgDepth:F3}" +
                     $"  radial={(radialPass ? "PASS" : "FAIL")}" +
                     $"  arc={(arcPass ? "PASS" : "FAIL")}  lanes=[{hitLanes}]";
 
