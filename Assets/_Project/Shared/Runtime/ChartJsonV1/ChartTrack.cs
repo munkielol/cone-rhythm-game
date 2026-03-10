@@ -47,13 +47,30 @@ namespace RhythmicFlow.Shared
         // Evaluation (spec §5.9)
         // -------------------------------------------------------------------
 
+        // Easing strings seen for the first time that are not "hold" or "linear".
+        // Deduplicated so the warning fires once per unique unknown string, not every frame.
+        private static readonly System.Collections.Generic.HashSet<string> s_warnedEasings =
+            new System.Collections.Generic.HashSet<string>();
+
+        // Logs a one-time warning for an unrecognised easing string.
+        private static void WarnUnknownEasing(string easing)
+        {
+            if (s_warnedEasings.Add(easing))   // Add returns true only the first time
+            {
+                Debug.LogWarning(
+                    $"[FloatTrack] Unknown easing \"{easing}\" — treating as \"linear\". " +
+                    $"Valid values are \"hold\" and \"linear\" (spec §5.1).");
+            }
+        }
+
         /// <summary>
         /// Evaluates this track at the given chart time in milliseconds.
         /// 0 keyframes → returns defaultVal (required tracks should always have ≥1 by validator).
         /// 1 keyframe  → returns its value regardless of timeMs.
         /// N keyframes → clamp-extrapolate at edges; interpolate between surrounding pair.
-        ///   easing "hold"   → step: hold left value until next keyframe.
-        ///   easing anything else (incl. "linear") → Mathf.Lerp(left, right, t01).
+        ///   easing "hold"    → step: hold left value until next keyframe.
+        ///   easing "linear"  → Mathf.Lerp(left, right, t01).
+        ///   easing unknown   → treated as linear; one-time warning logged.
         /// No allocations.
         /// </summary>
         public float Evaluate(int timeMs, float defaultVal = 0f)
@@ -73,7 +90,8 @@ namespace RhythmicFlow.Shared
             FloatKeyframe kfL = keyframes[left];
             FloatKeyframe kfR = keyframes[right];
 
-            if (kfL.easing == "hold") { return kfL.value; }
+            if (kfL.easing == "hold")   { return kfL.value; }
+            if (kfL.easing != "linear") { WarnUnknownEasing(kfL.easing ?? "<null>"); }
 
             float t01 = (float)(timeMs - kfL.timeMs) / (float)(kfR.timeMs - kfL.timeMs);
             return Mathf.Lerp(kfL.value, kfR.value, t01);
@@ -83,6 +101,7 @@ namespace RhythmicFlow.Shared
         /// Evaluates this track as an angle in degrees, using shortest-path interpolation
         /// so values wrap correctly through the 0°/360° boundary.
         /// Result is normalized to [0, 360).
+        /// Unknown easing strings are treated as linear with a one-time warning.
         /// </summary>
         public float EvaluateAngleDeg(int timeMs, float defaultVal = 0f)
         {
@@ -99,7 +118,8 @@ namespace RhythmicFlow.Shared
             FloatKeyframe kfL = keyframes[left];
             FloatKeyframe kfR = keyframes[right];
 
-            if (kfL.easing == "hold") { return Normalize360(kfL.value); }
+            if (kfL.easing == "hold")   { return Normalize360(kfL.value); }
+            if (kfL.easing != "linear") { WarnUnknownEasing(kfL.easing ?? "<null>"); }
 
             float t01   = (float)(timeMs - kfL.timeMs) / (float)(kfR.timeMs - kfL.timeMs);
             float delta = ShortestSignedDeltaDeg(kfL.value, kfR.value);
