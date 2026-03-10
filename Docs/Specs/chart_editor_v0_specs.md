@@ -388,10 +388,10 @@ Flick playtest uses the same **event-based** model as the player: each qualifyin
 | `PerfectWindowCoversGreatWindow` | `false` | Suppresses Great tier for tap/hold during playtest to verify lenient-feel charting. Does not affect flick. |
 | `FlickRequireTouchBegin` | `false` | When true, only gestures completed within `FlickMaxGestureTimeMs` of mouse-down are eligible. When false (default), allows testing flick notes with mouse-down held throughout (single-touch emulation). |
 | `FlickPerfectWindowCoversGreatWindow` | `false` | When true, suppresses the Great tier for flick during playtest — all in-window flicks score Perfect. Useful for verifying lenient flick-feel charting. |
-| `HitBandInnerInsetNorm` | `0.02` | Inner half-width of the hit band centred on `judgementRadiusLocal`. Matches the player setting (see player spec §5.5.2 / §8.3.1). Does not affect exported chart geometry. |
-| `HitBandOuterInsetNorm` | `0.04` | Outer half-width of the hit band centred on `judgementRadiusLocal`. Matches the player setting. Does not affect exported chart geometry. |
-| `InputBandExpandInnerNorm` | `0.00` | Additional inner expansion added on top of `HitBandInnerInsetNorm`. Matches the player setting. Does not affect exported chart geometry. |
-| `InputBandExpandOuterNorm` | `0.03` | Additional outer expansion added on top of `HitBandOuterInsetNorm`. Matches the player setting. Does not affect exported chart geometry. |
+| `HitBandInnerCoverage01` | `0.35` | Fraction `[0..1]` of available inward depth (from judgement line toward `chartInnerLocal`) accepted as a hit. Matches the player setting (see player spec §5.5.2 / §8.3.1). Does not affect exported chart geometry. |
+| `HitBandOuterInsetNorm` | `0.04` | Outward half-width of the hit band from `judgementRadiusLocal`. Matches the player setting. Does not affect exported chart geometry. |
+| `InputBandExpandInnerNorm` | `0.00` | Additional inner expansion subtracted from `hitBandInner` (fine-tune). Matches the player setting. Does not affect exported chart geometry. |
+| `InputBandExpandOuterNorm` | `0.03` | Additional outer expansion added on top of `hitBandOuter`, clamped to `visualOuterLocal`. Matches the player setting. Does not affect exported chart geometry. |
 | `JudgementInsetNorm` | `0.003` | **Visual/skin.** Insets the judgement ring inside chart `outerLocal` during playtest. Notes approach and land on this inset ring. Matches the player setting (see player spec §5.8 / §8.3.1). Does not affect exported chart geometry or hit-testing. |
 | `VisualOuterExpandNorm` | `0.00` | **Visual/skin.** Extends the arena mesh/arc rim beyond chart `outerLocal` during playtest. Matches the player setting. Default 0 = rim at `outerLocal`. Does not affect exported chart geometry or hit-testing. |
 

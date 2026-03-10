@@ -320,14 +320,30 @@ Given a touch position:
 
 **§5.5.2 — Hit Band (touch hit-testing only):**
 
-The actual radial interval accepted for touch arming and judgement is centred on `judgementRadiusLocal` (not the chart outer edge), accounting for finger imprecision and the inset judgement ring:
+The actual radial interval accepted for touch arming and judgement is anchored on `judgementRadiusLocal`.
+The inward tolerance is expressed as a **fraction of available inward depth**, not a fixed norm.
+The outward tolerance remains an explicit norm.
 
-* `hitInnerLocal = max(judgementRadiusLocal − (HitBandInnerInsetNorm + InputBandExpandInnerNorm) × minDimLocal, innerLocal)`
-* `hitOuterLocal = judgementRadiusLocal + (HitBandOuterInsetNorm + InputBandExpandOuterNorm) × minDimLocal`
+**Inward bound (coverage-based):**
+```
+inwardDepthLocal = max(0, judgementRadiusLocal − chartInnerLocal)
+hitBandInner     = judgementRadiusLocal − Clamp01(HitBandInnerCoverage01) × inwardDepthLocal
+```
+* `HitBandInnerCoverage01 = 0.0` → no inward tolerance (hitInner == judgementRadius).
+* `HitBandInnerCoverage01 = 1.0` → full depth to `chartInnerLocal`.
+* Default `0.35` → 35 % of the available depth inward from the judgement line.
 
-`InputBandExpand*` are additive fine-tune on top of the hit band; both default to 0.
-`hitInnerLocal` is clamped to `innerLocal` (never narrows past the chart inner edge).
-`hitOuterLocal` is **not** clamped — it may exceed `outerLocal` / `visualOuterLocal`.
+**Outward bound (explicit norm):**
+```
+hitBandOuter = judgementRadiusLocal + HitBandOuterInsetNorm × minDimLocal
+```
+
+**`InputBandExpand*` additive fine-tune on top:**
+* `hitInnerLocal = max(hitBandInner − InputBandExpandInnerNorm × minDimLocal, chartInnerLocal)`
+* `hitOuterLocal = min(hitBandOuter + InputBandExpandOuterNorm × minDimLocal, visualOuterLocal)`
+
+`hitInnerLocal` is clamped to `chartInnerLocal` (never past the chart inner edge).
+`hitOuterLocal` is clamped to `visualOuterLocal` (never past the visual outer rim).
 
 The hit band is used **only** for touch arming and judgement (steps 3–6 when called from `JudgementEngine`).  It does **not** affect:
 * Visual geometry (arena arc outlines, note approach markers).
@@ -365,9 +381,9 @@ The judgement ring sits **inside** the chart outer radius.  The outer rim remain
 | Radius | Formula | Purpose |
 |---|---|---|
 | `innerLocal` | `outerLocal − bandLocal` | Chart inner edge; hit-testing clamp. |
-| `hitInnerLocal` | `max(judgement − (HitBandInner + InputBandExpandInner) × minDim, innerLocal)` | Input-only inner edge of the hit band (see §5.5.2). |
+| `hitInnerLocal` | `max(judgement − Clamp01(HitBandInnerCoverage01) × inwardDepthLocal − InputBandExpandInner × minDim, innerLocal)` | Input-only inner edge of the hit band (see §5.5.2). |
 | `judgementRadiusLocal` | `outerLocal − JudgementInsetNorm × minDimLocal` | Where notes land visually; where the judgement arc is drawn. **Visual only.** |
-| `hitOuterLocal` | `judgement + (HitBandOuter + InputBandExpandOuter) × minDim` | Input-only outer edge of the hit band (see §5.5.2). |
+| `hitOuterLocal` | `min(judgement + (HitBandOuter + InputBandExpandOuter) × minDim, visualOuterLocal)` | Input-only outer edge of the hit band (see §5.5.2). |
 | `visualOuterLocal` | `outerLocal + VisualOuterExpandNorm × minDimLocal` | Visual mesh / arc outer rim. **Visual only.** Default: `outerLocal` (no expansion). |
 
 * **Judgement Arc**: thin, clearly visible arc at `judgementRadiusLocal` per arena (purple-white by default in debug renderer).
@@ -577,10 +593,11 @@ These are not persisted PlayerPrefs settings. They are simple static fields in `
 | `PerfectWindowCoversGreatWindow` | `false` | Extends effective Perfect window to `GreatWindowMs` for **tap and hold**. Great tier is suppressed; every in-window hit scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. Does **not** affect flick. |
 | `FlickRequireTouchBegin` | `false` | When true, only FlickEvents completed within `FlickMaxGestureTimeMs` of a new touch (`TouchBegin`) are eligible. When false, any active touch can arm a flick; the gesture baseline resets the first time the touch becomes eligible (in-window + in-lane) for each note. |
 | `FlickPerfectWindowCoversGreatWindow` | `false` | **Flick only.** When true, the flick Perfect window expands to `GreatWindowMs`; Great tier is suppressed for flick — every in-window flick scores Perfect (or Perfect+ if within sub-window). Perfect+ sub-window unchanged. When false (default), flick timing evaluates normally (Perfect / Great / Miss). |
-| `HitBandInnerInsetNorm` | `0.02` | **Input only.** Inner half-width of the hit band centred on `judgementRadiusLocal`: `hitInnerLocal = max(judgement − HitBandInnerInsetNorm × minDim, innerLocal)`. Default 0.02 = 2 % of `minDimLocal`. See §5.5.2. |
-| `HitBandOuterInsetNorm` | `0.04` | **Input only.** Outer half-width of the hit band centred on `judgementRadiusLocal`: `hitOuterLocal = judgement + HitBandOuterInsetNorm × minDim`. Default 0.04 = 4 % of `minDimLocal`. See §5.5.2. |
-| `InputBandExpandInnerNorm` | `0.00` | **Input only.** Additional inner expansion added on top of `HitBandInnerInsetNorm` (see §5.5.2). Default 0 = no extra inner expansion beyond the hit band. |
-| `InputBandExpandOuterNorm` | `0.03` | **Input only.** Additional outer expansion added on top of `HitBandOuterInsetNorm` (see §5.5.2). Default 0.03 = 3 % extra outward beyond the hit band outer edge. |
+| `HitBandInnerCoverage01` | `0.35` | **Input only.** Fraction `[0..1]` of available inward depth accepted. `inwardDepth = judgementRadius − chartInner`; `hitInner = judgement − coverage × inwardDepth`. `0` = no inward tolerance; `1` = full depth to `chartInnerLocal`. Default 0.35 = 35 % of lane depth inward from judgement line. See §5.5.2. |
+| `HitBandInnerInsetNorm` | *(deprecated)* | **Deprecated.** Replaced by `HitBandInnerCoverage01`. Kept in code for compatibility; no longer used for the inward bound. |
+| `HitBandOuterInsetNorm` | `0.04` | **Input only.** Outward half-width of the hit band from `judgementRadiusLocal`: `hitBandOuter = judgement + HitBandOuterInsetNorm × minDim`. Default 0.04 = 4 % of `minDimLocal`. See §5.5.2. |
+| `InputBandExpandInnerNorm` | `0.00` | **Input only.** Additional inner expansion subtracted from `hitBandInner` (additive fine-tune, see §5.5.2). Default 0 = no extra inner expansion. |
+| `InputBandExpandOuterNorm` | `0.03` | **Input only.** Additional outer expansion added on top of `hitBandOuter` (additive fine-tune, see §5.5.2). Default 0.03 = 3 % extra outward. Clamped to `visualOuterLocal`. |
 | `JudgementInsetNorm` | `0.003` | **Visual/skin only.** Insets the judgement ring inside `outerLocal` by `JudgementInsetNorm × minDimLocal`. Notes land and the judgement arc is drawn at this radius. Does not change hit-testing, timing windows, or chart geometry. See §5.8. |
 | `VisualOuterExpandNorm` | `0.00` | **Visual/skin only.** Extends the arena mesh/arc outer rim beyond `outerLocal` by `VisualOuterExpandNorm × minDimLocal`. Provides a thick-track look with rim beyond the judgement ring. Default 0 = mesh matches chart `outerLocal`. Does not affect hit-testing or charting. See §5.8. |
 
