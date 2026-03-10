@@ -138,12 +138,15 @@ namespace RhythmicFlow.Player
         ///
         /// <para><b>Outward bound — explicit norm (spec §5.5.2):</b><br/>
         ///   hitBandOuter  = judgement + HitBandOuterInsetNorm × minDim<br/>
-        ///   hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim (clamped to visualOuterLocal)<br/>
+        ///   hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim (NOT clamped)<br/>
+        ///   The outward tolerance intentionally exceeds visualOuterLocal to absorb flat-plane<br/>
+        ///   parallax: a camera above z=0 projects the outer arc (z=0.15) to a flat-plane radius<br/>
+        ///   larger than chartOuter. Clamping to visualOuterLocal removes that margin.<br/>
         /// </para>
         ///
         /// <para><b>InputBandExpand* additive fine-tune:</b><br/>
         ///   hitInnerLocal = max(hitBandInner − InputBandExpandInnerNorm × minDim, chartInner)<br/>
-        ///   hitOuterLocal = min(hitBandOuter + InputBandExpandOuterNorm × minDim, visualOuterLocal)<br/>
+        ///   hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim<br/>
         /// </para>
         /// </summary>
         public static void ComputeHitBandLocal(
@@ -173,13 +176,18 @@ namespace RhythmicFlow.Player
             float hitBandOuter = judgementRadiusLocal + PlayerSettingsStore.HitBandOuterInsetNorm * minDim;
 
             // InputBandExpand* additive fine-tune on top.
-            // Inner clamped to chartInner; outer clamped to visualOuterLocal.
+            // Inner clamped to chartInner so the hit band never extends past the ring's inner edge.
+            // Outer is NOT clamped to visualOuterLocal: the outward tolerance intentionally extends
+            // beyond the visible mesh to absorb flat-plane parallax.  When the camera looks at the
+            // frustum from above, the screen ray through the outer arc (z=0.15) intersects the z=0
+            // plane at r > chartOuter.  Without outward tolerance those taps would fail even though
+            // the visual arc is squarely under the finger.  The visual surface raycast eliminates
+            // the parallax when the MeshCollider layer is correctly assigned.
             hitInnerLocal = Mathf.Max(
                 hitBandInner - PlayerSettingsStore.InputBandExpandInnerNorm * minDim,
                 chartInner);
-            hitOuterLocal = Mathf.Min(
-                hitBandOuter + PlayerSettingsStore.InputBandExpandOuterNorm * minDim,
-                visualOuterLocal);
+            hitOuterLocal =
+                hitBandOuter + PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
         }
 
         // -------------------------------------------------------------------
