@@ -84,6 +84,30 @@ namespace RhythmicFlow.Player
         [Tooltip("Color of the hit-band inner and outer debug arcs.")]
         [SerializeField] private Color hitBandColor = Color.green;
 
+        [Header("Lane Edge Lines (DEBUG)")]
+        [Tooltip("Draw left/right boundary radial lines per lane wedge (innerLocal → visualOuterLocal).")]
+        [SerializeField] private bool showLaneEdges = true;
+
+        [Tooltip("Draw inner-ring and judgement-ring arc segments spanning each lane wedge.")]
+        [SerializeField] private bool showLaneArcs = true;
+
+        [Tooltip("Color of lane boundary lines and arcs (distinct from the center-ray laneColor).")]
+        [SerializeField] private Color laneEdgeColor = new Color(1f, 0.7f, 0f); // amber
+
+        [Header("Touch Lane Highlight (DEBUG)")]
+        [Tooltip("Highlight the edge lines of any lane whose wedge contains the current touch.")]
+        [SerializeField] private bool showLaneHighlight = true;
+
+        [Tooltip("When true, use the hit band (judgement-centred) for radial containment; " +
+                 "when false, use the full chart band (innerLocal..visualOuterLocal).")]
+        [SerializeField] private bool useHitBandForLaneHighlight = true;
+
+        [Tooltip("How long (seconds) lane edges stay highlighted after the touch enters the wedge.")]
+        [SerializeField] private float laneHighlightDuration = 0.1f;
+
+        [Tooltip("Color applied to a lane's boundary lines when the touch is inside the wedge.")]
+        [SerializeField] private Color laneHighlightColor = Color.green;
+
         [Header("Colors")]
         [SerializeField] private Color arenaColor         = Color.cyan;
         [SerializeField] private Color laneColor          = Color.yellow;
@@ -121,9 +145,15 @@ namespace RhythmicFlow.Player
         private readonly Dictionary<string, LineRenderer[]> _arenaLRs =
             new Dictionary<string, LineRenderer[]>(StringComparer.Ordinal);
 
-        // Per-lane: 1 LineRenderer — center ray from inner to outer radius.
-        private readonly Dictionary<string, LineRenderer> _laneLRs =
-            new Dictionary<string, LineRenderer>(StringComparer.Ordinal);
+        // Per-lane: 5 LineRenderers — [0] center ray,
+        //                              [1] left edge radial, [2] right edge radial,
+        //                              [3] inner arc (lane wedge span), [4] judgement arc.
+        private readonly Dictionary<string, LineRenderer[]> _laneLRs =
+            new Dictionary<string, LineRenderer[]>(StringComparer.Ordinal);
+
+        // Expire time per laneId for the touch containment highlight.
+        private readonly Dictionary<string, float> _laneHighlightExpire =
+            new Dictionary<string, float>(StringComparer.Ordinal);
 
         // Fixed pool of note-marker LineRenderers (diamond shape).
         // Markers beyond maxNoteMarkers are silently dropped — debug acceptable.
@@ -221,6 +251,7 @@ namespace RhythmicFlow.Player
 
             UpdateNoteMarkers();
             UpdateTouchMarker();
+            UpdateLaneHighlights();
             UpdateJudgementFlashes();
         }
 
@@ -383,8 +414,13 @@ namespace RhythmicFlow.Player
         // Lane builder
         // -------------------------------------------------------------------
 
-        // Builds 1 LineRenderer: a ray along lane.CenterDeg from inner to judgement radius.
-        // The ray ends at judgementRadiusLocal so it visually marks "hit here" at the inset ring.
+        // Builds 5 LineRenderers for one lane:
+        //   [0] center ray   — from innerLocal to judgementRadiusLocal along lane.CenterDeg
+        //   [1] left edge    — radial from innerLocal to visualOuterLocal at leftDeg
+        //   [2] right edge   — radial from innerLocal to visualOuterLocal at rightDeg
+        //   [3] inner arc    — arc spanning [leftDeg, rightDeg] at innerLocal
+        //   [4] judgement arc — arc spanning [leftDeg, rightDeg] at judgementRadiusLocal
+        // Lane edges can overlap between adjacent lanes; all are drawn unconditionally.
         private void BuildLaneLineRenderer(
             string laneId, LaneGeometry lane, ArenaGeometry arena,
             PlayfieldTransform pfT, Transform pfRoot)
@@ -392,19 +428,47 @@ namespace RhythmicFlow.Player
             float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
             float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
+            float minDim     = pfT.MinDimLocal;
             Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-            // Lane ray ends at the judgement ring (not the chart outer edge). VISUAL ONLY.
-            float judgementRadiusLocal = outerLocal
-                - PlayerSettingsStore.JudgementInsetNorm * pfT.MinDimLocal;
-            float s01Judgement = (outerLocal > innerLocal)
+            float visualOuterLocal     = outerLocal + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
+            float judgementRadiusLocal = outerLocal - PlayerSettingsStore.JudgementInsetNorm * minDim;
+            float s01Judgement         = (outerLocal > innerLocal)
                 ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
                 : 0f;
 
-            LineRenderer lr = CreateLineRenderer($"Lane_{laneId}_Center", laneColor);
-            SetRadialPositions(lr, center, innerLocal, judgementRadiusLocal,
+            // Left/right boundary angles from the lane center.
+            float leftDeg  = lane.CenterDeg - lane.WidthDeg * 0.5f;
+            float rightDeg = lane.CenterDeg + lane.WidthDeg * 0.5f;
+
+            var lrs = new LineRenderer[5];
+
+            // Center ray: inner → judgement ring. VISUAL ONLY.
+            lrs[0] = CreateLineRenderer($"Lane_{laneId}_Center", laneColor);
+            SetRadialPositions(lrs[0], center, innerLocal, judgementRadiusLocal,
                                lane.CenterDeg, pfRoot, outerS01: s01Judgement);
-            _laneLRs[laneId] = lr;
+
+            // Left boundary edge: inner → visualOuter at leftDeg.
+            lrs[1] = CreateLineRenderer($"Lane_{laneId}_LeftEdge", laneEdgeColor);
+            SetRadialPositions(lrs[1], center, innerLocal, visualOuterLocal, leftDeg, pfRoot, outerS01: 1f);
+            lrs[1].gameObject.SetActive(showLaneEdges);
+
+            // Right boundary edge: inner → visualOuter at rightDeg.
+            lrs[2] = CreateLineRenderer($"Lane_{laneId}_RightEdge", laneEdgeColor);
+            SetRadialPositions(lrs[2], center, innerLocal, visualOuterLocal, rightDeg, pfRoot, outerS01: 1f);
+            lrs[2].gameObject.SetActive(showLaneEdges);
+
+            // Inner arc spanning the lane wedge at the chart inner edge.
+            lrs[3] = CreateLineRenderer($"Lane_{laneId}_InnerArc", laneEdgeColor);
+            SetArcPositions(lrs[3], center, innerLocal, leftDeg, lane.WidthDeg, pfRoot, s01: 0f);
+            lrs[3].gameObject.SetActive(showLaneArcs);
+
+            // Judgement arc spanning the lane wedge at judgementRadiusLocal.
+            lrs[4] = CreateLineRenderer($"Lane_{laneId}_JudgementArc", laneEdgeColor);
+            SetArcPositions(lrs[4], center, judgementRadiusLocal, leftDeg, lane.WidthDeg, pfRoot, s01: s01Judgement);
+            lrs[4].gameObject.SetActive(showLaneArcs);
+
+            _laneLRs[laneId] = lrs;
         }
 
         // -------------------------------------------------------------------
@@ -575,6 +639,114 @@ namespace RhythmicFlow.Player
             {
                 _flickArrowPool[i].gameObject.SetActive(false);
             }
+        }
+
+        // -------------------------------------------------------------------
+        // Per-frame: lane highlight (touch containment)
+        // -------------------------------------------------------------------
+
+        // Each frame: for any lane whose wedge contains the current touch, refreshes its
+        // edge-line color to laneHighlightColor for laneHighlightDuration seconds.
+        // Lanes that don't contain the touch revert to laneEdgeColor after the timer expires.
+        // Multiple overlapping lanes all light up independently.
+        private void UpdateLaneHighlights()
+        {
+            if (!showLaneHighlight || _laneLRs.Count == 0) { return; }
+
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
+            IReadOnlyDictionary<string, string>        lToA   = playerAppController.DebugLaneToArena;
+            PlayfieldTransform                         pfT    = playerAppController.DebugPlayfieldTransform;
+
+            if (arenas == null || lanes == null || lToA == null || pfT == null) { return; }
+
+            float now = Time.time;
+
+            // Step 1: extend expire time for lanes that contain the current touch.
+            if (playerAppController.DebugHasTouchHit)
+            {
+                Vector2 hitLocal = playerAppController.DebugLastTouchLocalXY;
+
+                foreach (KeyValuePair<string, LaneGeometry> kvp in lanes)
+                {
+                    if (!lToA.TryGetValue(kvp.Key, out string arenaId))           { continue; }
+                    if (!arenas.TryGetValue(arenaId, out ArenaGeometry arenaGeo))  { continue; }
+
+                    if (IsInsideLaneWedge(hitLocal, kvp.Value, arenaGeo, pfT))
+                    {
+                        _laneHighlightExpire[kvp.Key] = now + laneHighlightDuration;
+                    }
+                }
+            }
+
+            // Step 2: apply highlight or restore default color per lane.
+            foreach (KeyValuePair<string, LineRenderer[]> kvp in _laneLRs)
+            {
+                LineRenderer[] lrs = kvp.Value;
+                if (lrs == null || lrs.Length < 5) { continue; }
+
+                bool lit = _laneHighlightExpire.TryGetValue(kvp.Key, out float expireTime)
+                           && now < expireTime;
+                Color c = lit ? laneHighlightColor : laneEdgeColor;
+
+                // lrs[0] is the center ray — keep it laneColor always.
+                // lrs[1..4] are the boundary lines/arcs — tint on highlight.
+                for (int i = 1; i < lrs.Length; i++)
+                {
+                    if (lrs[i] == null) { continue; }
+                    lrs[i].startColor = c;
+                    lrs[i].endColor   = c;
+                }
+            }
+        }
+
+        // Returns true if hitLocalXY is inside the radial band AND angular wedge of the lane.
+        // Radial band: hit band (judgement-centred) when useHitBandForLaneHighlight, else
+        // chart band (innerLocal..visualOuterLocal). VISUAL ONLY — no gameplay effect.
+        private bool IsInsideLaneWedge(
+            Vector2 hitLocalXY, LaneGeometry lane, ArenaGeometry arena, PlayfieldTransform pfT)
+        {
+            Vector2 centerLocal = pfT.NormalizedToLocal(
+                new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+
+            Vector2 v        = hitLocalXY - centerLocal;
+            float   r        = v.magnitude;
+            float   thetaDeg = AngleUtil.Normalize360(Mathf.Atan2(v.y, v.x) * Mathf.Rad2Deg);
+
+            float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+            float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
+            float innerLocal = outerLocal - bandLocal;
+            float minDim     = pfT.MinDimLocal;
+
+            // Radial band for the containment check.  VISUAL ONLY.
+            float bandMin, bandMax;
+            if (useHitBandForLaneHighlight)
+            {
+                // Mirror JudgementEngine.IsInsideLane — keep in sync with §5.5.2.
+                float judgement = outerLocal - PlayerSettingsStore.JudgementInsetNorm * minDim;
+                bandMin = Mathf.Max(
+                    judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
+                                 + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
+                    innerLocal);
+                bandMax = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
+                                       + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+            }
+            else
+            {
+                bandMin = innerLocal;
+                bandMax = outerLocal + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
+            }
+
+            if (r < bandMin || r > bandMax) { return false; }
+
+            // Arena arc test (wrap-safe).
+            if (!AngleUtil.IsAngleInArc(thetaDeg, arena.ArcStartDeg, arena.ArcSweepDeg)) { return false; }
+
+            // Lane angular slice test — same math as ArenaHitTester.IsInsideLane.
+            float laneCenter = AngleUtil.Normalize360(lane.CenterDeg);
+            float halfWidth  = lane.WidthDeg * 0.5f;
+            float delta      = AngleUtil.ShortestSignedAngleDeltaDeg(laneCenter, thetaDeg);
+            return Mathf.Abs(delta) <= halfWidth;
         }
 
         // -------------------------------------------------------------------
