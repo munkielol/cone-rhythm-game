@@ -876,6 +876,12 @@ namespace RhythmicFlow.Player
                     out float hitInner, out float hitOuter,
                     out float judgement, out _);
 
+                // Inward depth and coverage — for tuning display only.
+                float dbgChartOuter  = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                float dbgChartInner  = dbgChartOuter - pfT.NormRadiusToLocal(arena.BandThicknessNorm);
+                float dbgDepth       = Mathf.Max(0f, judgement - dbgChartInner);
+                float dbgCov01       = PlayerSettingsStore.HitBandInnerCoverage01;
+
                 Vector2 actr     = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
                 Vector2 av       = hitLocal - actr;
                 float   r        = av.magnitude;
@@ -898,7 +904,8 @@ namespace RhythmicFlow.Player
 
                 string line =
                     $"[{akvp.Key}] r={r:F3}  hit=[{hitInner:F3}..{hitOuter:F3}]" +
-                    $"  jdg={judgement:F3}  radial={(radialPass ? "PASS" : "FAIL")}" +
+                    $"  jdg={judgement:F3}  cov={dbgCov01:F2}  depth={dbgDepth:F3}" +
+                    $"  radial={(radialPass ? "PASS" : "FAIL")}" +
                     $"  arc={(arcPass ? "PASS" : "FAIL")}  lanes=[{hitLanes}]";
 
                 // Drop-shadow + white label.

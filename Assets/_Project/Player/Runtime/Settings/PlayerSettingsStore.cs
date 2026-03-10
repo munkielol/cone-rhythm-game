@@ -183,13 +183,20 @@ namespace RhythmicFlow.Player
         public static float VisualOuterExpandNorm = 0.00f;
 
         /// <summary>
-        /// Hit Band — inner inset from the judgement ring (input-only, spec §5.5.2 / §8.3.1).
+        /// Hit Band — inward coverage fraction from judgement ring toward chartInner (input-only, spec §5.5.2 / §8.3.1).
         ///
-        /// hitInnerLocal = max(judgementRadiusLocal − HitBandInnerInsetNorm × minDimLocal, chartInnerLocal)
+        /// inwardDepthLocal = max(0, judgementRadiusLocal − chartInnerLocal)
+        /// hitInnerLocal    = judgementRadiusLocal − Clamp01(HitBandInnerCoverage01) × inwardDepthLocal
         ///
-        /// A touch must be at or outward of hitInnerLocal to count as "inside lane".
-        /// Clamped to chartInnerLocal so the hit band never extends past the chart inner edge.
-        /// Default: 0.02 (2 % of minDimLocal inward from the judgement ring).
+        /// 0.0 → no inward tolerance (hitInner == judgementRadius, only outward band matters).
+        /// 1.0 → full inward depth down to chartInnerLocal.
+        /// Default: 0.35 (35 % of the available inward depth from judgement line to chart inner edge).
+        /// </summary>
+        public static float HitBandInnerCoverage01 = 0.35f;
+
+        /// <summary>
+        /// DEPRECATED — replaced by HitBandInnerCoverage01 (spec §5.5.2).
+        /// Kept for compatibility; no longer used as the inward bound in ComputeHitBandLocal.
         /// </summary>
         public static float HitBandInnerInsetNorm = 0.004f;
 

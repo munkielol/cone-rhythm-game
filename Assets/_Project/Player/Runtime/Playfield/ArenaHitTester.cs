@@ -129,14 +129,21 @@ namespace RhythmicFlow.Player
         /// PlayerDebugRenderer (green arcs + highlight) — all callers must use this
         /// method so visual arcs always match the actual acceptance zone.
         ///
-        /// <para><b>Two-step formula (spec §5.5.2):</b><br/>
-        ///   Step 1 — pure hit band centred on judgementRadiusLocal:<br/>
-        ///     hitBandInner = judgement − HitBandInnerInsetNorm × minDim<br/>
-        ///     hitBandOuter = judgement + HitBandOuterInsetNorm × minDim<br/>
-        ///   Step 2 — InputBandExpand* applied additively on top:<br/>
-        ///     hitInnerLocal = max(hitBandInner − InputBandExpandInnerNorm × minDim, chartInner)<br/>
-        ///     hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim<br/>
-        /// hitInnerLocal is clamped to chartInnerLocal; hitOuterLocal is NOT clamped.
+        /// <para><b>Inward bound — coverage fraction (spec §5.5.2):</b><br/>
+        ///   inwardDepthLocal = max(0, judgementRadiusLocal − chartInnerLocal)<br/>
+        ///   hitBandInner     = judgementRadiusLocal − Clamp01(HitBandInnerCoverage01) × inwardDepthLocal<br/>
+        ///   HitBandInnerCoverage01 = 0 → no inward tolerance (hitInner == judgement).<br/>
+        ///   HitBandInnerCoverage01 = 1 → full depth to chartInnerLocal.<br/>
+        /// </para>
+        ///
+        /// <para><b>Outward bound — explicit norm (spec §5.5.2):</b><br/>
+        ///   hitBandOuter  = judgement + HitBandOuterInsetNorm × minDim<br/>
+        ///   hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim (clamped to visualOuterLocal)<br/>
+        /// </para>
+        ///
+        /// <para><b>InputBandExpand* additive fine-tune:</b><br/>
+        ///   hitInnerLocal = max(hitBandInner − InputBandExpandInnerNorm × minDim, chartInner)<br/>
+        ///   hitOuterLocal = min(hitBandOuter + InputBandExpandOuterNorm × minDim, visualOuterLocal)<br/>
         /// </para>
         /// </summary>
         public static void ComputeHitBandLocal(
@@ -155,15 +162,24 @@ namespace RhythmicFlow.Player
             judgementRadiusLocal = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
             visualOuterLocal     = chartOuter + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
 
-            // Step 1: pure hit band centred on judgementRadiusLocal.
-            float hitBandInner = judgementRadiusLocal - PlayerSettingsStore.HitBandInnerInsetNorm * minDim;
+            // Inward bound: fraction of available depth from judgement line toward chartInner (spec §5.5.2).
+            // coverage=0 → hitInner at judgement (no inward allowance).
+            // coverage=1 → hitInner at chartInner (full inward depth).
+            float inwardDepthLocal = Mathf.Max(0f, judgementRadiusLocal - chartInner);
+            float hitBandInner = judgementRadiusLocal
+                - Mathf.Clamp01(PlayerSettingsStore.HitBandInnerCoverage01) * inwardDepthLocal;
+
+            // Outward bound: explicit norm from judgement line outward (spec §5.5.2).
             float hitBandOuter = judgementRadiusLocal + PlayerSettingsStore.HitBandOuterInsetNorm * minDim;
 
-            // Step 2: InputBandExpand* additive on top; clamp inner to chartInner only.
+            // InputBandExpand* additive fine-tune on top.
+            // Inner clamped to chartInner; outer clamped to visualOuterLocal.
             hitInnerLocal = Mathf.Max(
                 hitBandInner - PlayerSettingsStore.InputBandExpandInnerNorm * minDim,
                 chartInner);
-            hitOuterLocal = hitBandOuter + PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+            hitOuterLocal = Mathf.Min(
+                hitBandOuter + PlayerSettingsStore.InputBandExpandOuterNorm * minDim,
+                visualOuterLocal);
         }
 
         // -------------------------------------------------------------------
