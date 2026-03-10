@@ -111,10 +111,19 @@ namespace RhythmicFlow.Player
         [Header("Colors")]
         [SerializeField] private Color arenaColor         = Color.cyan;
         [SerializeField] private Color laneColor          = Color.yellow;
-        [SerializeField] private Color noteColor          = Color.white;
+        [SerializeField] private Color tapColor           = Color.white;
+        [SerializeField] private Color flickColor         = new Color(0f, 1f, 0.5f);    // teal
+        [SerializeField] private Color catchColor         = Color.magenta;
+        [SerializeField] private Color holdColor          = new Color(0.3f, 0.6f, 1f);  // blue
         [SerializeField] private Color touchColor         = Color.red;
         [SerializeField] private Color flickArrowColor    = Color.green;
         [SerializeField] private Color judgementRingColor = new Color(0.85f, 0.6f, 1f); // purple-white
+
+        [Header("Hold Note Visuals (DEBUG)")]
+        [Tooltip("Draw a rail segment from hold start to hold end along the lane center.")]
+        [SerializeField] private bool showHoldRails = true;
+        [Tooltip("(Reserved) Draw tick markers on the hold rail — not yet implemented.")]
+        [SerializeField] private bool showHoldTicks = false;
 
         [Header("Judgement Flashes (DEBUG)")]
         [Tooltip("Duration in seconds that each judgement flash remains visible.")]
@@ -169,6 +178,12 @@ namespace RhythmicFlow.Player
 
         // Pool of flick direction arrow LineRenderers (parallel to _notePool; index-aligned).
         private LineRenderer[] _flickArrowPool;
+
+        // Hold note duration rail (2-point line, start → end endpoint; parallel to _notePool).
+        private LineRenderer[] _holdRailPool;
+
+        // Hold note end-marker diamonds (parallel to _notePool).
+        private LineRenderer[] _holdEndMarkerPool;
 
         // -------------------------------------------------------------------
         // Judgement flash state (ring buffer — no per-flash allocation)
@@ -408,6 +423,24 @@ namespace RhythmicFlow.Player
                 _flickArrowPool[i] = CreateLineRenderer($"FlickArrow_{i}", flickArrowColor);
                 _flickArrowPool[i].positionCount = 2;
                 _flickArrowPool[i].gameObject.SetActive(false);
+            }
+
+            // Hold duration rail pool (2-point line; index-aligned with _notePool).
+            _holdRailPool = new LineRenderer[maxNoteMarkers];
+            for (int i = 0; i < maxNoteMarkers; i++)
+            {
+                _holdRailPool[i] = CreateLineRenderer($"HoldRail_{i}", holdColor);
+                _holdRailPool[i].positionCount = 2;
+                _holdRailPool[i].gameObject.SetActive(false);
+            }
+
+            // Hold end marker pool (diamond at hold's end timestamp position; index-aligned).
+            _holdEndMarkerPool = new LineRenderer[maxNoteMarkers];
+            for (int i = 0; i < maxNoteMarkers; i++)
+            {
+                _holdEndMarkerPool[i] = CreateLineRenderer($"HoldEndMarker_{i}", holdColor);
+                _holdEndMarkerPool[i].positionCount = 5;
+                _holdEndMarkerPool[i].gameObject.SetActive(false);
             }
 
             // Touch hit marker (diamond — yellow; shows the actual hit point used for gameplay).
@@ -675,7 +708,11 @@ namespace RhythmicFlow.Player
                     Vector3 worldPos = pfRoot.TransformPoint(localPt.x, localPt.y, VisualOnlyLocalZ(s01Note));
 
                     // Fade from dim (spawn) to full-bright (hit) so far notes don't clutter.
-                    Color c = noteColor;
+                    Color noteBase = note.Type == NoteType.Flick ? flickColor
+                                   : note.Type == NoteType.Catch ? catchColor
+                                   : note.Type == NoteType.Hold  ? holdColor
+                                   :                               tapColor;
+                    Color c = noteBase;
                     c.a = Mathf.Lerp(0.3f, 1.0f, alpha);
                     _notePool[poolIdx].startColor = c;
                     _notePool[poolIdx].endColor   = c;
@@ -715,6 +752,44 @@ namespace RhythmicFlow.Player
                         _flickArrowPool[poolIdx].gameObject.SetActive(false);
                     }
 
+                    // Hold duration rail + end marker — VISUAL ONLY.
+                    // Each endpoint maps its own timeToHitMs independently:
+                    //   start uses note.StartTimeMs (already in timeToHitMs above)
+                    //   end   uses note.EndTimeMs   (may be beyond lead time → clamped to spawnR)
+                    if (note.Type == NoteType.Hold && showHoldRails)
+                    {
+                        double endTimeToHitMs = note.EndTimeMs - chartTimeMs;
+                        float  endAlpha = (noteLeadTimeMs > 0)
+                            ? 1f - Mathf.Clamp01((float)endTimeToHitMs / noteLeadTimeMs)
+                            : 1f;
+                        float   endR       = Mathf.Lerp(spawnR, judgementRadiusLocal, endAlpha);
+                        Vector2 endLocalPt = center + new Vector2(Mathf.Cos(thetaRad), Mathf.Sin(thetaRad)) * endR;
+                        float   s01End     = (outerLocal > innerLocal)
+                            ? Mathf.Clamp01((endR - innerLocal) / (outerLocal - innerLocal)) : 1f;
+                        Vector3 endWorldPos = pfRoot.TransformPoint(
+                            endLocalPt.x, endLocalPt.y, VisualOnlyLocalZ(s01End));
+
+                        // Rail: 2-point line from start endpoint → end endpoint along lane center.
+                        Color rc = holdColor; rc.a = c.a;
+                        _holdRailPool[poolIdx].startColor = rc;
+                        _holdRailPool[poolIdx].endColor   = rc;
+                        _holdRailPool[poolIdx].SetPosition(0, worldPos);
+                        _holdRailPool[poolIdx].SetPosition(1, endWorldPos);
+                        _holdRailPool[poolIdx].gameObject.SetActive(true);
+
+                        // End marker: diamond faded by end-point alpha.
+                        Color ec = holdColor; ec.a = Mathf.Lerp(0.3f, 1.0f, endAlpha);
+                        _holdEndMarkerPool[poolIdx].startColor = ec;
+                        _holdEndMarkerPool[poolIdx].endColor   = ec;
+                        _holdEndMarkerPool[poolIdx].gameObject.SetActive(true);
+                        SetDiamondPositions(_holdEndMarkerPool[poolIdx], endWorldPos, pfRoot);
+                    }
+                    else
+                    {
+                        _holdRailPool[poolIdx].gameObject.SetActive(false);
+                        _holdEndMarkerPool[poolIdx].gameObject.SetActive(false);
+                    }
+
                     poolIdx++;
                 }
             }
@@ -722,12 +797,24 @@ namespace RhythmicFlow.Player
             // Disable unused pool entries.
             DisableNoteMarkersFrom(poolIdx);
             DisableFlickArrowsFrom(poolIdx);
+            DisableHoldVisualsFrom(poolIdx);
         }
 
         private void DisableAllNoteMarkers()
         {
             DisableNoteMarkersFrom(0);
             DisableFlickArrowsFrom(0);
+            DisableHoldVisualsFrom(0);
+        }
+
+        private void DisableHoldVisualsFrom(int startIdx)
+        {
+            if (_holdRailPool == null) { return; }
+            for (int i = startIdx; i < _holdRailPool.Length; i++)
+            {
+                _holdRailPool[i].gameObject.SetActive(false);
+                _holdEndMarkerPool[i].gameObject.SetActive(false);
+            }
         }
 
         private void DisableNoteMarkersFrom(int startIdx)
