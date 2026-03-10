@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace RhythmicFlow.Shared
 {
@@ -41,5 +42,84 @@ namespace RhythmicFlow.Shared
     public class FloatTrack
     {
         public List<FloatKeyframe> keyframes = new List<FloatKeyframe>();
+
+        // -------------------------------------------------------------------
+        // Evaluation (spec §5.9)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Evaluates this track at the given chart time in milliseconds.
+        /// 0 keyframes → returns defaultVal (required tracks should always have ≥1 by validator).
+        /// 1 keyframe  → returns its value regardless of timeMs.
+        /// N keyframes → clamp-extrapolate at edges; interpolate between surrounding pair.
+        ///   easing "hold"   → step: hold left value until next keyframe.
+        ///   easing anything else (incl. "linear") → Mathf.Lerp(left, right, t01).
+        /// No allocations.
+        /// </summary>
+        public float Evaluate(int timeMs, float defaultVal = 0f)
+        {
+            if (keyframes == null || keyframes.Count == 0) { return defaultVal; }
+            if (keyframes.Count == 1)                      { return keyframes[0].value; }
+
+            // Clamp to endpoints.
+            if (timeMs <= keyframes[0].timeMs)                      { return keyframes[0].value; }
+            if (timeMs >= keyframes[keyframes.Count - 1].timeMs)    { return keyframes[keyframes.Count - 1].value; }
+
+            // Find the right-hand keyframe (first whose timeMs > timeMs).
+            int right = 1;
+            while (right < keyframes.Count && keyframes[right].timeMs <= timeMs) { right++; }
+            int left = right - 1;
+
+            FloatKeyframe kfL = keyframes[left];
+            FloatKeyframe kfR = keyframes[right];
+
+            if (kfL.easing == "hold") { return kfL.value; }
+
+            float t01 = (float)(timeMs - kfL.timeMs) / (float)(kfR.timeMs - kfL.timeMs);
+            return Mathf.Lerp(kfL.value, kfR.value, t01);
+        }
+
+        /// <summary>
+        /// Evaluates this track as an angle in degrees, using shortest-path interpolation
+        /// so values wrap correctly through the 0°/360° boundary.
+        /// Result is normalized to [0, 360).
+        /// </summary>
+        public float EvaluateAngleDeg(int timeMs, float defaultVal = 0f)
+        {
+            if (keyframes == null || keyframes.Count == 0) { return Normalize360(defaultVal); }
+            if (keyframes.Count == 1)                      { return Normalize360(keyframes[0].value); }
+
+            if (timeMs <= keyframes[0].timeMs)                   { return Normalize360(keyframes[0].value); }
+            if (timeMs >= keyframes[keyframes.Count - 1].timeMs) { return Normalize360(keyframes[keyframes.Count - 1].value); }
+
+            int right = 1;
+            while (right < keyframes.Count && keyframes[right].timeMs <= timeMs) { right++; }
+            int left = right - 1;
+
+            FloatKeyframe kfL = keyframes[left];
+            FloatKeyframe kfR = keyframes[right];
+
+            if (kfL.easing == "hold") { return Normalize360(kfL.value); }
+
+            float t01   = (float)(timeMs - kfL.timeMs) / (float)(kfR.timeMs - kfL.timeMs);
+            float delta = ShortestSignedDeltaDeg(kfL.value, kfR.value);
+            return Normalize360(kfL.value + delta * t01);
+        }
+
+        // Wraps angle to [0, 360).
+        private static float Normalize360(float deg)
+        {
+            float r = deg % 360f;
+            return r < 0f ? r + 360f : r;
+        }
+
+        // Shortest signed angular difference from 'from' to 'to' in (-180, 180].
+        private static float ShortestSignedDeltaDeg(float from, float to)
+        {
+            float delta = (to - from) % 360f;
+            if (delta >  180f) { delta -= 360f; }
+            if (delta < -180f) { delta += 360f; }
+            return delta;
+        }
     }
 }

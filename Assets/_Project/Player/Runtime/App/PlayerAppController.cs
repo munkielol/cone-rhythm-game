@@ -287,6 +287,9 @@ namespace RhythmicFlow.Player
 
             double chartTimeMs = _conductor.EffectiveChartTimeMs;
 
+            // --- Geometry: re-evaluate all animated tracks at current chart time ---
+            EvaluateGeometry((int)chartTimeMs);
+
             // --- Note lifecycle ---
             _scheduler.AdvanceActive(chartTimeMs, ActivationLeadMs);
             _scheduler.GetActiveInWindow(chartTimeMs, _judgementEngine.Windows.GreatWindowMs,
@@ -621,29 +624,48 @@ namespace RhythmicFlow.Player
         }
 
         // ===================================================================
-        // Geometry — first-keyframe static snapshots
+        // Geometry — track evaluation
         // ===================================================================
 
-        // V0 harness: evaluates every animated track at time=0 by reading the
-        // first keyframe. Full track interpolation is a future task.
+        // Initializes geometry dictionaries and builds the static lane→arena map.
+        // Calls EvaluateGeometry(0) so the dicts are populated before playback begins.
         private void BuildGeometrySnapshots()
         {
             _arenaGeos   = new Dictionary<string, ArenaGeometry>(StringComparer.Ordinal);
             _laneGeos    = new Dictionary<string, LaneGeometry>(StringComparer.Ordinal);
             _laneToArena = new Dictionary<string, string>(StringComparer.Ordinal);
 
+            foreach (ChartLane lane in _chart.lanes)
+            {
+                if (lane == null || string.IsNullOrEmpty(lane.laneId)) { continue; }
+                if (!string.IsNullOrEmpty(lane.arenaId))
+                {
+                    _laneToArena[lane.laneId] = lane.arenaId;
+                }
+            }
+
+            EvaluateGeometry(0);
+
+            Debug.Log($"[PlayerApp] Geometry built: " +
+                      $"{_arenaGeos.Count} arena(s), {_laneGeos.Count} lane(s).");
+        }
+
+        // Evaluates all animated arena/lane tracks at timeMs and updates the geometry dicts.
+        // Called once at chart load (t=0) and every frame during playback.
+        private void EvaluateGeometry(int timeMs)
+        {
             foreach (ChartArena arena in _chart.arenas)
             {
                 if (arena == null || string.IsNullOrEmpty(arena.arenaId)) { continue; }
 
                 _arenaGeos[arena.arenaId] = new ArenaGeometry
                 {
-                    CenterXNorm       = FirstKf(arena.centerX,       0.5f),
-                    CenterYNorm       = FirstKf(arena.centerY,       0.5f),
-                    OuterRadiusNorm   = FirstKf(arena.outerRadius,   0.4f),
-                    BandThicknessNorm = FirstKf(arena.bandThickness, 0.1f),
-                    ArcStartDeg       = FirstKf(arena.arcStartDeg,   0f),
-                    ArcSweepDeg       = FirstKf(arena.arcSweepDeg,   360f),
+                    CenterXNorm       = arena.centerX.Evaluate(timeMs,       0.5f),
+                    CenterYNorm       = arena.centerY.Evaluate(timeMs,       0.5f),
+                    OuterRadiusNorm   = arena.outerRadius.Evaluate(timeMs,   0.4f),
+                    BandThicknessNorm = arena.bandThickness.Evaluate(timeMs, 0.1f),
+                    ArcStartDeg       = arena.arcStartDeg.Evaluate(timeMs,   0f),
+                    ArcSweepDeg       = arena.arcSweepDeg.Evaluate(timeMs,   360f),
                 };
             }
 
@@ -653,25 +675,10 @@ namespace RhythmicFlow.Player
 
                 _laneGeos[lane.laneId] = new LaneGeometry
                 {
-                    CenterDeg = FirstKf(lane.centerDeg, 0f),
-                    WidthDeg  = FirstKf(lane.widthDeg,  30f),
+                    CenterDeg = lane.centerDeg.EvaluateAngleDeg(timeMs, 0f),
+                    WidthDeg  = lane.widthDeg.Evaluate(timeMs,          30f),
                 };
-
-                if (!string.IsNullOrEmpty(lane.arenaId))
-                {
-                    _laneToArena[lane.laneId] = lane.arenaId;
-                }
             }
-
-            Debug.Log($"[PlayerApp] Geometry built: " +
-                      $"{_arenaGeos.Count} arena(s), {_laneGeos.Count} lane(s).");
-        }
-
-        // Returns the first keyframe's value, or defaultVal if the track is empty.
-        private static float FirstKf(FloatTrack track, float defaultVal = 0f)
-        {
-            if (track?.keyframes == null || track.keyframes.Count == 0) { return defaultVal; }
-            return track.keyframes[0].value;
         }
 
         // ===================================================================
