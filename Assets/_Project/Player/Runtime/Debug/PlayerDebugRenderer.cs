@@ -254,7 +254,8 @@ namespace RhythmicFlow.Player
                 return; // nothing to draw yet
             }
 
-            UpdateHitBandArcs();   // must run every frame — radii depend on runtime settings
+            UpdateHitBandArcs();        // must run every frame — radii depend on runtime settings
+            UpdateLaneLineRenderers();  // re-position edge/center lines from current evaluated geometry
             UpdateNoteMarkers();
             UpdateTouchMarker();
             UpdateLaneHighlights();
@@ -299,6 +300,65 @@ namespace RhythmicFlow.Player
                     geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitInner);
                 SetArcPositions(lrs[6], center, hitOuter,
                     geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01HitOuter);
+            }
+        }
+
+        // Repositions all 5 lane LineRenderers from the current evaluated lane/arena geometry.
+        // Mirrors BuildLaneLineRenderer but runs every frame so animated lanes stay in sync.
+        private void UpdateLaneLineRenderers()
+        {
+            if (!showLaneEdges && !showLaneArcs) { return; }
+
+            IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            IReadOnlyDictionary<string, string>        lToA   = playerAppController.DebugLaneToArena;
+            PlayfieldTransform pfT    = playerAppController.DebugPlayfieldTransform;
+            Transform          pfRoot = playerAppController.playfieldRoot;
+            if (lanes == null || arenas == null || lToA == null || pfT == null) { return; }
+
+            foreach (KeyValuePair<string, LineRenderer[]> kvp in _laneLRs)
+            {
+                string         laneId = kvp.Key;
+                LineRenderer[] lrs    = kvp.Value;
+                if (lrs == null || lrs.Length < 5) { continue; }
+
+                if (!lanes.TryGetValue(laneId, out LaneGeometry lane))      { continue; }
+                if (!lToA.TryGetValue(laneId, out string arenaId))           { continue; }
+                if (!arenas.TryGetValue(arenaId, out ArenaGeometry arena))   { continue; }
+
+                float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
+                float innerLocal = outerLocal - bandLocal;
+                float minDim     = pfT.MinDimLocal;
+                Vector2 center   = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+
+                float visualOuterLocal     = outerLocal + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
+                float judgementRadiusLocal = outerLocal - PlayerSettingsStore.JudgementInsetNorm * minDim;
+                float s01Judgement         = (outerLocal > innerLocal)
+                    ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
+                    : 0f;
+
+                float leftDeg  = lane.CenterDeg - lane.WidthDeg * 0.5f;
+                float rightDeg = lane.CenterDeg + lane.WidthDeg * 0.5f;
+
+                // lrs[0]: center ray, inner → judgement ring.
+                SetRadialPositions(lrs[0], center, innerLocal, judgementRadiusLocal,
+                                   lane.CenterDeg, pfRoot, outerS01: s01Judgement);
+
+                // lrs[1]: left boundary edge, inner → visualOuter.
+                SetRadialPositions(lrs[1], center, innerLocal, visualOuterLocal,
+                                   leftDeg, pfRoot, outerS01: 1f);
+
+                // lrs[2]: right boundary edge, inner → visualOuter.
+                SetRadialPositions(lrs[2], center, innerLocal, visualOuterLocal,
+                                   rightDeg, pfRoot, outerS01: 1f);
+
+                // lrs[3]: inner arc spanning the lane wedge.
+                SetArcPositions(lrs[3], center, innerLocal, leftDeg, lane.WidthDeg, pfRoot, s01: 0f);
+
+                // lrs[4]: judgement arc spanning the lane wedge.
+                SetArcPositions(lrs[4], center, judgementRadiusLocal, leftDeg, lane.WidthDeg,
+                                pfRoot, s01: s01Judgement);
             }
         }
 
@@ -872,6 +932,26 @@ namespace RhythmicFlow.Player
             bool showProj = PlayerSettingsStore.DebugShowInputProjection;
             if (!showBand && !showProj) { return; }
             if (!_geometryBuilt || playerAppController == null) { return; }
+
+            // Lane-1 animated geometry readout — visible every frame so animated movement is
+            // immediately apparent without needing an active touch.
+            if (showBand)
+            {
+                IReadOnlyDictionary<string, LaneGeometry> lanesAll =
+                    playerAppController.DebugLaneGeometries;
+                if (lanesAll != null && lanesAll.TryGetValue("lane-1", out LaneGeometry dbgLane1))
+                {
+                    const int lh = 18;
+                    string laneLine =
+                        $"[lane-1] centerDeg={dbgLane1.CenterDeg:F2}  widthDeg={dbgLane1.WidthDeg:F2}";
+                    GUI.color = Color.black;
+                    GUI.Label(new Rect(11, 11, Screen.width, lh), laneLine);
+                    GUI.color = Color.yellow;
+                    GUI.Label(new Rect(10, 10, Screen.width, lh), laneLine);
+                    GUI.color = Color.white;
+                }
+            }
+
             if (!playerAppController.DebugHasTouchHit) { return; }
 
             IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
