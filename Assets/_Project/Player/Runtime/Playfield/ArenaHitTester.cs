@@ -120,6 +120,53 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // Hit band computation (spec §5.5.2) — single source of truth
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Computes hit-band and visual radii for an arena in PlayfieldLocal units.
+        /// This is the single canonical source used by JudgementEngine (gameplay) and
+        /// PlayerDebugRenderer (green arcs + highlight) — all callers must use this
+        /// method so visual arcs always match the actual acceptance zone.
+        ///
+        /// <para><b>Two-step formula (spec §5.5.2):</b><br/>
+        ///   Step 1 — pure hit band centred on judgementRadiusLocal:<br/>
+        ///     hitBandInner = judgement − HitBandInnerInsetNorm × minDim<br/>
+        ///     hitBandOuter = judgement + HitBandOuterInsetNorm × minDim<br/>
+        ///   Step 2 — InputBandExpand* applied additively on top:<br/>
+        ///     hitInnerLocal = max(hitBandInner − InputBandExpandInnerNorm × minDim, chartInner)<br/>
+        ///     hitOuterLocal = hitBandOuter + InputBandExpandOuterNorm × minDim<br/>
+        /// hitInnerLocal is clamped to chartInnerLocal; hitOuterLocal is NOT clamped.
+        /// </para>
+        /// </summary>
+        public static void ComputeHitBandLocal(
+            ArenaGeometry      arena,
+            PlayfieldTransform playfieldTransform,
+            out float          hitInnerLocal,
+            out float          hitOuterLocal,
+            out float          judgementRadiusLocal,
+            out float          visualOuterLocal)
+        {
+            float minDim     = playfieldTransform.MinDimLocal;
+            float chartOuter = playfieldTransform.NormRadiusToLocal(arena.OuterRadiusNorm);
+            float chartBand  = playfieldTransform.NormRadiusToLocal(arena.BandThicknessNorm);
+            float chartInner = chartOuter - chartBand;
+
+            judgementRadiusLocal = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
+            visualOuterLocal     = chartOuter + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
+
+            // Step 1: pure hit band centred on judgementRadiusLocal.
+            float hitBandInner = judgementRadiusLocal - PlayerSettingsStore.HitBandInnerInsetNorm * minDim;
+            float hitBandOuter = judgementRadiusLocal + PlayerSettingsStore.HitBandOuterInsetNorm * minDim;
+
+            // Step 2: InputBandExpand* additive on top; clamp inner to chartInner only.
+            hitInnerLocal = Mathf.Max(
+                hitBandInner - PlayerSettingsStore.InputBandExpandInnerNorm * minDim,
+                chartInner);
+            hitOuterLocal = hitBandOuter + PlayerSettingsStore.InputBandExpandOuterNorm * minDim;
+        }
+
+        // -------------------------------------------------------------------
         // Full hit test
         // -------------------------------------------------------------------
 

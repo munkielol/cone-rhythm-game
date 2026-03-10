@@ -339,30 +339,19 @@ namespace RhythmicFlow.Player
             float outerLocal = pfT.NormRadiusToLocal(geo.OuterRadiusNorm);
             float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
             float innerLocal = outerLocal - bandLocal;
-            float minDim     = pfT.MinDimLocal;
 
-            // Visual outer rim: extends beyond chart outerLocal (default expand = 0 → same as outerLocal).
-            float visualOuterLocal = outerLocal
-                + PlayerSettingsStore.VisualOuterExpandNorm * minDim; // VISUAL ONLY
+            // Shared hit-band + visual radii — same values as JudgementEngine and lane highlight.
+            ArenaHitTester.ComputeHitBandLocal(geo, pfT,
+                out float hitInnerLocal, out float hitOuterLocal,
+                out float judgementRadiusLocal, out float visualOuterLocal);
 
-            // Judgement ring inset inside chart outerLocal. Notes land here visually.
-            float judgementRadiusLocal = outerLocal
-                - PlayerSettingsStore.JudgementInsetNorm * minDim;    // VISUAL ONLY
+            float minDim = pfT.MinDimLocal; // needed for s01 only (frustum Z, VISUAL ONLY)
+
+            // s01: normalized [0=innerLocal, 1=outerLocal] — for frustum Z only, VISUAL ONLY.
             float s01Judgement = (outerLocal > innerLocal)
                 ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
                 : 0f;
-
-            // Hit band inner/outer radii (INPUT-ONLY, spec §5.5.2).
-            // Mirrors JudgementEngine.IsInsideLane — keep in sync.
-            float hitInnerLocal = Mathf.Max(
-                judgementRadiusLocal - (PlayerSettingsStore.HitBandInnerInsetNorm
-                                        + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
-                innerLocal);                                                   // INPUT ONLY
-            float hitOuterLocal = judgementRadiusLocal
-                + (PlayerSettingsStore.HitBandOuterInsetNorm
-                   + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;   // INPUT ONLY
-
-            // s01 values for frustum Z (clamped — hitOuter may exceed outerLocal).
+            // s01 for hit band (clamped — hitInner/hitOuter may fall outside [inner, outer]).
             float s01HitInner = (outerLocal > innerLocal)
                 ? Mathf.Clamp01((hitInnerLocal - innerLocal) / (outerLocal - innerLocal))
                 : 0f;
@@ -713,28 +702,19 @@ namespace RhythmicFlow.Player
             float   r        = v.magnitude;
             float   thetaDeg = AngleUtil.Normalize360(Mathf.Atan2(v.y, v.x) * Mathf.Rad2Deg);
 
-            float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
-            float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
-            float innerLocal = outerLocal - bandLocal;
-            float minDim     = pfT.MinDimLocal;
-
-            // Radial band for the containment check.  VISUAL ONLY.
+            // Radial band — exact same values as JudgementEngine and green arcs.
             float bandMin, bandMax;
             if (useHitBandForLaneHighlight)
             {
-                // Mirror JudgementEngine.IsInsideLane — keep in sync with §5.5.2.
-                float judgement = outerLocal - PlayerSettingsStore.JudgementInsetNorm * minDim;
-                bandMin = Mathf.Max(
-                    judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
-                                 + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
-                    innerLocal);
-                bandMax = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
-                                       + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+                ArenaHitTester.ComputeHitBandLocal(arena, pfT,
+                    out bandMin, out bandMax, out _, out _);
             }
             else
             {
+                float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
+                float innerLocal = outerLocal - pfT.NormRadiusToLocal(arena.BandThicknessNorm);
                 bandMin = innerLocal;
-                bandMax = outerLocal + PlayerSettingsStore.VisualOuterExpandNorm * minDim;
+                bandMax = outerLocal + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
             }
 
             if (r < bandMin || r > bandMax) { return false; }
@@ -770,6 +750,78 @@ namespace RhythmicFlow.Player
             {
                 _touchLR.gameObject.SetActive(false);
             }
+        }
+
+        // -------------------------------------------------------------------
+        // OnGUI: touch band debug overlay (PlayerSettingsStore.DebugShowTouchBand)
+        // -------------------------------------------------------------------
+
+        // Draws a live text overlay showing the current touch radius vs hit-band bounds,
+        // arc test result, and which lane IDs the touch is inside.
+        // One line per arena. Enabled only when DebugShowTouchBand = true.
+        // Layout: [arenaId] r=0.412  hit=[0.360..0.460]  jdg=0.410  radial=PASS  arc=PASS  lanes=[lane-1]
+        private void OnGUI()
+        {
+            if (!PlayerSettingsStore.DebugShowTouchBand) { return; }
+            if (!_geometryBuilt || playerAppController == null) { return; }
+            if (!playerAppController.DebugHasTouchHit) { return; }
+
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
+            IReadOnlyDictionary<string, string>        lToA   = playerAppController.DebugLaneToArena;
+            PlayfieldTransform                         pfT    = playerAppController.DebugPlayfieldTransform;
+
+            if (arenas == null || lanes == null || lToA == null || pfT == null) { return; }
+
+            Vector2 hitLocal = playerAppController.DebugLastTouchLocalXY;
+
+            const int lineH = 18;
+            int       y     = 10;
+
+            foreach (KeyValuePair<string, ArenaGeometry> akvp in arenas)
+            {
+                ArenaGeometry arena = akvp.Value;
+
+                // Same canonical computation used by gameplay and green arcs.
+                ArenaHitTester.ComputeHitBandLocal(arena, pfT,
+                    out float hitInner, out float hitOuter,
+                    out float judgement, out _);
+
+                Vector2 actr     = pfT.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+                Vector2 av       = hitLocal - actr;
+                float   r        = av.magnitude;
+                float   thetaDeg = AngleUtil.Normalize360(Mathf.Atan2(av.y, av.x) * Mathf.Rad2Deg);
+
+                bool radialPass = (r >= hitInner && r <= hitOuter);
+                bool arcPass    = AngleUtil.IsAngleInArc(thetaDeg, arena.ArcStartDeg, arena.ArcSweepDeg);
+
+                // Collect lane IDs whose wedge contains the touch.
+                string hitLanes = "";
+                foreach (KeyValuePair<string, LaneGeometry> lkvp in lanes)
+                {
+                    if (!lToA.TryGetValue(lkvp.Key, out string la) || la != akvp.Key) { continue; }
+                    float lc    = AngleUtil.Normalize360(lkvp.Value.CenterDeg);
+                    float hw    = lkvp.Value.WidthDeg * 0.5f;
+                    float delta = AngleUtil.ShortestSignedAngleDeltaDeg(lc, thetaDeg);
+                    if (radialPass && arcPass && Mathf.Abs(delta) <= hw)
+                        hitLanes += (hitLanes.Length > 0 ? "," : "") + lkvp.Key;
+                }
+
+                string line =
+                    $"[{akvp.Key}] r={r:F3}  hit=[{hitInner:F3}..{hitOuter:F3}]" +
+                    $"  jdg={judgement:F3}  radial={(radialPass ? "PASS" : "FAIL")}" +
+                    $"  arc={(arcPass ? "PASS" : "FAIL")}  lanes=[{hitLanes}]";
+
+                // Drop-shadow + white label.
+                GUI.color = Color.black;
+                GUI.Label(new Rect(11, y + 1, Screen.width, lineH), line);
+                GUI.color = Color.white;
+                GUI.Label(new Rect(10, y,     Screen.width, lineH), line);
+
+                y += lineH;
+            }
+
+            GUI.color = Color.white; // restore default
         }
 
         // -------------------------------------------------------------------

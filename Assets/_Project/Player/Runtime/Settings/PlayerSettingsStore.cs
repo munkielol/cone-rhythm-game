@@ -117,6 +117,14 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
+        /// DEBUG: When true, PlayerDebugRenderer draws a live OnGUI overlay for the current touch:
+        /// touch radius r, hit-band bounds [hitInner..hitOuter], judgement radius, radial/arc
+        /// pass-fail flags, and matched lane IDs.  Requires PlayerDebugRenderer in the scene.
+        /// Default: false.
+        /// </summary>
+        public static bool DebugShowTouchBand = false;
+
+        /// <summary>
         /// DEBUG: When true, the Perfect tier window is extended to cover the full GreatWindowMs.
         /// Great tier is suppressed — every in-window hit becomes Perfect (or Perfect+ if within
         /// PerfectPlusWindowMs). Perfect+ sub-window is NOT enlarged.

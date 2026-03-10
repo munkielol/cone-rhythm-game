@@ -693,27 +693,22 @@ namespace RhythmicFlow.Player
             if (!_laneToArena.TryGetValue(laneId, out string arenaId)) { return false; }
             if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return false; }
 
-            // Hit band centred on the judgement ring (spec §5.5.2 / §8.3.1).
-            // InputBandExpand* are additive fine-tune on top of the hit band.
-            float minDim     = _playfieldTransform.MinDimLocal;
-            float chartOuter = _playfieldTransform.NormRadiusToLocal(arenaGeo.OuterRadiusNorm);
-            float chartBand  = _playfieldTransform.NormRadiusToLocal(arenaGeo.BandThicknessNorm);
-            float chartInner = chartOuter - chartBand;
-            float judgement  = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
+            // Compute hit band using the shared canonical formula (spec §5.5.2).
+            ArenaHitTester.ComputeHitBandLocal(arenaGeo, _playfieldTransform,
+                out float hitInner, out float hitOuter, out _, out _);
 
-            float hitInner = Mathf.Max(
-                judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
-                             + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
-                chartInner);
-            float hitOuter = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
-                                          + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+            // Polar decomposition in PlayfieldLocal space.
+            Vector2 ctr = _playfieldTransform.NormalizedToLocal(
+                new Vector2(arenaGeo.CenterXNorm, arenaGeo.CenterYNorm));
+            Vector2 dv  = hitLocal - ctr;
+            float   r   = dv.magnitude;
+            thetaDeg    = AngleUtil.Normalize360(Mathf.Atan2(dv.y, dv.x) * Mathf.Rad2Deg);
 
-            // Express as expansion relative to chart bounds for IsInsideArenaBand API.
-            // Negative expandInner = narrow the band inward (valid, spec §5.5.2 note).
-            if (!ArenaHitTester.IsInsideArenaBand(hitLocal, arenaGeo, _playfieldTransform,
-                out thetaDeg,
-                expandInnerLocal: chartInner - hitInner,
-                expandOuterLocal: hitOuter - chartOuter)) { return false; }
+            // Radial band test: r must be in [hitInner, hitOuter].
+            if (r < hitInner || r > hitOuter) { return false; }
+
+            // Arena arc test (wrap-safe).
+            if (!AngleUtil.IsAngleInArc(thetaDeg, arenaGeo.ArcStartDeg, arenaGeo.ArcSweepDeg)) { return false; }
 
             return ArenaHitTester.IsInsideLane(thetaDeg, laneGeo);
         }
@@ -729,17 +724,8 @@ namespace RhythmicFlow.Player
             if (!_laneToArena.TryGetValue(laneId, out string arenaId))            { return "hitBand=?"; }
             if (!arenaGeometries.TryGetValue(arenaId, out ArenaGeometry arenaGeo)) { return "hitBand=?"; }
 
-            float minDim     = _playfieldTransform.MinDimLocal;
-            float chartOuter = _playfieldTransform.NormRadiusToLocal(arenaGeo.OuterRadiusNorm);
-            float chartBand  = _playfieldTransform.NormRadiusToLocal(arenaGeo.BandThicknessNorm);
-            float chartInner = chartOuter - chartBand;
-            float judgement  = chartOuter - PlayerSettingsStore.JudgementInsetNorm * minDim;
-            float hitInner   = Mathf.Max(
-                judgement - (PlayerSettingsStore.HitBandInnerInsetNorm
-                             + PlayerSettingsStore.InputBandExpandInnerNorm) * minDim,
-                chartInner);
-            float hitOuter   = judgement + (PlayerSettingsStore.HitBandOuterInsetNorm
-                                            + PlayerSettingsStore.InputBandExpandOuterNorm) * minDim;
+            ArenaHitTester.ComputeHitBandLocal(arenaGeo, _playfieldTransform,
+                out float hitInner, out float hitOuter, out float judgement, out _);
             return $"judgement={judgement:F4}  hitBand=({hitInner:F4},{hitOuter:F4})";
         }
 
