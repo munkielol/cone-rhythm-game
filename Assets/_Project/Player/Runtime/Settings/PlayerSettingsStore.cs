@@ -122,7 +122,7 @@ namespace RhythmicFlow.Player
         /// positions, and the XY delta between them.  Requires useVisualSurfaceRaycast enabled on
         /// PlayerAppController.  Default: false.
         /// </summary>
-        public static bool DebugShowInputProjection = false;
+        public static bool DebugShowInputProjection = true;
 
         /// <summary>
         /// DEBUG: When true, PlayerDebugRenderer draws a live OnGUI overlay for the current touch:

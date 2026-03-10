@@ -172,6 +172,11 @@ MonoBehaviour:
   useEditorProjectRootPacks: 1
   editorPacksFolderName: DevPacks
   gameplayMode: 0
+  useVisualSurfaceRaycast: 1
+  visualSurfaceLayerMask:
+    serializedVersion: 2
+    m_Bits: 64
+  visualSurfaceRoot: {fileID: 0}
 --- !u!1 &58450156
 GameObject:
   m_ObjectHideFlags: 0
@@ -311,7 +316,10 @@ GameObject:
   m_Component:
   - component: {fileID: 412451163}
   - component: {fileID: 412451162}
-  m_Layer: 0
+  - component: {fileID: 412451164}
+  - component: {fileID: 412451166}
+  - component: {fileID: 412451165}
+  m_Layer: 6
   m_Name: ArenaSurface
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -351,6 +359,85 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!64 &412451164
+MeshCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 412451161}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 64
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 5
+  m_Convex: 0
+  m_CookingOptions: 30
+  m_Mesh: {fileID: 0}
+--- !u!23 &412451165
+MeshRenderer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 412451161}
+  m_Enabled: 1
+  m_CastShadows: 1
+  m_ReceiveShadows: 1
+  m_DynamicOccludee: 1
+  m_StaticShadowCaster: 0
+  m_MotionVectors: 1
+  m_LightProbeUsage: 1
+  m_ReflectionProbeUsage: 1
+  m_RayTracingMode: 2
+  m_RayTraceProcedural: 0
+  m_RayTracingAccelStructBuildFlagsOverride: 0
+  m_RayTracingAccelStructBuildFlags: 1
+  m_SmallMeshCulling: 1
+  m_ForceMeshLod: -1
+  m_MeshLodSelectionBias: 0
+  m_RenderingLayerMask: 1
+  m_RendererPriority: 0
+  m_Materials:
+  - {fileID: 0}
+  m_StaticBatchInfo:
+    firstSubMesh: 0
+    subMeshCount: 0
+  m_StaticBatchRoot: {fileID: 0}
+  m_ProbeAnchor: {fileID: 0}
+  m_LightProbeVolumeOverride: {fileID: 0}
+  m_ScaleInLightmap: 1
+  m_ReceiveGI: 1
+  m_PreserveUVs: 0
+  m_IgnoreNormalsForChartDetection: 0
+  m_ImportantGI: 0
+  m_StitchLightmapSeams: 1
+  m_SelectedEditorRenderState: 3
+  m_MinimumChartSize: 4
+  m_AutoUVMaxDistance: 0.5
+  m_AutoUVMaxAngle: 89
+  m_LightmapParameters: {fileID: 0}
+  m_GlobalIlluminationMeshLod: 0
+  m_SortingLayerID: 0
+  m_SortingLayer: 0
+  m_SortingOrder: 0
+  m_MaskInteraction: 0
+  m_AdditionalVertexStreams: {fileID: 0}
+--- !u!33 &412451166
+MeshFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 412451161}
+  m_Mesh: {fileID: 0}
 --- !u!1 &456036379
 GameObject:
   m_ObjectHideFlags: 0
@@ -604,11 +691,21 @@ MonoBehaviour:
   showFlickDirectionArrows: 1
   flickArrowLengthNorm: 0.08
   flickArrowZBias: 0.002
+  showHitBandArcs: 1
+  hitBandColor: {r: 0, g: 1, b: 0, a: 1}
+  showLaneEdges: 1
+  showLaneArcs: 1
+  laneEdgeColor: {r: 1, g: 0.7, b: 0, a: 1}
+  showLaneHighlight: 1
+  useHitBandForLaneHighlight: 1
+  laneHighlightDuration: 0.1
+  laneHighlightColor: {r: 0, g: 1, b: 0, a: 1}
   arenaColor: {r: 0, g: 1, b: 1, a: 1}
   laneColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   noteColor: {r: 1, g: 1, b: 1, a: 1}
   touchColor: {r: 1, g: 0, b: 0, a: 1}
   flickArrowColor: {r: 0, g: 1, b: 0, a: 1}
+  judgementRingColor: {r: 0.85, g: 0.6, b: 1, a: 1}
   flashDuration: 0.35
   flashHalfSize: 0.08
   flashPerfectPlusColor: {r: 1, g: 0.9, b: 0, a: 1}
