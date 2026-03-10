@@ -159,8 +159,13 @@ namespace RhythmicFlow.Player
         // Markers beyond maxNoteMarkers are silently dropped — debug acceptable.
         private LineRenderer[] _notePool;
 
-        // Single touch-hit marker LineRenderer.
+        // Single touch-hit marker LineRenderer (yellow diamond = visual-surface or plane hit).
         private LineRenderer _touchLR;
+
+        // Parallax debug: grey diamond at the flat-plane projection, and orange line connecting
+        // plane point to surface hit point. Shown only when DebugShowInputProjection = true.
+        private LineRenderer _touchPlaneLR;
+        private LineRenderer _touchParallaxLineLR;
 
         // Pool of flick direction arrow LineRenderers (parallel to _notePool; index-aligned).
         private LineRenderer[] _flickArrowPool;
@@ -303,10 +308,20 @@ namespace RhythmicFlow.Player
                 _flickArrowPool[i].gameObject.SetActive(false);
             }
 
-            // Touch hit marker (diamond).
+            // Touch hit marker (diamond — yellow; shows the actual hit point used for gameplay).
             _touchLR = CreateLineRenderer("TouchMarker", touchColor);
             _touchLR.positionCount = 5;
             _touchLR.gameObject.SetActive(false);
+
+            // Parallax debug: flat-plane projection point (grey diamond).
+            _touchPlaneLR = CreateLineRenderer("TouchPlaneMarker", new Color(0.55f, 0.55f, 0.55f));
+            _touchPlaneLR.positionCount = 5;
+            _touchPlaneLR.gameObject.SetActive(false);
+
+            // Parallax debug: orange line connecting flat-plane point to surface-hit point.
+            _touchParallaxLineLR = CreateLineRenderer("TouchParallaxLine", new Color(1f, 0.5f, 0f));
+            _touchParallaxLineLR.positionCount = 2;
+            _touchParallaxLineLR.gameObject.SetActive(false);
 
             // Judgement flash pool (ring buffer; colours set per-flash in UpdateJudgementFlashes).
             _flashPool = new LineRenderer[MaxFlashes];
@@ -734,11 +749,16 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         // Shows a diamond at the last touch hit point in PlayfieldLocal space.
+        // When DebugShowInputProjection is true and the visual surface was used, also shows:
+        //   _touchPlaneLR        — grey diamond at the flat-plane projected position
+        //   _touchParallaxLineLR — orange line from plane point to surface hit point
         private void UpdateTouchMarker()
         {
             if (_touchLR == null) { return; }
 
-            if (playerAppController.DebugHasTouchHit)
+            bool hasTouchHit = playerAppController.DebugHasTouchHit;
+
+            if (hasTouchHit)
             {
                 Vector2 hitLocal = playerAppController.DebugLastTouchLocalXY;
                 Vector3 worldPos = playerAppController.playfieldRoot
@@ -750,19 +770,65 @@ namespace RhythmicFlow.Player
             {
                 _touchLR.gameObject.SetActive(false);
             }
+
+            // Parallax debug markers — only shown when projection info is enabled and a surface hit occurred.
+            bool showParallax = hasTouchHit
+                && PlayerSettingsStore.DebugShowInputProjection
+                && playerAppController.DebugUsedVisualSurface;
+
+            if (_touchPlaneLR != null)
+            {
+                if (showParallax)
+                {
+                    Vector2 planeLocal = playerAppController.DebugLastPlaneLocalXY;
+                    Vector3 planeWorld = playerAppController.playfieldRoot
+                                            .TransformPoint(planeLocal.x, planeLocal.y, 0f);
+                    _touchPlaneLR.gameObject.SetActive(true);
+                    SetDiamondPositions(_touchPlaneLR, planeWorld, playerAppController.playfieldRoot);
+                }
+                else
+                {
+                    _touchPlaneLR.gameObject.SetActive(false);
+                }
+            }
+
+            if (_touchParallaxLineLR != null)
+            {
+                if (showParallax)
+                {
+                    Vector2 planeLocal  = playerAppController.DebugLastPlaneLocalXY;
+                    Vector2 surfLocal   = playerAppController.DebugLastTouchLocalXY;
+                    Vector3 planeWorld  = playerAppController.playfieldRoot
+                                             .TransformPoint(planeLocal.x, planeLocal.y, 0f);
+                    Vector3 surfWorld   = playerAppController.playfieldRoot
+                                             .TransformPoint(surfLocal.x,  surfLocal.y,  0f);
+                    _touchParallaxLineLR.gameObject.SetActive(true);
+                    _touchParallaxLineLR.SetPosition(0, planeWorld);
+                    _touchParallaxLineLR.SetPosition(1, surfWorld);
+                }
+                else
+                {
+                    _touchParallaxLineLR.gameObject.SetActive(false);
+                }
+            }
         }
 
         // -------------------------------------------------------------------
         // OnGUI: touch band debug overlay (PlayerSettingsStore.DebugShowTouchBand)
         // -------------------------------------------------------------------
 
-        // Draws a live text overlay showing the current touch radius vs hit-band bounds,
-        // arc test result, and which lane IDs the touch is inside.
-        // One line per arena. Enabled only when DebugShowTouchBand = true.
-        // Layout: [arenaId] r=0.412  hit=[0.360..0.460]  jdg=0.410  radial=PASS  arc=PASS  lanes=[lane-1]
+        // Draws a live text overlay with touch-band and input-projection info.
+        // OnGUI is active when either DebugShowTouchBand or DebugShowInputProjection is true.
+        //
+        // Touch-band lines (one per arena, when DebugShowTouchBand):
+        //   [arenaId] r=0.412  hit=[0.360..0.460]  jdg=0.410  radial=PASS  arc=PASS  lanes=[lane-1]
+        // Input projection line (when DebugShowInputProjection):
+        //   [Input] usedVisualSurface=true  plane=(0.12, -0.05)  surface=(0.10, -0.07)  delta=0.022
         private void OnGUI()
         {
-            if (!PlayerSettingsStore.DebugShowTouchBand) { return; }
+            bool showBand = PlayerSettingsStore.DebugShowTouchBand;
+            bool showProj = PlayerSettingsStore.DebugShowInputProjection;
+            if (!showBand && !showProj) { return; }
             if (!_geometryBuilt || playerAppController == null) { return; }
             if (!playerAppController.DebugHasTouchHit) { return; }
 
@@ -777,6 +843,29 @@ namespace RhythmicFlow.Player
 
             const int lineH = 18;
             int       y     = 10;
+
+            // Input projection line (DebugShowInputProjection).
+            if (showProj)
+            {
+                bool   usedSurf  = playerAppController.DebugUsedVisualSurface;
+                Vector2 planeXY  = playerAppController.DebugLastPlaneLocalXY;
+                Vector2 surfXY   = playerAppController.DebugLastTouchLocalXY; // same as plane if not surf
+                float   delta    = (surfXY - planeXY).magnitude;
+                string projLine  =
+                    $"[Input] usedVisualSurface={usedSurf}" +
+                    $"  plane=({planeXY.x:F3},{planeXY.y:F3})" +
+                    $"  surface=({surfXY.x:F3},{surfXY.y:F3})" +
+                    $"  delta={delta:F4}";
+                GUI.color = Color.black;
+                GUI.Label(new Rect(11, y + 1, Screen.width, lineH), projLine);
+                GUI.color = new Color(1f, 0.65f, 0f); // orange
+                GUI.Label(new Rect(10, y,     Screen.width, lineH), projLine);
+                GUI.color = Color.white;
+                y += lineH;
+            }
+
+            // Per-arena touch-band lines (DebugShowTouchBand).
+            if (!showBand) { GUI.color = Color.white; return; }
 
             foreach (KeyValuePair<string, ArenaGeometry> akvp in arenas)
             {

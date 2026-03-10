@@ -173,10 +173,50 @@ Two modes in v0:
 
 ### **5.2 ArcCreate-style input mapping (ray → playfield plane)**
 
-* Touch mapping uses gameplay camera:  
-  1. ray \= `GameplayCamera.ScreenPointToRay(touchPos)`  
-  2. intersect with **playfield plane**  
+* Touch mapping uses gameplay camera:
+  1. ray \= `GameplayCamera.ScreenPointToRay(touchPos)`
+  2. intersect with **playfield plane**
   3. convert world hit point → **normalized playfield coords** via `PlayfieldTransform`
+
+### **5.2.1 Optional Visual Surface Raycast (parallax-correct input)**
+
+When the arena surface has physical depth (e.g. a frustum/cone mesh), the flat Z=0 plane
+intersection produces a parallax mismatch: the screen position of a visible ring edge does not
+map to the same local XY as the flat-plane ray, causing visually-correct taps to miss the
+hit band.
+
+**Fix:** cast the screen ray against the actual visible mesh surface, then use only the XY of
+the 3D hit in PlayfieldRoot local space.
+
+**Implementation (`PlayerAppController`):**
+
+| Inspector field | Type | Default | Description |
+|---|---|---|---|
+| `useVisualSurfaceRaycast` | `bool` | `true` | Enables the visual surface raycast path. |
+| `visualSurfaceLayerMask` | `LayerMask` | *(assign in Inspector)* | Physics layers containing arena surface collider(s). |
+| `visualSurfaceRoot` | `Transform` | *(optional)* | Used only for debug labelling; no gameplay effect. |
+
+**Algorithm per touch (down/held only; not touch-end):**
+
+1. Always compute flat-plane projection via `TryRaycast` → `_debugLastPlaneLocalXY` (for fallback + debug).
+2. If `useVisualSurfaceRaycast` is enabled, cast `Physics.Raycast` against `visualSurfaceLayerMask`.
+   * On hit: `local3 = playfieldRoot.InverseTransformPoint(hit.point)` → use `(local3.x, local3.y)`.
+     `localZ` is discarded — only XY feeds the polar hit-test.
+   * Sets `_debugUsedVisualSurface = true`.
+3. If physics ray misses (or feature disabled), fall back to flat-plane result.
+
+**Setup (Unity Editor):**
+
+1. Add a `MeshCollider` to the `ArenaSurface` GameObject (or any GO whose mesh closely follows the visible ring surface).
+2. Assign it a dedicated physics layer (e.g. `ArenaSurface`).
+3. Set `visualSurfaceLayerMask` on `PlayerAppController` to include that layer.
+4. Ensure the collider is enabled during play mode.
+
+**Debug (§8.3.1):**
+
+* `DebugShowInputProjection` in `PlayerSettingsStore` — adds an `[Input]` OnGUI line:
+  `[Input] usedVisualSurface=true  plane=(x,y)  surface=(x,y)  delta=0.0210`
+* When `usedVisualSurface` is true: grey diamond at plane point; orange line connecting plane→surface.
 
 ### **5.3 Normalized playfield coordinate convention**
 

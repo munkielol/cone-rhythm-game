@@ -379,6 +379,8 @@ You already say tickTimes are `int` ms, but you haven’t specified rounding beh
 
 The chart editor playtest should expose the same v0 debug toggles as the player (see player spec §8.3.1). These do not affect the exported chart.
 
+The **visual surface raycast** toggle (`useVisualSurfaceRaycast`) from player spec §5.2.1 also applies to playtest: if the editor scene has a `MeshCollider` on the arena surface GO (same layer setup as the player), the playtest controller should use the same parallax-correct projection. This is optional for v0 — the flat-plane fallback is acceptable for authoring.
+
 Flick playtest uses the same **event-based** model as the player: each qualifying gesture emits a `FlickEvent` that is matched to a note. Rapid flick sequences can be authored and tested within a single continuous mouse-down.
 
 | Toggle | Default | Playtest effect |

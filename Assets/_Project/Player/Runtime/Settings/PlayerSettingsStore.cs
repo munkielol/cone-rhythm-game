@@ -117,12 +117,20 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
+        /// DEBUG: When true, PlayerDebugRenderer draws an OnGUI line showing input projection info:
+        /// whether the last touch used the visual surface raycast or the flat plane, both projected
+        /// positions, and the XY delta between them.  Requires useVisualSurfaceRaycast enabled on
+        /// PlayerAppController.  Default: false.
+        /// </summary>
+        public static bool DebugShowInputProjection = false;
+
+        /// <summary>
         /// DEBUG: When true, PlayerDebugRenderer draws a live OnGUI overlay for the current touch:
         /// touch radius r, hit-band bounds [hitInner..hitOuter], judgement radius, radial/arc
         /// pass-fail flags, and matched lane IDs.  Requires PlayerDebugRenderer in the scene.
         /// Default: false.
         /// </summary>
-        public static bool DebugShowTouchBand = false;
+        public static bool DebugShowTouchBand = true;
 
         /// <summary>
         /// DEBUG: When true, the Perfect tier window is extended to cover the full GreatWindowMs.
@@ -183,7 +191,7 @@ namespace RhythmicFlow.Player
         /// Clamped to chartInnerLocal so the hit band never extends past the chart inner edge.
         /// Default: 0.02 (2 % of minDimLocal inward from the judgement ring).
         /// </summary>
-        public static float HitBandInnerInsetNorm = 0.02f;
+        public static float HitBandInnerInsetNorm = 0.004f;
 
         /// <summary>
         /// Hit Band — outer inset from the judgement ring (input-only, spec §5.5.2 / §8.3.1).

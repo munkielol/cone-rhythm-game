@@ -70,6 +70,19 @@ namespace RhythmicFlow.Player
         [Tooltip("Timing window set — Standard (30/90 ms) or Challenger (22/60 ms). Spec §4.1.")]
         public GameplayMode gameplayMode = GameplayMode.Standard;
 
+        [Header("Input Projection")]
+        [Tooltip("When true, screen rays are tested against visualSurfaceLayerMask before falling back " +
+                 "to the flat Z=0 plane. Corrects parallax on frustum-shaped arena surfaces. Spec §5.2.1.")]
+        public bool useVisualSurfaceRaycast = true;
+
+        [Tooltip("Physics layer(s) that contain the visible arena surface collider(s). " +
+                 "Only used when useVisualSurfaceRaycast is true.")]
+        public LayerMask visualSurfaceLayerMask;
+
+        [Tooltip("(Optional, debug only) Transform of the visual surface root GO — used only " +
+                 "for labelling in the debug overlay, not for any gameplay logic.")]
+        public Transform visualSurfaceRoot;
+
         // -------------------------------------------------------------------
         // State machine
         // -------------------------------------------------------------------
@@ -190,6 +203,16 @@ namespace RhythmicFlow.Player
 
         /// <summary>DEBUG: Last touch hit point in PlayfieldRoot local XY (valid when DebugHasTouchHit).</summary>
         public Vector2 DebugLastTouchLocalXY => _debugLastTouchLocalXY;
+
+        // Parallax-projection debug state (valid when DebugHasTouchHit).
+        private Vector2 _debugLastPlaneLocalXY;
+        private bool    _debugUsedVisualSurface;
+
+        /// <summary>DEBUG: Flat-plane projected touch point this frame (always set even when visual surface is used).</summary>
+        public Vector2 DebugLastPlaneLocalXY  => _debugLastPlaneLocalXY;
+
+        /// <summary>DEBUG: True when the last touch used a visual surface raycast (not the flat plane).</summary>
+        public bool    DebugUsedVisualSurface => _debugUsedVisualSurface;
 
         // ===================================================================
         // Unity lifecycle
@@ -410,25 +433,27 @@ namespace RhythmicFlow.Player
 
             if (Input.GetMouseButtonDown(0))
             {
-                if (TryRaycast(screenPos, out Vector2 hitLocal, out Vector2 posNorm))
+                if (TryProjectScreenToPlayfieldLocalXY(screenPos, out Vector2 hitLocal, out Vector2 posNorm, out bool usedSurf0))
                 {
                     _flickTracker.BeginTouch(MouseId, chartTimeMs, posNorm);
-                    _touchPosNorm[MouseId] = posNorm;
+                    _touchPosNorm[MouseId]     = posNorm;
                     _touches.Add(MakeSnapshot(MouseId, hitLocal, isNew: true));
-                    _debugLastTouchLocalXY = hitLocal; // DEBUG
-                    _debugHasTouchHit      = true;    // DEBUG
+                    _debugLastTouchLocalXY = hitLocal;  // DEBUG
+                    _debugHasTouchHit      = true;      // DEBUG
+                    _debugUsedVisualSurface = usedSurf0; // DEBUG
                 }
                 _mouseWasDown = true;
             }
             else if (Input.GetMouseButton(0) && _mouseWasDown)
             {
-                if (TryRaycast(screenPos, out Vector2 hitLocal, out Vector2 posNorm))
+                if (TryProjectScreenToPlayfieldLocalXY(screenPos, out Vector2 hitLocal, out Vector2 posNorm, out bool usedSurfH))
                 {
                     _flickTracker.UpdateTouch(MouseId, chartTimeMs, posNorm);
-                    _touchPosNorm[MouseId] = posNorm;
+                    _touchPosNorm[MouseId]     = posNorm;
                     _touches.Add(MakeSnapshot(MouseId, hitLocal, isNew: false));
-                    _debugLastTouchLocalXY = hitLocal; // DEBUG
-                    _debugHasTouchHit      = true;    // DEBUG
+                    _debugLastTouchLocalXY = hitLocal;   // DEBUG
+                    _debugHasTouchHit      = true;       // DEBUG
+                    _debugUsedVisualSurface = usedSurfH; // DEBUG
                 }
             }
             else if (Input.GetMouseButtonUp(0) && _mouseWasDown)
@@ -452,25 +477,27 @@ namespace RhythmicFlow.Player
                 switch (t.phase)
                 {
                     case TouchPhase.Began:
-                        if (TryRaycast(t.position, out Vector2 hitLocalB, out Vector2 posNormB))
+                        if (TryProjectScreenToPlayfieldLocalXY(t.position, out Vector2 hitLocalB, out Vector2 posNormB, out bool usedSurfB))
                         {
                             _flickTracker.BeginTouch(id, chartTimeMs, posNormB);
-                            _touchPosNorm[id] = posNormB;
+                            _touchPosNorm[id]      = posNormB;
                             _touches.Add(MakeSnapshot(id, hitLocalB, isNew: true));
-                            _debugLastTouchLocalXY = hitLocalB; // DEBUG
-                            _debugHasTouchHit      = true;     // DEBUG
+                            _debugLastTouchLocalXY  = hitLocalB;  // DEBUG
+                            _debugHasTouchHit       = true;       // DEBUG
+                            _debugUsedVisualSurface = usedSurfB;  // DEBUG
                         }
                         break;
 
                     case TouchPhase.Moved:
                     case TouchPhase.Stationary:
-                        if (TryRaycast(t.position, out Vector2 hitLocalM, out Vector2 posNormM))
+                        if (TryProjectScreenToPlayfieldLocalXY(t.position, out Vector2 hitLocalM, out Vector2 posNormM, out bool usedSurfM))
                         {
                             _flickTracker.UpdateTouch(id, chartTimeMs, posNormM);
-                            _touchPosNorm[id] = posNormM;
+                            _touchPosNorm[id]      = posNormM;
                             _touches.Add(MakeSnapshot(id, hitLocalM, isNew: false));
-                            _debugLastTouchLocalXY = hitLocalM; // DEBUG
-                            _debugHasTouchHit      = true;     // DEBUG
+                            _debugLastTouchLocalXY  = hitLocalM;  // DEBUG
+                            _debugHasTouchHit       = true;       // DEBUG
+                            _debugUsedVisualSurface = usedSurfM;  // DEBUG
                         }
                         break;
 
@@ -650,6 +677,52 @@ namespace RhythmicFlow.Player
         // ===================================================================
         // Screen → playfield raycasting
         // ===================================================================
+
+        // Projects a screen position to PlayfieldRoot local XY for hit-testing (spec §5.2.1).
+        //
+        // Two-step strategy:
+        //   1. If useVisualSurfaceRaycast is enabled, cast a Physics ray against
+        //      visualSurfaceLayerMask. If it hits, convert hit.point to PlayfieldRoot
+        //      local space and take only (x, y) — localZ is discarded. This corrects
+        //      the parallax mismatch that occurs when the arena surface has depth (frustum mesh).
+        //   2. Fall back to the flat Z=0 plane intersection (TryRaycast) if:
+        //      - useVisualSurfaceRaycast is false, OR
+        //      - the Physics ray misses all colliders on the mask.
+        //
+        // The flat-plane result is always computed first for debug tracking (_debugLastPlaneLocalXY).
+        private bool TryProjectScreenToPlayfieldLocalXY(
+            Vector2  screenPos,
+            out Vector2 hitLocalXY,
+            out Vector2 posNorm,
+            out bool    usedVisualSurface)
+        {
+            hitLocalXY        = Vector2.zero;
+            posNorm           = Vector2.zero;
+            usedVisualSurface = false;
+
+            // Always compute the flat-plane projection — needed as fallback and for debug tracking.
+            bool planeHit = TryRaycast(screenPos, out Vector2 planeLocalXY, out Vector2 planeNorm);
+            _debugLastPlaneLocalXY = planeLocalXY; // DEBUG
+
+            if (useVisualSurfaceRaycast && gameplayCamera != null)
+            {
+                Ray ray = gameplayCamera.ScreenPointToRay(screenPos);
+                if (Physics.Raycast(ray, out RaycastHit physHit, Mathf.Infinity, visualSurfaceLayerMask))
+                {
+                    // Convert world hit point to PlayfieldRoot local space; take only XY.
+                    Vector3 local3 = playfieldRoot.InverseTransformPoint(physHit.point);
+                    hitLocalXY        = new Vector2(local3.x, local3.y);
+                    posNorm           = _playfieldTransform.LocalToNormalized(hitLocalXY);
+                    usedVisualSurface = true;
+                    return true;
+                }
+            }
+
+            if (!planeHit) { return false; }
+            hitLocalXY = planeLocalXY;
+            posNorm    = planeNorm;
+            return true;
+        }
 
         // Intersects a camera ray with playfieldRoot's local XY plane (local Z = 0).
         // Outputs the hit in local XY and normalized [0..1] playfield coordinates.
