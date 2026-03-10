@@ -262,11 +262,24 @@ namespace RhythmicFlow.Player
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
 
+            // Inherit the parent's physics layer so PlayerAppController.visualSurfaceLayerMask
+            // can match these children without extra setup.
+            go.layer = gameObject.layer;
+
             // Attach rendering components to the child GO.
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh     = mesh;
             mr.sharedMaterial = mat;
+
+            // Needed for parallax-correct input raycast; children are generated at runtime.
+            // PlayerAppController casts Physics.Raycast against visualSurfaceLayerMask and uses
+            // only the XY of the hit in PlayfieldRoot local space, discarding Z (spec §5.2.1).
+            var mc = go.GetComponent<MeshCollider>();
+            if (mc == null) { mc = go.AddComponent<MeshCollider>(); }
+            mc.sharedMesh = null;      // force refresh if rebuilding
+            mc.sharedMesh = mesh;      // same Mesh instance assigned to MeshFilter
+            // mc.convex and mc.isTrigger remain false (defaults) — non-convex, non-trigger.
 
             // Track the Mesh asset for manual cleanup in OnDestroy.
             _meshes.Add(mesh);
