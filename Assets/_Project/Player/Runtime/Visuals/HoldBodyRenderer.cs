@@ -66,7 +66,8 @@ namespace RhythmicFlow.Player
         private Mesh _quadMesh;
 
         // Reused each DrawMesh call to set per-instance color without material instancing.
-        private readonly MaterialPropertyBlock _propBlock = new MaterialPropertyBlock();
+        // Initialized in Awake — Unity prohibits MaterialPropertyBlock construction in field initializers.
+        private MaterialPropertyBlock _propBlock;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -74,7 +75,8 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
-            _quadMesh = BuildUnitQuad();
+            _quadMesh  = BuildUnitQuad();
+            _propBlock = new MaterialPropertyBlock();
         }
 
         private void OnDestroy()
