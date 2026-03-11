@@ -381,11 +381,26 @@ timeToHitMs = eventTimeMs − chartTimeMs
 alpha       = 1 − Clamp01( timeToHitMs / noteLeadTimeMs )
 r           = Lerp( spawnR, judgementR, alpha )
 
-spawnR      = Lerp( innerLocal, judgementR, spawnRadiusFactor )
+spawnR      = innerLocal + spawnRadiusFactor × (judgementR − innerLocal)
 judgementR  = outerLocal − JudgementInsetNorm × minDimLocal
 ```
 
 `alpha = 1` (pinned at `judgementR`) when `timeToHitMs ≤ 0` — no special branch needed.
+
+**v0 default — spawn at inner arc:** `spawnRadiusFactor = 0` → `spawnR = innerLocal`. Hold tails first appear at the inner band edge and travel outward to `judgementR`. Values `> 0` move the spawn point inward along the approach path (useful for debug/tuning).
+
+**`noteLeadTimeMs` must match `PlayerDebugRenderer.noteLeadTimeMs` (default 2000 ms):**
+
+The scheduler activates notes `ActivationLeadMs = 5000 ms` before `startTimeMs` (so judgement input is never missed). The visual lead time (`noteLeadTimeMs`) is a separate, shorter window — the last N ms of that activation window where the ribbon is actually drawn.
+
+The invariant that guarantees `alpha = 0` (ribbon at `innerLocal`) on the first drawn frame is:
+
+```
+noteLeadTimeMs  ≤  ActivationLeadMs
+alpha on first visible frame = 1 − Clamp01(noteLeadTimeMs / noteLeadTimeMs) = 0  ✓
+```
+
+If `noteLeadTimeMs > noteLeadTimeMs_of_debug_renderer`, holds appear mid-approach at song start whenever `startTimeMs − t₀ < noteLeadTimeMs`. **This was the v0 bug (linter set it to 5000; correct value is 2000).**
 
 **Three phases:**
 
@@ -397,11 +412,24 @@ judgementR  = outerLocal − JudgementInsetNorm × minDimLocal
 
 The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartTime` advances through the hold, the head is pinned and the tail catches up — the ribbon shrinks until it disappears.
 
-**Ribbon geometry:**
+**Ribbon geometry (trapezoid):**
 
 * Direction: current `lane.CenterDeg` each frame (follows animated lane — no bending in v0).
-* Width: `judgementR × lane.WidthDeg × Deg2Rad × holdLaneWidthRatio` (arc length at `judgementR`; `holdLaneWidthRatio ≈ 0.7`).
-* Drawn via `Graphics.DrawMesh` with a procedural unit quad — no per-note GameObject.
+* Width: the ribbon is a **trapezoid** — head and tail have different widths because they sit at different radii. Lane borders are radial lines at `centerDeg ± widthDeg/2`; the chord between them at radius `r` is:
+  ```
+  width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad ) · holdLaneWidthRatio
+  widthHead = width(headR)   (wider — farther from center)
+  widthTail = width(tailR)   (narrower — closer to center)
+  ```
+  `holdLaneWidthRatio ≈ 0.7` (skin parameter; 1.0 = exact lane border width).
+* Vertex layout in PlayfieldRoot local space:
+  ```
+  tailLeft  = tailCenter − tangLocal × (widthTail / 2)
+  tailRight = tailCenter + tangLocal × (widthTail / 2)
+  headRight = headCenter + tangLocal × (widthHead / 2)
+  headLeft  = headCenter − tangLocal × (widthHead / 2)
+  ```
+* Drawn via `Graphics.DrawMesh` — vertices written in-place into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
 
 **Visibility:**
 

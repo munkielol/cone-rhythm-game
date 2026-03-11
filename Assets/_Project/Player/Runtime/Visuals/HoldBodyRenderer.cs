@@ -37,35 +37,31 @@
 //     localZ = Lerp( frustumHeightInner, frustumHeightOuter, s01 )
 //            ≈ Lerp( 0.001, 0.15, s01 )
 //
-//   At the outer ring (r ≈ outerLocal, s01 ≈ 1.0) this gives z ≈ 0.15.
-//   The old ribbon used a flat constant surfaceOffsetLocal = 0.002, so
-//   the ribbon sat ~0.148 local units below the debug line at judgementR.
-//
-//   FIX: ComputeEndpointLocalZ() replicates the same formula as
-//   PlayerDebugRenderer.VisualOnlyLocalZ(), keyed from an optional
-//   PlayerDebugArenaSurface reference (auto-syncs height values).
-//   When no arenaSurface is assigned, the manual frustum* fields below
-//   are used as fallback.
+//   ComputeEndpointLocalZ() replicates this formula so the ribbon
+//   endpoints land on the same frustum surface as the debug rail.
 //
 // ══════════════════════════════════════════════════════════════════════
-//  MATRIX CONSTRUCTION
+//  TRAPEZOID WIDTH — MATCHING THE FRUSTUM LANE BORDERS
 //
-//   All geometry is in PlayfieldRoot-local space.  World space is
-//   obtained by:
-//       worldMatrix = pfRoot.localToWorldMatrix * stripLocalMatrix
+//   Lane borders are radial lines at centerDeg ± widthDeg/2.
+//   The chord (straight-line width) between those borders at radius r is:
 //
-//   Unit strip mesh layout:
-//       X ∈ [−0.5, +0.5]  — width axis  (tangent, ⊥ to lane radial)
-//       Y ∈ [0, 1]         — length axis  (Y=0 = tail, Y=1 = head)
-//       Z = 0              — surface normal
+//       width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad )
 //
-//   Matrix columns:
-//       Col 0 = tangLocal × widthLocal         (width direction)
-//       Col 1 = headLocal3 − tailLocal3         (3D segment vector)
-//       Col 2 = local surface normal            (shading only)
-//       Col 3 = tailLocal3                      (strip origin)
+//   Head and tail are at different radii, so the ribbon is a TRAPEZOID:
+//       widthHead = 2 · headR · sin(halfWidthDeg) · holdLaneWidthRatio
+//       widthTail = 2 · tailR · sin(halfWidthDeg) · holdLaneWidthRatio
 //
-//   Col 1 is now a full 3D vector so the strip follows the frustum tilt.
+//   Vertex layout (PlayfieldRoot local space):
+//       [0] tail-left   = tailLocal3 − tangLocal × (widthTail / 2)
+//       [1] tail-right  = tailLocal3 + tangLocal × (widthTail / 2)
+//       [2] head-right  = headLocal3 + tangLocal × (widthHead / 2)
+//       [3] head-left   = headLocal3 − tangLocal × (widthHead / 2)
+//
+//   A pool of pre-allocated Meshes (MaxHoldPool) is filled in Awake.
+//   LateUpdate writes vertices into the mesh in-place each frame (no
+//   per-frame GC allocation). Graphics.DrawMesh receives
+//   pfRoot.localToWorldMatrix as the model→world transform.
 //
 // Spec §5.7.1.
 
@@ -76,7 +72,7 @@ namespace RhythmicFlow.Player
 {
     /// <summary>
     /// Runtime visual ribbon renderer for Hold note bodies (scroll/long-note style).
-    /// Draws in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
+    /// Draws trapezoid meshes in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
     /// Attach to any GameObject in the Player scene; assign PlayerAppController and a hold Material.
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Visuals/HoldBodyRenderer")]
@@ -140,22 +136,33 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Approach")]
-        [Tooltip("How many ms before StartTimeMs the ribbon first becomes visible. " +
-                 "Match this to noteLeadTimeMs in PlayerDebugRenderer.")]
+        [Tooltip("How many ms before StartTimeMs the ribbon first becomes visible.\n\n" +
+                 "MUST match noteLeadTimeMs in PlayerDebugRenderer (default 2000) so that:\n" +
+                 "  alpha = 1 − Clamp01(headToHit / noteLeadTimeMs)\n" +
+                 "gives alpha=0 (spawn at innerLocal) on the first visible frame.\n\n" +
+                 "With noteLeadTimeMs=2000 and ActivationLeadMs=5000 (in PlayerAppController),\n" +
+                 "notes become Active 5000 ms before startTimeMs, but only VISIBLE for the\n" +
+                 "last 2000 ms — so alpha=0 (innerLocal) is always the first rendered position.\n\n" +
+                 "BUG: if this is set higher than noteLeadTimeMs in PlayerDebugRenderer (e.g. 5000),\n" +
+                 "notes appear mid-approach on the first frame whenever startTimeMs - t0 < noteLeadTimeMs\n" +
+                 "(i.e. the song starts and the hold is already partway through its approach window).")]
         [SerializeField] private int noteLeadTimeMs = 2000;
 
-        [Tooltip("Spawn radius as a normalized fraction of the approach path: " +
-                 "0 = inner band edge, 1 = judgement ring.")]
+        [Tooltip("Spawn radius as a fraction of the approach path from inner arc to judgement ring. " +
+                 "0 = spawn at inner arc (v0 default — holds first appear at the inner band edge " +
+                 "and travel outward). 1 = spawn at judgement ring (no travel). Keep at 0 for v0.")]
         [Range(0f, 1f)]
-        [SerializeField] private float spawnRadiusFactor = 0.25f;
+        [SerializeField] private float spawnRadiusFactor = 0f;
 
         // -------------------------------------------------------------------
         // Inspector — Ribbon sizing
         // -------------------------------------------------------------------
 
         [Header("Ribbon Sizing")]
-        [Tooltip("Width of the ribbon as a fraction of the lane's arc-length at judgementR. " +
-                 "1 = full lane width, 0.7 is recommended.")]
+        [Tooltip("Hold ribbon width as a fraction of the lane's chord width at each endpoint radius. " +
+                 "Chord formula: width(r) = 2 · r · sin(laneAngularWidth/2). " +
+                 "The ribbon is a trapezoid: tail and head have different widths because they are " +
+                 "at different radii. 1.0 = full lane width; 0.7 is recommended.")]
         [Range(0.1f, 1f)]
         [SerializeField] private float holdLaneWidthRatio = 0.7f;
 
@@ -164,27 +171,51 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Debug")]
-        [Tooltip("Draws Debug.DrawLine between the ribbon's two endpoints in world space. " +
+        [Tooltip("Draws Debug.DrawLine between the ribbon's two center endpoints in world space. " +
                  "Use this to compare the ribbon centerline against the debug hold rail.")]
         [SerializeField] private bool debugDrawEndpoints = false;
 
-        [Tooltip("Draws the ribbon mesh quad outline (all 4 edges + centerline) in world space " +
-                 "by transforming the unit-strip vertices with the same worldMatrix used for DrawMesh. " +
-                 "Lets you verify the mesh exactly covers the expected area.")]
-        [SerializeField] private bool debugDrawMeshOutline = false;
+        [Tooltip("Draws the ribbon mesh trapezoid outline (4 edges + centerline) in world space. " +
+                 "Verifies that the mesh exactly covers the expected trapezoid area.")]
+        [SerializeField] private bool debugDrawMeshOutline = true;
+
+        [Tooltip("Logs approach values once per second for every currently visible hold.\n" +
+                 "Output: spawnRadiusFactor, noteLeadTimeMs, chartTimeMs, headToHitMs, alphaHead,\n" +
+                 "        innerLocalRadius, judgementR, spawnR, headR, tailR.\n" +
+                 "Use this to confirm alphaHead≈0 on the first frame a hold becomes visible.\n" +
+                 "Enable Gizmos in the Game view to also see Debug.DrawLine overlays.")]
+        [SerializeField] private bool debugLogSpawnOncePerSecond = false;
+
+        [Tooltip("Draws reference arcs and position ticks for each visible hold:\n" +
+                 "  Magenta arc  — innerLocal radius (actual inner band edge).\n" +
+                 "  Green arc    — spawnR (where hold tail/head spawn at alpha=0).\n" +
+                 "                 With spawnRadiusFactor=0, green should overlap magenta.\n" +
+                 "  Cyan tick    — headR position along lane centre.\n" +
+                 "  Yellow tick  — tailR position along lane centre.\n" +
+                 "Requires Gizmos enabled in Game view to be visible.")]
+        [SerializeField] private bool debugDrawSpawnArcs = false;
 
         // -------------------------------------------------------------------
-        // Internals
+        // Internals — mesh pool
         // -------------------------------------------------------------------
 
-        private Mesh                  _quadMesh;
+        // Maximum simultaneous hold notes that can be rendered. Meshes are allocated
+        // once in Awake and reused every frame (vertices written in-place, no GC alloc).
+        private const int MaxHoldPool = 64;
+
+        private Mesh[]   _meshPool;   // pool of 4-vertex trapezoid meshes
+        private int      _poolUsed;   // reused count for current frame, reset each LateUpdate
+
+        // Single scratch array written before updating each pool mesh.
+        // Shared across all hold iterations (sequential, not concurrent).
+        private readonly Vector3[] _vertScratch = new Vector3[4];
+
         // Reused every DrawMesh call — no per-frame allocation.
         // Must be created in Awake; Unity forbids engine-object ctor in field initializers.
         private MaterialPropertyBlock _propBlock;
 
-        // Reusable array for transforming unit-strip corners when debugDrawMeshOutline is true.
-        // 4 corners + center-tail + center-head = 6 scratch vectors. Allocated once in Awake.
-        private readonly Vector3[] _outlineWorldPts = new Vector3[6];
+        // Countdown for debugLogSpawnOncePerSecond: fires when ≤ 0, then resets to 1s.
+        private float _debugLogTimer;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -192,18 +223,31 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
-            _quadMesh  = BuildUnitStrip();
+            // Pre-allocate the mesh pool. Each mesh has 4 vertices set up for
+            // a trapezoid quad. Triangles and UVs are set once here and never change.
+            _meshPool = new Mesh[MaxHoldPool];
+            for (int i = 0; i < MaxHoldPool; i++)
+            {
+                _meshPool[i] = BuildTrapezoidMesh();
+            }
+
             _propBlock = new MaterialPropertyBlock();
         }
 
         private void OnDestroy()
         {
-            if (_quadMesh != null) { Destroy(_quadMesh); _quadMesh = null; }
+            if (_meshPool != null)
+            {
+                for (int i = 0; i < _meshPool.Length; i++)
+                {
+                    if (_meshPool[i] != null) { Destroy(_meshPool[i]); _meshPool[i] = null; }
+                }
+            }
         }
 
         private void LateUpdate()
         {
-            if (playerAppController == null || _quadMesh == null || holdMaterial == null) { return; }
+            if (playerAppController == null || holdMaterial == null || _meshPool == null) { return; }
 
             var allNotes = playerAppController.NotesAll;
             if (allNotes == null) { return; }
@@ -220,8 +264,25 @@ namespace RhythmicFlow.Player
             double chartTimeMs   = playerAppController.EffectiveChartTimeMs;
             double greatWindowMs = playerAppController.GreatWindowMs;
 
-            // Cache localToWorldMatrix once — unchanged within a frame.
+            // localToWorld is the model→world matrix passed to Graphics.DrawMesh.
+            // Vertices are written in PlayfieldRoot local space, so this promotes them correctly.
             Matrix4x4 localToWorld = pfRoot.localToWorldMatrix;
+
+            // ── Throttle for debugLogSpawnOncePerSecond ───────────────────────────────
+            // Decrement once per LateUpdate (not once per note) so the timer is frame-rate agnostic.
+            bool logThisFrame = false;
+            if (debugLogSpawnOncePerSecond)
+            {
+                _debugLogTimer -= Time.deltaTime;
+                if (_debugLogTimer <= 0f)
+                {
+                    _debugLogTimer = 1f;   // fire, then reset to 1-second cooldown
+                    logThisFrame   = true;
+                }
+            }
+
+            // Reset pool usage counter — reuse all slots from the top each frame.
+            _poolUsed = 0;
 
             foreach (RuntimeNote note in allNotes)
             {
@@ -230,6 +291,9 @@ namespace RhythmicFlow.Player
                 // Skip fully resolved holds.
                 // Finished-but-tail-still-visible holds keep drawing (dim red via holdColorReleased).
                 if (note.State == NoteState.Hit || note.State == NoteState.Missed) { continue; }
+
+                // Pool exhausted — more holds than MaxHoldPool are simultaneously visible.
+                if (_poolUsed >= MaxHoldPool) { break; }
 
                 // Look up geometry for this note's lane and arena.
                 if (!laneGeos.TryGetValue(note.LaneId,    out LaneGeometry  lane))  { continue; }
@@ -242,12 +306,12 @@ namespace RhythmicFlow.Player
                 float bandLocal  = pfTf.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
 
-                // judgementR: visual inset from chart outer edge. VISUAL ONLY.
+                // judgementR: visual inset from the chart outer edge. VISUAL ONLY.
                 float judgementR = outerLocal
                     - PlayerSettingsStore.JudgementInsetNorm * pfTf.MinDimLocal;
 
-                // spawnR: where notes first appear (fraction of path from inner edge to judgementR).
-                // Must match PlayerDebugRenderer: innerLocal + factor * (judgementR - innerLocal).
+                // spawnR: where notes first appear.
+                // spawnRadiusFactor=0 (v0 default) → spawn at inner arc.
                 float spawnR = innerLocal + spawnRadiusFactor * (judgementR - innerLocal);
 
                 // ── Step 2: Map start/end times to local radii (with visibility check) ──
@@ -260,8 +324,34 @@ namespace RhythmicFlow.Player
 
                 if (!visible) { continue; }
 
-                // headR ≥ tailR always (head is farther out along the radial direction).
-                // Degenerate: skip to avoid NaN in matrix.
+                // ── debugLogSpawnOncePerSecond ─────────────────────────────────────────────
+                // Log once per second whenever a hold is visible, to diagnose spawn radius.
+                // Output confirms:  H1 = alphaHead near 0 on first visible frame
+                //                   H2 = innerLocalRadius matches the debug inner arc
+                //                   H3 = spawnRadiusFactor is the Inspector value, not overwritten
+                if (logThisFrame)
+                {
+                    double headToHitForLog = note.StartTimeMs - chartTimeMs;
+                    float  alphaHead = (noteLeadTimeMs > 0)
+                        ? 1f - Mathf.Clamp01((float)headToHitForLog / noteLeadTimeMs)
+                        : 1f;
+
+                    // VISIBILITY GATE TRACE:
+                    //   scheduler activates notes 5000ms before PrimaryTimeMs (ActivationLeadMs).
+                    //   HoldBodyRenderer shows them when headToHit <= noteLeadTimeMs.
+                    //   With noteLeadTimeMs=2000 the first visible frame always has alphaHead=0
+                    //   → headR=spawnR=innerLocal.  If alphaHead > 0.01 on first render the
+                    //   mismatch is exposed here.
+                    Debug.Log(
+                        $"[HoldBodyRenderer] note={note.NoteId}" +
+                        $"\n  spawnRadiusFactor={spawnRadiusFactor:F3}  noteLeadTimeMs={noteLeadTimeMs}" +
+                        $"\n  chartTimeMs={chartTimeMs:F0}  headToHitMs={headToHitForLog:F0}" +
+                        $"\n  alphaHead={alphaHead:F3}  (0=at spawn, 1=at judgement)" +
+                        $"\n  innerLocal={innerLocal:F4}  judgementR={judgementR:F4}  spawnR={spawnR:F4}" +
+                        $"\n  headR={headR:F4}  tailR={tailR:F4}");
+                }
+
+                // Degenerate: skip to avoid divide-by-zero or zero-area mesh.
                 if (headR - tailR < 0.0001f) { continue; }
 
                 // ── Step 3: Phase-based color ─────────────────────────────────────────────
@@ -269,8 +359,8 @@ namespace RhythmicFlow.Player
                 Color ribbonColor;
                 switch (note.HoldBind)
                 {
-                    case HoldBindState.Bound:    ribbonColor = holdColorActive;    break;
-                    case HoldBindState.Finished: ribbonColor = holdColorReleased;  break;
+                    case HoldBindState.Bound:    ribbonColor = holdColorActive;     break;
+                    case HoldBindState.Finished: ribbonColor = holdColorReleased;   break;
                     default:                     ribbonColor = holdColorApproaching; break;
                 }
                 _propBlock.SetColor("_Color", ribbonColor);
@@ -282,127 +372,128 @@ namespace RhythmicFlow.Player
                 float sinT     = Mathf.Sin(thetaRad);
 
                 // dirLocal: unit radial-outward vector in local XY — the strip length axis.
-                var dirLocal = new Vector3(cosT, sinT, 0f);
+                // (Not used to build the matrix here, but useful to understand the coordinate frame.)
 
-                // tangLocal: 90° CCW from dirLocal, in local XY — the strip width axis.
-                // Cross(localZ, dirLocal) = (-sinT, cosT, 0).
+                // tangLocal: 90° CCW from radial direction, in local XY — the width axis.
+                // Cross(localZ, dir) = Cross((0,0,1), (cosT,sinT,0)) = (-sinT, cosT, 0).
                 var tangLocal = new Vector3(-sinT, cosT, 0f);
 
                 // ── Step 5: Compute 3D local-space endpoints (XY + frustum Z) ────────────
-                //
-                // THIS IS THE KEY FIX.
-                // Old code: localZ = surfaceOffsetLocal (constant 0.002) for both endpoints.
-                // Correct:  localZ = Lerp(frustumHeightInner, frustumHeightOuter, s01)
-                //           where s01 = Clamp01((r - inner) / (outer - inner)).
-                // This exactly replicates PlayerDebugRenderer.VisualOnlyLocalZ(s01),
-                // so the ribbon endpoints land on the same frustum surface as the debug rail.
 
                 Vector2 ctr = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // Tail: Y=0 on the unit strip mesh (strip origin).
+                // Tail: the inner (younger) end of the hold ribbon. Y=0 in mesh indexing.
                 var tailLocal3 = new Vector3(
                     ctr.x + tailR * cosT,
                     ctr.y + tailR * sinT,
                     ComputeEndpointLocalZ(tailR, innerLocal, outerLocal));
 
-                // Head: Y=1 on the unit strip mesh (strip tip).
+                // Head: the outer (older) end pinned at judgementR during the hold. Y=1 in mesh indexing.
                 var headLocal3 = new Vector3(
                     ctr.x + headR * cosT,
                     ctr.y + headR * sinT,
                     ComputeEndpointLocalZ(headR, innerLocal, outerLocal));
 
-                // ── Step 6: Width in local units ──────────────────────────────────────────
-
-                // Arc-length at judgementR: judgementR × widthDeg_rad × ratio.
-                float widthLocal = judgementR * lane.WidthDeg * Mathf.Deg2Rad * holdLaneWidthRatio;
-
-                // ── Step 7: Build strip-local matrix ──────────────────────────────────────
+                // ── Step 6: Trapezoid width at each endpoint ──────────────────────────────
                 //
-                // Unit strip vertex layout:
-                //   (−0.5, 0, 0) → tail-left    (Y=0 = tail end)
-                //   (+0.5, 0, 0) → tail-right
-                //   (+0.5, 1, 0) → head-right   (Y=1 = head end)
-                //   (−0.5, 1, 0) → head-left
+                // Lane borders are radial lines at centerDeg ± widthDeg/2.
+                // The chord between those lines at radius r is:
+                //   width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad )
                 //
-                // Column 0 (X): tangent × width → maps X ∈ [−0.5,+0.5] to lane width
-                // Column 1 (Y): headLocal3 − tailLocal3 → full 3D segment vector
-                //               (includes frustum Z component, tilting the strip correctly)
-                // Column 2 (Z): local surface normal (shading; unlit shaders ignore this)
-                // Column 3   : tailLocal3 → strip origin = tail world position
+                // Because head and tail are at different radii, the ribbon is a trapezoid.
+
+                float halfWidthDeg = lane.WidthDeg * 0.5f;
+                float widthHead    = ComputeLaneWidthAtRadiusLocal(headR, halfWidthDeg) * holdLaneWidthRatio;
+                float widthTail    = ComputeLaneWidthAtRadiusLocal(tailR, halfWidthDeg) * holdLaneWidthRatio;
+
+                // ── Step 7: Build 4 local-space trapezoid vertices ────────────────────────
                 //
-                // IMPORTANT: Col 1 is the FULL vector, not normalize(dir) × length.
-                // This ensures Y=1 maps exactly to headLocal3 with correct frustum Z.
+                // tangLocal has z=0, so offset only affects XY. Each vertex inherits the
+                // endpoint's Z from tailLocal3 or headLocal3 (frustum-lifted Z).
+                //
+                // Mesh vertex index layout (matches BuildTrapezoidMesh triangles):
+                //   [0] tail-left   (Y=0 end, −tangent side)
+                //   [1] tail-right  (Y=0 end, +tangent side)
+                //   [2] head-right  (Y=1 end, +tangent side)
+                //   [3] head-left   (Y=1 end, −tangent side)
 
-                Vector3 segVec = headLocal3 - tailLocal3; // 3D: includes Z tilt from frustum
+                _vertScratch[0] = tailLocal3 - tangLocal * (widthTail * 0.5f);  // tail-left
+                _vertScratch[1] = tailLocal3 + tangLocal * (widthTail * 0.5f);  // tail-right
+                _vertScratch[2] = headLocal3 + tangLocal * (widthHead * 0.5f);  // head-right
+                _vertScratch[3] = headLocal3 - tangLocal * (widthHead * 0.5f);  // head-left
 
-                var stripLocalMatrix = new Matrix4x4(
-                    // Column 0 — X axis: tangent scaled to ribbon width (stays in XY)
-                    new Vector4(tangLocal.x * widthLocal, tangLocal.y * widthLocal, 0f, 0f),
-                    // Column 1 — Y axis: full 3D segment from tail to head
-                    new Vector4(segVec.x, segVec.y, segVec.z, 0f),
-                    // Column 2 — Z axis: local +Z (surface normal for shading; no effect on positions)
-                    new Vector4(0f, 0f, 1f, 0f),
-                    // Column 3 — Translation: strip origin at tail
-                    new Vector4(tailLocal3.x, tailLocal3.y, tailLocal3.z, 1f)
-                );
-
-                // Promote local strip to world space using playfieldRoot's full transform.
-                Matrix4x4 worldMatrix = localToWorld * stripLocalMatrix;
+                // Write vertices into the pooled mesh. Triangles and UVs are already set.
+                Mesh trapMesh = _meshPool[_poolUsed++];
+                trapMesh.vertices = _vertScratch;
+                trapMesh.RecalculateBounds(); // required for correct frustum culling
 
                 // ── Step 8: Debug visualizations ─────────────────────────────────────────
 
                 if (debugDrawEndpoints || debugDrawMeshOutline)
                 {
-                    // Tail and head in world space — same TransformPoint as debug renderer uses.
-                    Vector3 tailWorld = pfRoot.TransformPoint(tailLocal3);
-                    Vector3 headWorld = pfRoot.TransformPoint(headLocal3);
-
                     if (debugDrawEndpoints)
                     {
-                        // Centerline: matches the debug hold rail line exactly (when frustum
-                        // heights match). Compare in Scene view to verify overlap.
+                        // Centerline connecting tail and head midpoints — compare against debug hold rail.
+                        Vector3 tailWorld = pfRoot.TransformPoint(tailLocal3);
+                        Vector3 headWorld = pfRoot.TransformPoint(headLocal3);
                         Debug.DrawLine(tailWorld, headWorld, ribbonColor);
                     }
 
                     if (debugDrawMeshOutline)
                     {
-                        // Transform the 4 unit-strip corners + 2 centerline points through the
-                        // same worldMatrix that Graphics.DrawMesh receives.  The resulting
-                        // quad outline should overlap the mesh edges exactly.
-                        //
-                        // _outlineWorldPts layout:
-                        //   [0] tail-left   (−0.5, 0, 0)
-                        //   [1] tail-right  (+0.5, 0, 0)
-                        //   [2] head-right  (+0.5, 1, 0)
-                        //   [3] head-left   (−0.5, 1, 0)
-                        //   [4] center-tail ( 0.0, 0, 0)
-                        //   [5] center-head ( 0.0, 1, 0)
-
-                        _outlineWorldPts[0] = worldMatrix.MultiplyPoint3x4(new Vector3(-0.5f, 0f, 0f));
-                        _outlineWorldPts[1] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.5f, 0f, 0f));
-                        _outlineWorldPts[2] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.5f, 1f, 0f));
-                        _outlineWorldPts[3] = worldMatrix.MultiplyPoint3x4(new Vector3(-0.5f, 1f, 0f));
-                        _outlineWorldPts[4] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.0f, 0f, 0f));
-                        _outlineWorldPts[5] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.0f, 1f, 0f));
+                        // 4 trapezoid corners in world space — should outline the drawn mesh exactly.
+                        Vector3 p0 = pfRoot.TransformPoint(_vertScratch[0]); // tail-left
+                        Vector3 p1 = pfRoot.TransformPoint(_vertScratch[1]); // tail-right
+                        Vector3 p2 = pfRoot.TransformPoint(_vertScratch[2]); // head-right
+                        Vector3 p3 = pfRoot.TransformPoint(_vertScratch[3]); // head-left
 
                         Color outlineColor = Color.cyan;
-                        Color centerColor  = Color.yellow;
+                        Debug.DrawLine(p0, p1, outlineColor); // tail edge
+                        Debug.DrawLine(p2, p3, outlineColor); // head edge
+                        Debug.DrawLine(p0, p3, outlineColor); // left edge
+                        Debug.DrawLine(p1, p2, outlineColor); // right edge
 
-                        // 4 quad edges (white/cyan outline)
-                        Debug.DrawLine(_outlineWorldPts[0], _outlineWorldPts[1], outlineColor); // tail edge
-                        Debug.DrawLine(_outlineWorldPts[2], _outlineWorldPts[3], outlineColor); // head edge
-                        Debug.DrawLine(_outlineWorldPts[0], _outlineWorldPts[3], outlineColor); // left edge
-                        Debug.DrawLine(_outlineWorldPts[1], _outlineWorldPts[2], outlineColor); // right edge
-
-                        // Centerline (yellow) — compare this against the debug hold rail.
-                        // They should overlap when frustum heights are correctly matched.
-                        Debug.DrawLine(_outlineWorldPts[4], _outlineWorldPts[5], centerColor);
+                        // Centerline (yellow) — compare against the debug hold rail.
+                        Vector3 tailCenter = pfRoot.TransformPoint(tailLocal3);
+                        Vector3 headCenter = pfRoot.TransformPoint(headLocal3);
+                        Debug.DrawLine(tailCenter, headCenter, Color.yellow);
                     }
                 }
 
+                // Draw the trapezoid mesh. Vertices are in PlayfieldRoot local space;
+                // localToWorld promotes them to world space for rendering.
                 Graphics.DrawMesh(
-                    _quadMesh, worldMatrix, holdMaterial,
+                    trapMesh, localToWorld, holdMaterial,
                     gameObject.layer, null, 0, _propBlock);
+
+                // ── debugDrawSpawnArcs ─────────────────────────────────────────────────────
+                // Reference arcs that let you visually verify spawnR == innerLocal when factor=0.
+                //
+                //   Magenta  — innerLocal (actual inner band edge).
+                //   Green    — spawnR    (should overlap magenta when spawnRadiusFactor=0).
+                //   Cyan     — headR position tick along the lane centre.
+                //   Yellow   — tailR position tick along the lane centre.
+                if (debugDrawSpawnArcs)
+                {
+                    float halfWidthDegs = lane.WidthDeg * 0.5f;
+
+                    // Inner arc (magenta) — the authoritative inner edge used by debug renderer.
+                    DrawDebugArc(pfRoot, ctr, innerLocal, lane.CenterDeg, halfWidthDegs,
+                        ComputeEndpointLocalZ(innerLocal, innerLocal, outerLocal), Color.magenta);
+
+                    // Spawn arc (green) — where head/tail sit at alpha=0.
+                    // Overlap with magenta confirms spawnRadiusFactor=0 is working.
+                    DrawDebugArc(pfRoot, ctr, spawnR, lane.CenterDeg, halfWidthDegs,
+                        ComputeEndpointLocalZ(spawnR, innerLocal, outerLocal), Color.green);
+
+                    // Head position tick (cyan) — current headR along lane centre.
+                    DrawDebugRadialTick(pfRoot, ctr, headR, lane.CenterDeg,
+                        innerLocal, outerLocal, Color.cyan);
+
+                    // Tail position tick (yellow) — current tailR along lane centre.
+                    DrawDebugRadialTick(pfRoot, ctr, tailR, lane.CenterDeg,
+                        innerLocal, outerLocal, Color.yellow);
+                }
             }
         }
 
@@ -473,7 +564,7 @@ namespace RhythmicFlow.Player
         ///   localZ = Lerp( frustumHeightInner, frustumHeightOuter, s01 )
         /// </code>
         ///
-        /// When <paramref name="arenaSurface"/> is assigned its values are used automatically,
+        /// When <see cref="arenaSurface"/> is assigned its values are used automatically,
         /// keeping the ribbon in sync with <see cref="PlayerDebugArenaSurface"/> without manual entry.
         /// Falls back to the inspector <c>useFrustumProfile</c> / <c>frustumHeightInner/Outer</c>
         /// fields when arenaSurface is null.
@@ -505,39 +596,119 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
-        // Unit strip mesh
+        // Lane width helper
         // -------------------------------------------------------------------
 
-        // Centered unit strip in XY:
-        //   X ∈ [−0.5, +0.5]  — width axis (tangent)
-        //   Y ∈ [0,    1  ]   — length axis (tail at Y=0, head at Y=1)
-        //   Z = 0              — vertices are in the XY plane
-        //
-        // The origin is at the TAIL (Y=0). The matrix translation column (Col 3)
-        // positions the tail; Col 1 (segment vector) extends to the head.
-        private static Mesh BuildUnitStrip()
+        /// <summary>
+        /// Computes the chord width of a lane at a given local radius.
+        ///
+        /// Lane borders are radial lines at <c>centerDeg ± halfWidthDeg</c>.
+        /// The straight-line chord between those borders at radius <paramref name="r"/> is:
+        /// <code>
+        ///   width = 2 · r · sin( halfWidthDeg · Deg2Rad )
+        /// </code>
+        /// This is the actual PlayfieldRoot-local width of the lane at that radius,
+        /// matching the border lines drawn by PlayerDebugRenderer.
+        /// </summary>
+        private static float ComputeLaneWidthAtRadiusLocal(float r, float halfWidthDeg)
         {
-            var mesh = new Mesh { name = "HoldBodyStrip" };
+            return 2f * r * Mathf.Sin(halfWidthDeg * Mathf.Deg2Rad);
+        }
 
-            mesh.vertices = new Vector3[]
+        // -------------------------------------------------------------------
+        // Debug draw helpers (no GC — only Debug.DrawLine calls)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Draws a polyline approximating an arc at <paramref name="radius"/> centred on
+        /// <paramref name="center"/> (PlayfieldRoot local XY), spanning the lane's angular width.
+        /// <paramref name="localZ"/> lifts the arc onto the frustum surface (same as endpoint Z).
+        /// </summary>
+        private static void DrawDebugArc(
+            Transform pfRoot,
+            Vector2   center,
+            float     radius,
+            float     centerDeg,
+            float     halfWidthDeg,
+            float     localZ,
+            Color     color,
+            int       segments = 12)
+        {
+            float startDeg = centerDeg - halfWidthDeg;
+            float step     = (halfWidthDeg * 2f) / segments;
+
+            float   a0   = startDeg * Mathf.Deg2Rad;
+            Vector3 prev = pfRoot.TransformPoint(
+                center.x + radius * Mathf.Cos(a0),
+                center.y + radius * Mathf.Sin(a0),
+                localZ);
+
+            for (int i = 1; i <= segments; i++)
             {
-                new Vector3(-0.5f, 0f, 0f),  // 0  tail-left
-                new Vector3( 0.5f, 0f, 0f),  // 1  tail-right
-                new Vector3( 0.5f, 1f, 0f),  // 2  head-right
-                new Vector3(-0.5f, 1f, 0f),  // 3  head-left
-            };
+                float   a    = (startDeg + i * step) * Mathf.Deg2Rad;
+                Vector3 curr = pfRoot.TransformPoint(
+                    center.x + radius * Mathf.Cos(a),
+                    center.y + radius * Mathf.Sin(a),
+                    localZ);
+                Debug.DrawLine(prev, curr, color);
+                prev = curr;
+            }
+        }
+
+        /// <summary>
+        /// Draws a short tangential tick at the given <paramref name="radius"/> along the lane
+        /// centre, useful for marking the exact headR / tailR position of a hold endpoint.
+        /// </summary>
+        private static void DrawDebugRadialTick(
+            Transform pfRoot,
+            Vector2   center,
+            float     radius,
+            float     centerDeg,
+            float     innerLocal,
+            float     outerLocal,
+            Color     color)
+        {
+            // Tick spans ±3° around lane centre at the given radius.
+            const float HalfTickDeg = 3f;
+            float span = outerLocal > innerLocal ? outerLocal - innerLocal : 1f;
+            float s01  = Mathf.Clamp01((radius - innerLocal) / span);
+            float localZ = Mathf.Lerp(0.001f, 0.15f, s01); // simplified frustum Z for debug only
+
+            DrawDebugArc(pfRoot, center, radius, centerDeg, HalfTickDeg, localZ, color, segments: 4);
+        }
+
+        // -------------------------------------------------------------------
+        // Trapezoid mesh template
+        // -------------------------------------------------------------------
+
+        // Builds a 4-vertex mesh with stable triangles and UVs.
+        // Vertices are placeholder zeros — LateUpdate writes real positions each frame.
+        //
+        // Vertex layout:
+        //   [0] tail-left   UV(0,0)
+        //   [1] tail-right  UV(1,0)
+        //   [2] head-right  UV(1,1)
+        //   [3] head-left   UV(0,1)
+        //
+        // Triangles: {0,1,2} and {0,2,3}  (two CCW triangles covering the quad)
+        private static Mesh BuildTrapezoidMesh()
+        {
+            var mesh = new Mesh { name = "HoldBodyTrapezoid" };
+
+            // Placeholder zero vertices — overwritten every frame in LateUpdate.
+            mesh.vertices = new Vector3[4];
 
             mesh.uv = new Vector2[]
             {
-                new Vector2(0f, 0f),  // tail-left
-                new Vector2(1f, 0f),  // tail-right
-                new Vector2(1f, 1f),  // head-right
-                new Vector2(0f, 1f),  // head-left
+                new Vector2(0f, 0f),  // [0] tail-left
+                new Vector2(1f, 0f),  // [1] tail-right
+                new Vector2(1f, 1f),  // [2] head-right
+                new Vector2(0f, 1f),  // [3] head-left
             };
 
             mesh.triangles = new int[] { 0, 1, 2, 0, 2, 3 };
 
-            mesh.RecalculateNormals();
+            // Bounds will be recalculated per-frame after vertex update.
             mesh.RecalculateBounds();
 
             return mesh;

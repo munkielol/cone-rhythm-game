@@ -61,7 +61,7 @@ namespace RhythmicFlow.Player
 
         [Tooltip("Spawn radius as a fraction of band width from the inner edge (0 = inner, 1 = outer).")]
         [Range(0f, 1f)]
-        [SerializeField] private float spawnRadiusFactor = 0.25f;
+        [SerializeField] private float spawnRadiusFactor = 0f;
 
         [Tooltip("If true, show notes within noteLeadTimeMs even when outside the narrow judgement window.")]
         [SerializeField] private bool showNotesOutsideWindow = true;
