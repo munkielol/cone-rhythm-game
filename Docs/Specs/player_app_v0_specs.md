@@ -367,8 +367,38 @@ See §8.3.1 for the default values of all hit-band and visual parameters.
 
 ### **5.7 Note visuals**
 
-* Notes visually occupy the **entire lane width** at that time (expands/contracts with lane width).  
+* Notes visually occupy the **entire lane width** at that time (expands/contracts with lane width).
 * Applies to tap/flick/catch/hold heads (and holds stretch along approach direction).
+
+### **5.7.1 Hold body rendering (v0)**
+
+A **hold body ribbon** is drawn between the hold-head position and the hold-tail position, both computed with the same approach formula used for tap/flick notes (spec §6.1).
+
+**Approach formula (per endpoint):**
+
+```
+approachFrac = Clamp01(1 − timeToHitMs / noteLeadTimeMs)
+r = Lerp(innerLocal, outerLocal, spawnRadiusFactor + (1 − spawnRadiusFactor) × approachFrac)
+```
+
+* `timeToHitMs` = `StartTimeMs − chartTimeMs` for the head; `EndTimeMs − chartTimeMs` for the tail.
+* **Head clamped when held**: once `HoldBind == Bound`, `headR` stays at `outerLocal` (approach is complete).
+
+**Ribbon geometry:**
+
+* Direction: lane center angle `thetaDeg = lane.CenterDeg` (radially outward).
+* Width: `rMid × lane.WidthDeg × Deg2Rad × holdLaneWidthRatio` (arc length at midpoint; `holdLaneWidthRatio` ≈ 0.7).
+* Drawn as a stretched quad mesh via `Graphics.DrawMesh` — no per-note GameObject allocation.
+
+**Visibility filter:**
+
+| Condition | Action |
+|---|---|
+| `State == Hit` or `State == Missed` | Do not draw |
+| `tailToHitMs < −200 ms` | Do not draw (tail has left the screen) |
+| `headToHitMs > noteLeadTimeMs` | Do not draw (head not yet on screen) |
+
+**Implementation:** `HoldBodyRenderer` (`Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs`).
 
 ### **5.8) Judgement line / hit indicator (v0)**
 
