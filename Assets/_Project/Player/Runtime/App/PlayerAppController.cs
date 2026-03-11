@@ -164,6 +164,29 @@ namespace RhythmicFlow.Player
         public event Action<JudgementRecord> OnJudgement;
 
         // -------------------------------------------------------------------
+        // VISUALS API — read-only access for runtime visual renderers.
+        // Exposed without "Debug" prefix; these stay after debug scaffolding is removed.
+        // -------------------------------------------------------------------
+
+        /// <summary>All runtime notes sorted by PrimaryTimeMs (null before Start completes).</summary>
+        public IReadOnlyList<RuntimeNote>                 NotesAll         => _scheduler?.AllNotes;
+
+        /// <summary>Current effective chart time in ms (0 before playback starts).</summary>
+        public double                                     EffectiveChartTimeMs => _conductor?.EffectiveChartTimeMs ?? 0.0;
+
+        /// <summary>PlayfieldTransform coordinate converter (null before Start completes).</summary>
+        public PlayfieldTransform                         PlayfieldTf      => _playfieldTransform;
+
+        /// <summary>Evaluated lane geometries keyed by laneId (null before Start completes).</summary>
+        public IReadOnlyDictionary<string, LaneGeometry>  LaneGeometries   => _laneGeos;
+
+        /// <summary>Evaluated arena geometries keyed by arenaId (null before Start completes).</summary>
+        public IReadOnlyDictionary<string, ArenaGeometry> ArenaGeometries  => _arenaGeos;
+
+        /// <summary>Maps laneId → arenaId (null before Start completes).</summary>
+        public IReadOnlyDictionary<string, string>        LaneToArena      => _laneToArena;
+
+        // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
         // All members prefixed "Debug" to signal scaffolding status.
         // Remove when PlayerDebugRenderer is removed.
