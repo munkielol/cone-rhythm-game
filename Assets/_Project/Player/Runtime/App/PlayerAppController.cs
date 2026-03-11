@@ -186,6 +186,9 @@ namespace RhythmicFlow.Player
         /// <summary>Maps laneId → arenaId (null before Start completes).</summary>
         public IReadOnlyDictionary<string, string>        LaneToArena      => _laneToArena;
 
+        /// <summary>Great-window size in ms from the active gameplay mode (default 90 if not yet ready).</summary>
+        public double                                     GreatWindowMs    => _judgementEngine?.Windows.GreatWindowMs ?? 90.0;
+
         // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
         // All members prefixed "Debug" to signal scaffolding status.
