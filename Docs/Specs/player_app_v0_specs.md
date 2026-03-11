@@ -370,33 +370,46 @@ See §8.3.1 for the default values of all hit-band and visual parameters.
 * Notes visually occupy the **entire lane width** at that time (expands/contracts with lane width).
 * Applies to tap/flick/catch/hold heads (and holds stretch along approach direction).
 
-### **5.7.1 Hold body rendering (v0)**
+### **5.7.1 Hold body rendering — scroll / long-note style (v0)**
 
-A **hold body ribbon** is drawn between the hold-head position and the hold-tail position, both computed with the same approach formula used for tap/flick notes (spec §6.1).
+A hold note is rendered as a **ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note.
 
-**Approach formula (per endpoint):**
+**Approach formula (canonical, same as tap/flick, spec §6.1):**
 
 ```
-approachFrac = Clamp01(1 − timeToHitMs / noteLeadTimeMs)
-r = Lerp(innerLocal, outerLocal, spawnRadiusFactor + (1 − spawnRadiusFactor) × approachFrac)
+timeToHitMs = eventTimeMs − chartTimeMs
+alpha       = 1 − Clamp01( timeToHitMs / noteLeadTimeMs )
+r           = Lerp( spawnR, judgementR, alpha )
+
+spawnR      = Lerp( innerLocal, judgementR, spawnRadiusFactor )
+judgementR  = outerLocal − JudgementInsetNorm × minDimLocal
 ```
 
-* `timeToHitMs` = `StartTimeMs − chartTimeMs` for the head; `EndTimeMs − chartTimeMs` for the tail.
-* **Head clamped when held**: once `HoldBind == Bound`, `headR` stays at `outerLocal` (approach is complete).
+`alpha = 1` (pinned at `judgementR`) when `timeToHitMs ≤ 0` — no special branch needed.
+
+**Three phases:**
+
+| Phase | chartTime | headR | tailR |
+|---|---|---|---|
+| **Before start** | `< startTimeMs` | `ComputeApproachR(startTimeMs)` | `ComputeApproachR(endTimeMs)` |
+| **During hold** | `≥ startTimeMs, < endTimeMs` | `judgementR` (pinned by formula) | `ComputeApproachR(endTimeMs)` |
+| **After end** | `≥ endTimeMs + greatWindowMs` | — hidden — | — hidden — |
+
+The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartTime` advances through the hold, the head is pinned and the tail catches up — the ribbon shrinks until it disappears.
 
 **Ribbon geometry:**
 
-* Direction: lane center angle `thetaDeg = lane.CenterDeg` (radially outward).
-* Width: `rMid × lane.WidthDeg × Deg2Rad × holdLaneWidthRatio` (arc length at midpoint; `holdLaneWidthRatio` ≈ 0.7).
-* Drawn as a stretched quad mesh via `Graphics.DrawMesh` — no per-note GameObject allocation.
+* Direction: current `lane.CenterDeg` each frame (follows animated lane — no bending in v0).
+* Width: `judgementR × lane.WidthDeg × Deg2Rad × holdLaneWidthRatio` (arc length at `judgementR`; `holdLaneWidthRatio ≈ 0.7`).
+* Drawn via `Graphics.DrawMesh` with a procedural unit quad — no per-note GameObject.
 
-**Visibility filter:**
+**Visibility:**
 
 | Condition | Action |
 |---|---|
 | `State == Hit` or `State == Missed` | Do not draw |
-| `tailToHitMs < −200 ms` | Do not draw (tail has left the screen) |
-| `headToHitMs > noteLeadTimeMs` | Do not draw (head not yet on screen) |
+| `startTimeMs − chartTime > noteLeadTimeMs` | Do not draw (head not yet on screen) |
+| `endTimeMs − chartTime < −greatWindowMs` | Do not draw (tail has cleared the miss window) |
 
 **Implementation:** `HoldBodyRenderer` (`Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs`).
 

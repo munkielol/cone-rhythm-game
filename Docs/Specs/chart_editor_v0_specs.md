@@ -320,6 +320,13 @@ chart editor-only metadata allowed:
 
 * `chart_editor.tickPreset: "1/8"` etc. (runtime ignores)
 
+**Hold body visual (player + playtest):**
+The player renders hold bodies as a scrolling ribbon that approaches the judgement line (see player spec §5.7.1).
+The ribbon spans from the tail (`endTimeMs` approach position) to the head (`startTimeMs` approach position).
+Once `chartTime ≥ startTimeMs`, the head is pinned at the judgement ring and the ribbon shrinks as the tail catches up.
+In v0 the ribbon uses the **current lane geometry** (center angle, width) each frame — no bending.
+Ribbon width = `holdLaneWidthRatio × (widthDeg in radians × judgementR)` (skin parameter, default 0.7).
+
 ---
 
 ## **10\) Hold tick generation and editing (v0)**
