@@ -30,3 +30,6 @@ Thumbs.db
 claude_*.log
 claude_overnight.log
 claude_interactive.log
+
+# chat summary
+chat_summary.md
