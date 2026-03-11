@@ -33,8 +33,9 @@
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "centerDeg": {
         "keyframes": [
-          { "timeMs": 0, "value": 250, "easing": "linear" },
-          { "timeMs": 3000, "value": 320, "easing": "linear" }
+          { "timeMs": 0, "value": 210, "easing": "linear" },
+          { "timeMs": 3000, "value": 290, "easing": "linear" },
+          { "timeMs": 6000, "value": 210, "easing": "linear" }
         ]
       },
       "widthDeg":  { "keyframes": [ { "timeMs": 0, "value": 30,  "easing": "hold" } ] }
@@ -75,18 +76,18 @@
     { "noteId": "n4",  "laneId": "lane-3", "type": "tap", "timeMs": 3500 },
     { "noteId": "c1", "laneId": "lane-1", "type": "catch", "timeMs": 5500 },
     { "noteId": "f1", "laneId": "lane-0", "type": "flick", "timeMs": 6000, "direction": "U" },
-    {
-      "noteId": "h1",
-      "laneId": "lane-1",
-      "type": "hold",
-      "timeMs": 6500,
-      "endTimeMs": 8000,
-      "tickTimesMs": [6750,7000,7250,7500,7750,8000]
-    },
     { "noteId": "f2", "laneId": "lane-1", "type": "flick", "timeMs": 7000, "direction": "D" },
     { "noteId": "f3", "laneId": "lane-1", "type": "flick", "timeMs": 8000, "direction": "L" },
     { "noteId": "f4", "laneId": "lane-1", "type": "flick", "timeMs": 9000, "direction": "R" },
     { "noteId": "f5", "laneId": "lane-2", "type": "flick", "timeMs": 11000, "direction": "U" },
-    { "noteId": "f6", "laneId": "lane-3", "type": "flick", "timeMs": 12000, "direction": "U" }
+    { "noteId": "f6", "laneId": "lane-3", "type": "flick", "timeMs": 12000, "direction": "U" },
+    {
+      "noteId": "h1",
+      "laneId": "lane-1",
+      "type": "hold",
+      "startTimeMs": 13000,
+      "endTimeMs": 20000,
+      "tickTimesMs": [13250,13500,13750,14000,15000,16000,17000,18000,19000]
+    }
   ]
 }
