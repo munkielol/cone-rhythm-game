@@ -431,13 +431,28 @@ The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartT
   ```
 * Drawn via `Graphics.DrawMesh` — vertices written in-place into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
 
-**Visibility:**
+**Visibility and missed-hold lifetime (v0 locked):**
+
+Judging eligibility and visual lifetime are **decoupled**:
 
 | Condition | Action |
 |---|---|
-| `State == Hit` or `State == Missed` | Do not draw |
-| `startTimeMs − chartTime > noteLeadTimeMs` | Do not draw (head not yet on screen) |
-| `endTimeMs − chartTime < −greatWindowMs` | Do not draw (tail has cleared the miss window) |
+| `State == Hit` (successfully completed) | Stop drawing immediately |
+| `startTimeMs − chartTime > noteLeadTimeMs` | Not yet on screen — do not draw |
+| `endTimeMs − chartTime < −greatWindowMs` | Past end window — stop drawing |
+| `State == Missed` OR `HoldBind == Finished` (released early) | **Keep drawing** with dim `holdColorReleased` until `endTimeMs` |
+
+**Missed-hold geometry:** when a hold is missed or released early, the body continues to shrink geometrically toward `judgementR`. The head pins at `judgementR` (naturally, via `Clamp01` on negative `headToHit`). The tail continues approaching; at `endTimeMs` the tail also reaches `judgementR`, making the ribbon degenerate (zero area) and it disappears exactly then — no special branch needed.
+
+**Color / state mapping (v0):**
+
+| `NoteState` | `HoldBindState` | Color |
+|---|---|---|
+| `Active` | `Unbound` | `holdColorApproaching` — approaching, not yet hittable |
+| `Active` | `Bound` | `holdColorActive` — being held, ticks scoring |
+| `Active` | `Finished` | `holdColorReleased` — released early, pre-sweep |
+| `Missed` | any | `holdColorReleased` — missed start or swept after early release |
+| `Hit` | `Finished` | (not rendered — successfully completed) |
 
 **Implementation:** `HoldBodyRenderer` (`Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs`).
 

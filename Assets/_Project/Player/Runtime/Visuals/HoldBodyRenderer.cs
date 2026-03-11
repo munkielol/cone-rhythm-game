@@ -128,7 +128,12 @@ namespace RhythmicFlow.Player
         [Tooltip("Ribbon color while the hold is actively being held (HoldBind == Bound). Typically brighter.")]
         [SerializeField] private Color holdColorActive = new Color(0.5f, 0.85f, 1f, 1.0f);
 
-        [Tooltip("Ribbon color after the hold was released early or missed. Typically dim red.")]
+        [Tooltip("Ribbon color when the hold is in a failed/non-judging state:\n" +
+                 "  • Released early  (HoldBind == Finished, still before endTimeMs)\n" +
+                 "  • Missed start    (NoteState == Missed — never bound)\n\n" +
+                 "The ribbon keeps shrinking geometrically until endTimeMs, using this dim color\n" +
+                 "to signal 'no longer scoring'. Distinct from holdColorApproaching/Active.\n" +
+                 "Default: dim semi-transparent red.")]
         [SerializeField] private Color holdColorReleased = new Color(0.8f, 0.2f, 0.2f, 0.55f);
 
         // -------------------------------------------------------------------
@@ -288,9 +293,28 @@ namespace RhythmicFlow.Player
             {
                 if (note.Type != NoteType.Hold) { continue; }
 
-                // Skip fully resolved holds.
-                // Finished-but-tail-still-visible holds keep drawing (dim red via holdColorReleased).
-                if (note.State == NoteState.Hit || note.State == NoteState.Missed) { continue; }
+                // ── Lifecycle filter ──────────────────────────────────────────────────────
+                //
+                // VISUAL LIFETIME vs JUDGING ELIGIBILITY are decoupled (spec §5.7.1):
+                //
+                //   NoteState.Hit    → successfully completed (all ticks scored, or hold bound
+                //                      and EvaluateHoldTicks closed it). Visual done. SKIP.
+                //
+                //   NoteState.Missed → missed start OR swept after early release.
+                //                      Judging stopped, but the hold body stays visible until
+                //                      endTimeMs so the player can see where they went wrong.
+                //                      ComputeHoldEndpointsR handles the endTimeMs cutoff:
+                //                        head pins at judgementR (headToHit < 0 → alpha = 1),
+                //                        tail shrinks to judgementR at endTimeMs (degenerate → hidden).
+                //                      KEEP RENDERING (dim color applied in Step 3 below).
+                //
+                //   NoteState.Active
+                //     HoldBind.Unbound   → approaching, not yet hittable.
+                //     HoldBind.Bound     → being held, ticks scoring.
+                //     HoldBind.Finished  → released early; still Active until SweepMissed fires.
+                //                          Stays visible, rendered dim (same as Missed).
+                //
+                if (note.State == NoteState.Hit) { continue; }
 
                 // Pool exhausted — more holds than MaxHoldPool are simultaneously visible.
                 if (_poolUsed >= MaxHoldPool) { break; }
@@ -355,13 +379,30 @@ namespace RhythmicFlow.Player
                 if (headR - tailR < 0.0001f) { continue; }
 
                 // ── Step 3: Phase-based color ─────────────────────────────────────────────
+                //
+                // State / HoldBind → color mapping:
+                //
+                //   Missed (any HoldBind)           → holdColorReleased  (dim: failed/non-judging)
+                //   Active + HoldBind.Bound         → holdColorActive    (bright: scoring)
+                //   Active + HoldBind.Finished      → holdColorReleased  (dim: released early, pre-sweep)
+                //   Active + HoldBind.Unbound       → holdColorApproaching (approaching)
+                //
+                // HoldBind.Finished + State.Hit is already filtered above (never reaches here).
 
                 Color ribbonColor;
-                switch (note.HoldBind)
+                if (note.State == NoteState.Missed)
                 {
-                    case HoldBindState.Bound:    ribbonColor = holdColorActive;     break;
-                    case HoldBindState.Finished: ribbonColor = holdColorReleased;   break;
-                    default:                     ribbonColor = holdColorApproaching; break;
+                    // Missed start, or released early and swept — non-judging ghost.
+                    ribbonColor = holdColorReleased;
+                }
+                else
+                {
+                    switch (note.HoldBind)
+                    {
+                        case HoldBindState.Bound:    ribbonColor = holdColorActive;     break;
+                        case HoldBindState.Finished: ribbonColor = holdColorReleased;   break;
+                        default:                     ribbonColor = holdColorApproaching; break;
+                    }
                 }
                 _propBlock.SetColor("_Color", ribbonColor);
 

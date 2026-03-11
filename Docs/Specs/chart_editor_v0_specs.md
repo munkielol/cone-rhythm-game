@@ -326,6 +326,8 @@ The ribbon spans from the tail (`endTimeMs` approach position) to the head (`sta
 Once `chartTime ≥ startTimeMs`, the head is pinned at the judgement ring and the ribbon shrinks as the tail catches up.
 In v0 the ribbon uses the **current lane geometry** (center angle, width) each frame — no bending.
 
+If the hold is **missed** (player never bound it) or **released early**, the ribbon continues to shrink geometrically until `endTimeMs` using a dim non-judging color (`holdColorReleased`). Judging stops immediately; the visual persists so the player can see the missed hold's extent. After `endTimeMs` the ribbon disappears.
+
 The ribbon is a **trapezoid**: lane borders are radial lines at `centerDeg ± widthDeg/2`, so the chord width at radius `r` is `2 · r · sin(widthDeg/2 · Deg2Rad)`. Head and tail sit at different radii and therefore have different widths. The `holdLaneWidthRatio` (skin parameter, default 0.7) scales both widths uniformly (1.0 = exact lane border width).
 
 Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear at the inner band edge (`innerLocal`) and travel outward.
