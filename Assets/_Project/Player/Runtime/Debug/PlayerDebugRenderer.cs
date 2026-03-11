@@ -123,7 +123,7 @@ namespace RhythmicFlow.Player
         [Tooltip("Draw a rail segment from hold start to hold end along the lane center.")]
         [SerializeField] private bool showHoldRails = true;
         [Tooltip("(Reserved) Draw tick markers on the hold rail — not yet implemented.")]
-        [SerializeField] private bool showHoldTicks = false;
+        [SerializeField] private bool showHoldTicks = true;
 
         [Header("Judgement Flashes (DEBUG)")]
         [Tooltip("Duration in seconds that each judgement flash remains visible.")]
@@ -210,6 +210,10 @@ namespace RhythmicFlow.Player
         private readonly JudgementFlash[] _flashes = new JudgementFlash[MaxFlashes];
         private int                       _flashHead = 0;     // next write index (ring)
         private LineRenderer[]            _flashPool;         // built in TryBuildStaticGeometry
+
+        // Debug counters for OnGUI hold readout — updated each frame in UpdateNoteMarkers.
+        private int _debugHoldPresent;   // Active hold notes in note source that passed State filter
+        private int _debugHoldRendered;  // Hold notes that passed all filters and were drawn
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -431,6 +435,8 @@ namespace RhythmicFlow.Player
             {
                 _holdRailPool[i] = CreateLineRenderer($"HoldRail_{i}", holdColor);
                 _holdRailPool[i].positionCount = 2;
+                _holdRailPool[i].startWidth = lineWidth * 3f; // VISUAL ONLY — thicker than lane lines
+                _holdRailPool[i].endWidth   = lineWidth * 3f;
                 _holdRailPool[i].gameObject.SetActive(false);
             }
 
@@ -653,6 +659,8 @@ namespace RhythmicFlow.Player
             double greatWindowMs = playerAppController.DebugGreatWindowMs;
 
             int poolIdx = 0;
+            _debugHoldPresent  = 0;
+            _debugHoldRendered = 0;
 
             if (noteSource != null)
             {
@@ -663,14 +671,35 @@ namespace RhythmicFlow.Player
                     // Only draw notes that are in the Active lifecycle state.
                     if (note.State != NoteState.Active) { continue; }
 
-                    // Time from now until the note should be hit (positive = future).
-                    double timeToHitMs = note.PrimaryTimeMs - chartTimeMs;
+                    bool isHold = note.Type == NoteType.Hold;
+                    if (isHold) { _debugHoldPresent++; }
 
-                    // Too far ahead — not yet in the approach window.
-                    if (timeToHitMs > noteLeadTimeMs) { continue; }
+                    // Hold notes use EndTimeMs for the "past miss" cut-off (a hold's start time
+                    // can be well in the past while the note is actively held).
+                    // Bound holds are never culled by the time window — always stay visible.
+                    double timeToHitMs;
+                    if (isHold)
+                    {
+                        double startToHit = note.StartTimeMs - chartTimeMs;
+                        double endToHit   = note.EndTimeMs   - chartTimeMs;
+                        bool   isHolding  = note.HoldBind == HoldBindState.Bound;
 
-                    // Past the miss deadline — nothing left to show.
-                    if (timeToHitMs < -greatWindowMs) { continue; }
+                        // Cull if start is beyond the approach window AND not currently held.
+                        if (!isHolding && startToHit > noteLeadTimeMs) { continue; }
+                        // Cull once the end has fully cleared the miss window.
+                        if (endToHit < -greatWindowMs) { continue; }
+
+                        // Use startToHit for alpha; Clamp01 will map past values → alpha=1
+                        // (start marker sits at judgement ring once the hold is in progress).
+                        timeToHitMs = startToHit;
+                    }
+                    else
+                    {
+                        // Standard tap / flick / catch filter.
+                        timeToHitMs = note.PrimaryTimeMs - chartTimeMs;
+                        if (timeToHitMs > noteLeadTimeMs) { continue; }
+                        if (timeToHitMs < -greatWindowMs) { continue; }
+                    }
 
                     if (!lanes.TryGetValue(note.LaneId, out LaneGeometry lane))   { continue; }
                     if (!lToA.TryGetValue(note.LaneId,  out string arenaId))      { continue; }
@@ -710,7 +739,7 @@ namespace RhythmicFlow.Player
                     // Fade from dim (spawn) to full-bright (hit) so far notes don't clutter.
                     Color noteBase = note.Type == NoteType.Flick ? flickColor
                                    : note.Type == NoteType.Catch ? catchColor
-                                   : note.Type == NoteType.Hold  ? holdColor
+                                   : isHold                      ? holdColor
                                    :                               tapColor;
                     Color c = noteBase;
                     c.a = Mathf.Lerp(0.3f, 1.0f, alpha);
@@ -756,7 +785,7 @@ namespace RhythmicFlow.Player
                     // Each endpoint maps its own timeToHitMs independently:
                     //   start uses note.StartTimeMs (already in timeToHitMs above)
                     //   end   uses note.EndTimeMs   (may be beyond lead time → clamped to spawnR)
-                    if (note.Type == NoteType.Hold && showHoldRails)
+                    if (isHold && showHoldRails)
                     {
                         double endTimeToHitMs = note.EndTimeMs - chartTimeMs;
                         float  endAlpha = (noteLeadTimeMs > 0)
@@ -790,6 +819,7 @@ namespace RhythmicFlow.Player
                         _holdEndMarkerPool[poolIdx].gameObject.SetActive(false);
                     }
 
+                    if (isHold) { _debugHoldRendered++; }
                     poolIdx++;
                 }
             }
@@ -1037,6 +1067,18 @@ namespace RhythmicFlow.Player
                     GUI.Label(new Rect(10, 10, Screen.width, lh), laneLine);
                     GUI.color = Color.white;
                 }
+            }
+
+            // Hold debug counter — always visible when DebugShowTouchBand is on.
+            if (showBand)
+            {
+                const int lhh = 18;
+                string holdLine = $"HoldRendered={_debugHoldRendered}  HoldPresent={_debugHoldPresent}";
+                GUI.color = Color.black;
+                GUI.Label(new Rect(11, 29, Screen.width, lhh), holdLine);
+                GUI.color = Color.cyan;
+                GUI.Label(new Rect(10, 28, Screen.width, lhh), holdLine);
+                GUI.color = Color.white;
             }
 
             if (!playerAppController.DebugHasTouchHit) { return; }
