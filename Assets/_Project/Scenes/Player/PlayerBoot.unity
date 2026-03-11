@@ -702,10 +702,15 @@ MonoBehaviour:
   laneHighlightColor: {r: 0, g: 1, b: 0, a: 1}
   arenaColor: {r: 0, g: 1, b: 1, a: 1}
   laneColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
-  noteColor: {r: 1, g: 1, b: 1, a: 1}
+  tapColor: {r: 1, g: 1, b: 1, a: 1}
+  flickColor: {r: 0, g: 1, b: 0.5, a: 1}
+  catchColor: {r: 1, g: 0, b: 1, a: 1}
+  holdColor: {r: 0.3, g: 0.6, b: 1, a: 1}
   touchColor: {r: 1, g: 0, b: 0, a: 1}
   flickArrowColor: {r: 0, g: 1, b: 0, a: 1}
   judgementRingColor: {r: 0.85, g: 0.6, b: 1, a: 1}
+  showHoldRails: 1
+  showHoldTicks: 0
   flashDuration: 0.35
   flashHalfSize: 0.08
   flashPerfectPlusColor: {r: 1, g: 0.9, b: 0, a: 1}
@@ -727,6 +732,56 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &780337766
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 780337768}
+  - component: {fileID: 780337767}
+  m_Layer: 0
+  m_Name: HoldBodyRenderer
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &780337767
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 780337766}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b3d7a1f4e9c2b05a8d6f3e2c7a4b1d8f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Player::RhythmicFlow.Player.HoldBodyRenderer
+  playerAppController: {fileID: 4343613}
+  holdMaterial: {fileID: 2100000, guid: a38017da047f723419b9baf25f20f25d, type: 2}
+  holdColor: {r: 0.3, g: 0.6, b: 1, a: 0.8}
+  noteLeadTimeMs: 2000
+  spawnRadiusFactor: 0.25
+  holdLaneWidthRatio: 0.7
+--- !u!4 &780337768
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 780337766}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0, y: -0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -738,3 +793,4 @@ SceneRoots:
   - {fileID: 514609552}
   - {fileID: 412451163}
   - {fileID: 714554979}
+  - {fileID: 780337768}
