@@ -411,7 +411,7 @@ namespace RhythmicFlow.Player
             _notePool = new LineRenderer[maxNoteMarkers];
             for (int i = 0; i < maxNoteMarkers; i++)
             {
-                _notePool[i] = CreateLineRenderer($"NoteMarker_{i}", noteColor);
+                _notePool[i] = CreateLineRenderer($"NoteMarker_{i}", tapColor);
                 _notePool[i].positionCount = 5;       // diamond: 4 corners + close
                 _notePool[i].gameObject.SetActive(false);
             }
