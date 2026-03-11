@@ -8,50 +8,64 @@
 //   alpha       = 1 − Clamp01( timeToHitMs / noteLeadTimeMs )
 //   r           = Lerp( spawnR, judgementR, alpha )
 //
-//   alpha = 0  →  r = spawnR      (event is far in the future)
-//   alpha = 1  →  r = judgementR  (event is at or past current time)
+//   alpha = 0  →  r = spawnR      (event far in the future)
+//   alpha = 1  →  r = judgementR  (event at/past current time)
 //
-//   KEY PROPERTY: when timeToHitMs ≤ 0 (event is in the past),
-//   Clamp01 returns 0, so alpha = 1, so r = judgementR.
-//   This naturally pins any endpoint at the judgement ring once its
-//   event time has passed — no special branch required.
+//   Negative timeToHitMs → Clamp01=0 → alpha=1 → r=judgementR.
+//   Head naturally pins at judgementR once startTimeMs passes.
 // ══════════════════════════════════════════════════════════════════════
 //
 //  THREE PHASES OF A HOLD NOTE
-//  ────────────────────────────
 //
-//  A)  Before start  (chartTime < startTimeMs)
-//      headApproachParam → approach(startTimeMs)  < 1 (head approaching)
-//      tailApproachParam → approach(endTimeMs)    < headParam (further)
-//      Both approaching; ribbon spans tail → head, getting longer until
-//      head reaches judgement ring.
+//   A)  Before start  (chartTime < startTimeMs)
+//       Head and tail both approach; ribbon spans tail→head.
 //
-//  B)  During hold  (startTimeMs ≤ chartTime ≤ endTimeMs)
-//      headApproachParam → 1.0 (PINNED at judgementR by Clamp01)
-//      tailApproachParam → approach(endTimeMs), still < 1
-//      Head is fixed at judgementR; ribbon SHRINKS as tail approaches.
-//      This is the "consumption" effect — the ribbon is consumed from
-//      the judgement line inward as the player holds.
+//   B)  During hold  (startTimeMs ≤ chartTime ≤ endTimeMs)
+//       headR = judgementR (pinned by Clamp01).
+//       tailR still approaching → ribbon shrinks (consumption).
 //
-//  C)  After end  (chartTime > endTimeMs + greatWindowMs)
-//      Ribbon is hidden by ComputeHoldEndpointsR returning visible=false.
+//   C)  After end  (chartTime > endTimeMs + greatWindowMs)
+//       Ribbon hidden (ComputeHoldEndpointsR returns visible=false).
+//
+// ══════════════════════════════════════════════════════════════════════
+//  Z COMPUTATION — FRUSTUM SURFACE ALIGNMENT
+//
+//   The debug hold rail (PlayerDebugRenderer) places each endpoint in
+//   PlayfieldRoot local XY, then lifts it in local Z using:
+//
+//     s01   = Clamp01( (r − innerLocal) / (outerLocal − innerLocal) )
+//     localZ = Lerp( frustumHeightInner, frustumHeightOuter, s01 )
+//            ≈ Lerp( 0.001, 0.15, s01 )
+//
+//   At the outer ring (r ≈ outerLocal, s01 ≈ 1.0) this gives z ≈ 0.15.
+//   The old ribbon used a flat constant surfaceOffsetLocal = 0.002, so
+//   the ribbon sat ~0.148 local units below the debug line at judgementR.
+//
+//   FIX: ComputeEndpointLocalZ() replicates the same formula as
+//   PlayerDebugRenderer.VisualOnlyLocalZ(), keyed from an optional
+//   PlayerDebugArenaSurface reference (auto-syncs height values).
+//   When no arenaSurface is assigned, the manual frustum* fields below
+//   are used as fallback.
 //
 // ══════════════════════════════════════════════════════════════════════
 //  MATRIX CONSTRUCTION
 //
-//   All geometry is computed in PlayfieldRoot-local space (same space
-//   as the debug lane visuals and ArenaHitTester).  A strip-local
-//   matrix is built there, then promoted to world space via:
-//
+//   All geometry is in PlayfieldRoot-local space.  World space is
+//   obtained by:
 //       worldMatrix = pfRoot.localToWorldMatrix * stripLocalMatrix
-//
-//   This correctly handles any rotation, scale, or translation of the
-//   playfieldRoot without special-casing.
 //
 //   Unit strip mesh layout:
 //       X ∈ [−0.5, +0.5]  — width axis  (tangent, ⊥ to lane radial)
-//       Y ∈ [0,    1  ]   — length axis (Y=0 = tail, Y=1 = head)
-//       Z = 0              — surface normal (shading only)
+//       Y ∈ [0, 1]         — length axis  (Y=0 = tail, Y=1 = head)
+//       Z = 0              — surface normal
+//
+//   Matrix columns:
+//       Col 0 = tangLocal × widthLocal         (width direction)
+//       Col 1 = headLocal3 − tailLocal3         (3D segment vector)
+//       Col 2 = local surface normal            (shading only)
+//       Col 3 = tailLocal3                      (strip origin)
+//
+//   Col 1 is now a full 3D vector so the strip follows the frustum tilt.
 //
 // Spec §5.7.1.
 
@@ -62,7 +76,7 @@ namespace RhythmicFlow.Player
 {
     /// <summary>
     /// Runtime visual ribbon renderer for Hold note bodies (scroll/long-note style).
-    /// Draws the body in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
+    /// Draws in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
     /// Attach to any GameObject in the Player scene; assign PlayerAppController and a hold Material.
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Visuals/HoldBodyRenderer")]
@@ -80,19 +94,45 @@ namespace RhythmicFlow.Player
         [SerializeField] private Material holdMaterial;
 
         // -------------------------------------------------------------------
-        // Inspector — Colors (one per hold phase)
+        // Inspector — Frustum surface alignment
+        // -------------------------------------------------------------------
+
+        [Header("Frustum Surface Alignment")]
+        [Tooltip("Optional: assign the PlayerDebugArenaSurface in the scene. " +
+                 "When set, frustum height values are read automatically from it (matching " +
+                 "the debug hold-rail exactly). If null, the manual values below are used.")]
+        [SerializeField] private PlayerDebugArenaSurface arenaSurface;
+
+        [Tooltip("When true and no arenaSurface is assigned, the ribbon endpoints are lifted " +
+                 "onto the frustum cone surface using the manual height values below. " +
+                 "Set to false to use a flat ribbon at surfaceOffsetLocal.")]
+        [SerializeField] private bool useFrustumProfile = true;
+
+        [Tooltip("Local Z at the inner ring edge (matches PlayerDebugArenaSurface.frustumHeightInner). " +
+                 "Only used when arenaSurface is not assigned. Default: 0.001.")]
+        [SerializeField] private float frustumHeightInner = 0.001f;
+
+        [Tooltip("Local Z at the outer ring edge (matches PlayerDebugArenaSurface.frustumHeightOuter). " +
+                 "Only used when arenaSurface is not assigned. Default: 0.15.")]
+        [SerializeField] private float frustumHeightOuter = 0.15f;
+
+        [Tooltip("Additional Z offset added on top of the computed frustum height to prevent " +
+                 "z-fighting when useFrustumProfile is false. Ignored when frustum profile is active " +
+                 "(frustumHeightInner already provides z-fight clearance from z=0).")]
+        [SerializeField] private float surfaceOffsetLocal = 0.002f;
+
+        // -------------------------------------------------------------------
+        // Inspector — Phase colors
         // -------------------------------------------------------------------
 
         [Header("Phase Colors")]
         [Tooltip("Ribbon color while the hold is approaching (before startTimeMs is reached).")]
         [SerializeField] private Color holdColorApproaching = new Color(0.3f, 0.6f, 1f, 0.75f);
 
-        [Tooltip("Ribbon color while the hold is actively being held (HoldBind == Bound). " +
-                 "Typically brighter than the approaching color.")]
+        [Tooltip("Ribbon color while the hold is actively being held (HoldBind == Bound). Typically brighter.")]
         [SerializeField] private Color holdColorActive = new Color(0.5f, 0.85f, 1f, 1.0f);
 
-        [Tooltip("Ribbon color after the hold was released early or missed. " +
-                 "Typically a dim red to indicate failure.")]
+        [Tooltip("Ribbon color after the hold was released early or missed. Typically dim red.")]
         [SerializeField] private Color holdColorReleased = new Color(0.8f, 0.2f, 0.2f, 0.55f);
 
         // -------------------------------------------------------------------
@@ -110,7 +150,7 @@ namespace RhythmicFlow.Player
         [SerializeField] private float spawnRadiusFactor = 0.25f;
 
         // -------------------------------------------------------------------
-        // Inspector — Ribbon Sizing
+        // Inspector — Ribbon sizing
         // -------------------------------------------------------------------
 
         [Header("Ribbon Sizing")]
@@ -119,27 +159,32 @@ namespace RhythmicFlow.Player
         [Range(0.1f, 1f)]
         [SerializeField] private float holdLaneWidthRatio = 0.7f;
 
-        [Tooltip("Small Z offset in PlayfieldRoot local units added to the ribbon to prevent " +
-                 "z-fighting with the arena surface mesh. Positive = toward camera.")]
-        [SerializeField] private float surfaceOffsetLocal = 0.002f;
-
         // -------------------------------------------------------------------
         // Inspector — Debug
         // -------------------------------------------------------------------
 
         [Header("Debug")]
-        [Tooltip("When true, draws a Debug.DrawLine between the ribbon's two endpoints (in world " +
-                 "space) each frame. Visible in the Scene view as a sanity check.")]
+        [Tooltip("Draws Debug.DrawLine between the ribbon's two endpoints in world space. " +
+                 "Use this to compare the ribbon centerline against the debug hold rail.")]
         [SerializeField] private bool debugDrawEndpoints = false;
+
+        [Tooltip("Draws the ribbon mesh quad outline (all 4 edges + centerline) in world space " +
+                 "by transforming the unit-strip vertices with the same worldMatrix used for DrawMesh. " +
+                 "Lets you verify the mesh exactly covers the expected area.")]
+        [SerializeField] private bool debugDrawMeshOutline = false;
 
         // -------------------------------------------------------------------
         // Internals
         // -------------------------------------------------------------------
 
         private Mesh                  _quadMesh;
-        // Reused every DrawMesh call so we never allocate a new MaterialPropertyBlock per frame.
-        // Must be created in Awake — Unity prohibits engine-object construction in field initializers.
+        // Reused every DrawMesh call — no per-frame allocation.
+        // Must be created in Awake; Unity forbids engine-object ctor in field initializers.
         private MaterialPropertyBlock _propBlock;
+
+        // Reusable array for transforming unit-strip corners when debugDrawMeshOutline is true.
+        // 4 corners + center-tail + center-head = 6 scratch vectors. Allocated once in Awake.
+        private readonly Vector3[] _outlineWorldPts = new Vector3[6];
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -175,16 +220,15 @@ namespace RhythmicFlow.Player
             double chartTimeMs   = playerAppController.EffectiveChartTimeMs;
             double greatWindowMs = playerAppController.GreatWindowMs;
 
-            // Cache localToWorldMatrix once — it doesn't change mid-frame.
+            // Cache localToWorldMatrix once — unchanged within a frame.
             Matrix4x4 localToWorld = pfRoot.localToWorldMatrix;
 
             foreach (RuntimeNote note in allNotes)
             {
                 if (note.Type != NoteType.Hold) { continue; }
 
-                // Skip holds that are fully resolved (entire hold judged as Hit or Missed).
-                // Holds in Finished state (early release) still have their tail on screen, so
-                // we keep drawing them until the tail clears the miss window.
+                // Skip fully resolved holds.
+                // Finished-but-tail-still-visible holds keep drawing (dim red via holdColorReleased).
                 if (note.State == NoteState.Hit || note.State == NoteState.Missed) { continue; }
 
                 // Look up geometry for this note's lane and arena.
@@ -192,32 +236,21 @@ namespace RhythmicFlow.Player
                 if (!laneToArena.TryGetValue(note.LaneId, out string arenaId))      { continue; }
                 if (!arenaGeos.TryGetValue(arenaId,       out ArenaGeometry arena)) { continue; }
 
-                // ───────────────────────────────────────────────────────────
-                // Step 1: Compute approach radii (all in PlayfieldRoot local units)
-                // ───────────────────────────────────────────────────────────
+                // ── Step 1: Compute band radii (PlayfieldRoot local units) ───────────────
 
                 float outerLocal = pfTf.NormRadiusToLocal(arena.OuterRadiusNorm);
                 float bandLocal  = pfTf.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
 
-                // judgementR: where notes land visually — inset from the chart outer edge.
-                // VISUAL ONLY; does not affect hit-testing.
+                // judgementR: visual inset from chart outer edge. VISUAL ONLY.
                 float judgementR = outerLocal
                     - PlayerSettingsStore.JudgementInsetNorm * pfTf.MinDimLocal;
 
-                // spawnR: where notes appear at the start of the lead window.
-                float spawnR = Mathf.Lerp(innerLocal, judgementR, spawnRadiusFactor);
+                // spawnR: where notes first appear (fraction of path from inner edge to judgementR).
+                // Must match PlayerDebugRenderer: innerLocal + factor * (judgementR - innerLocal).
+                float spawnR = innerLocal + spawnRadiusFactor * (judgementR - innerLocal);
 
-                // ───────────────────────────────────────────────────────────
-                // Step 2: Map startTimeMs and endTimeMs to local radii.
-                //
-                // headApproachParam = approach(startTimeMs, chartTimeMs)
-                // tailApproachParam = approach(endTimeMs,   chartTimeMs)
-                //
-                // CLAMPING: the Clamp01 inside ComputeApproachR means that once
-                // chartTimeMs >= startTimeMs, headR is automatically pinned at
-                // judgementR (phase B — consumption).  No explicit branch needed.
-                // ───────────────────────────────────────────────────────────
+                // ── Step 2: Map start/end times to local radii (with visibility check) ──
 
                 ComputeHoldEndpointsR(
                     note.StartTimeMs, note.EndTimeMs,
@@ -227,132 +260,144 @@ namespace RhythmicFlow.Player
 
                 if (!visible) { continue; }
 
-                // segLengthLocal: radial distance from tail to head in local units.
-                // headR is always >= tailR (head is farther out along the radial).
-                float segLengthLocal = headR - tailR;
-                if (segLengthLocal < 0.0001f) { continue; } // degenerate strip: skip
+                // headR ≥ tailR always (head is farther out along the radial direction).
+                // Degenerate: skip to avoid NaN in matrix.
+                if (headR - tailR < 0.0001f) { continue; }
 
-                // ───────────────────────────────────────────────────────────
-                // Step 3: Determine ribbon color from hold phase.
-                //
-                //   Unbound   → approaching, not yet started     → holdColorApproaching
-                //   Bound     → actively being held               → holdColorActive
-                //   Finished  → released early / ticks exhausted  → holdColorReleased
-                // ───────────────────────────────────────────────────────────
+                // ── Step 3: Phase-based color ─────────────────────────────────────────────
 
                 Color ribbonColor;
                 switch (note.HoldBind)
                 {
-                    case HoldBindState.Bound:
-                        ribbonColor = holdColorActive;
-                        break;
-                    case HoldBindState.Finished:
-                        ribbonColor = holdColorReleased;
-                        break;
-                    default: // Unbound — approaching
-                        ribbonColor = holdColorApproaching;
-                        break;
+                    case HoldBindState.Bound:    ribbonColor = holdColorActive;    break;
+                    case HoldBindState.Finished: ribbonColor = holdColorReleased;  break;
+                    default:                     ribbonColor = holdColorApproaching; break;
                 }
                 _propBlock.SetColor("_Color", ribbonColor);
 
-                // ───────────────────────────────────────────────────────────
-                // Step 4: Build local-space axes for the strip.
-                //
-                // All vectors are in PlayfieldRoot local space so that
-                //   worldMatrix = localToWorld * stripLocalMatrix
-                // lands the ribbon on the correct playfield surface.
-                // ───────────────────────────────────────────────────────────
+                // ── Step 4: Local-space axes ──────────────────────────────────────────────
 
-                // Lane center angle: the radial direction (outward = +r).
                 float thetaRad = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
                 float cosT     = Mathf.Cos(thetaRad);
                 float sinT     = Mathf.Sin(thetaRad);
 
-                // dirLocal: unit vector pointing radially outward in local XY.
-                //           This is the strip's Y (length) axis.
-                var dirLocal  = new Vector3(cosT, sinT, 0f);
+                // dirLocal: unit radial-outward vector in local XY — the strip length axis.
+                var dirLocal = new Vector3(cosT, sinT, 0f);
 
-                // tangLocal: unit vector perpendicular to dirLocal, in local XY (90° CCW).
-                //            Cross(localZ, dirLocal) = (-sinT, cosT, 0).
-                //            This is the strip's X (width) axis.
+                // tangLocal: 90° CCW from dirLocal, in local XY — the strip width axis.
+                // Cross(localZ, dirLocal) = (-sinT, cosT, 0).
                 var tangLocal = new Vector3(-sinT, cosT, 0f);
 
-                // normLocal: PlayfieldRoot local +Z — the playfield surface normal.
-                //            Used only for mesh shading; not scaled by the matrix.
-                var normLocal = new Vector3(0f, 0f, 1f);
-
-                // ───────────────────────────────────────────────────────────
-                // Step 5: Compute strip endpoints in PlayfieldRoot local space.
+                // ── Step 5: Compute 3D local-space endpoints (XY + frustum Z) ────────────
                 //
-                //   tailLocal3 = arena center + tailR * dir   (Y=0 on the unit strip)
-                //   headLocal3 = arena center + headR * dir   (Y=1 on the unit strip)
-                //
-                // Both are lifted by surfaceOffsetLocal in local Z to sit above the
-                // arena mesh and avoid z-fighting.
-                // ───────────────────────────────────────────────────────────
+                // THIS IS THE KEY FIX.
+                // Old code: localZ = surfaceOffsetLocal (constant 0.002) for both endpoints.
+                // Correct:  localZ = Lerp(frustumHeightInner, frustumHeightOuter, s01)
+                //           where s01 = Clamp01((r - inner) / (outer - inner)).
+                // This exactly replicates PlayerDebugRenderer.VisualOnlyLocalZ(s01),
+                // so the ribbon endpoints land on the same frustum surface as the debug rail.
 
                 Vector2 ctr = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
+                // Tail: Y=0 on the unit strip mesh (strip origin).
                 var tailLocal3 = new Vector3(
                     ctr.x + tailR * cosT,
                     ctr.y + tailR * sinT,
-                    surfaceOffsetLocal);          // strip origin (Y=0)
+                    ComputeEndpointLocalZ(tailR, innerLocal, outerLocal));
 
+                // Head: Y=1 on the unit strip mesh (strip tip).
                 var headLocal3 = new Vector3(
                     ctr.x + headR * cosT,
                     ctr.y + headR * sinT,
-                    surfaceOffsetLocal);          // strip tip   (Y=1)
+                    ComputeEndpointLocalZ(headR, innerLocal, outerLocal));
 
-                // ───────────────────────────────────────────────────────────
-                // Step 6: Width in local units.
-                //
+                // ── Step 6: Width in local units ──────────────────────────────────────────
+
                 // Arc-length at judgementR: judgementR × widthDeg_rad × ratio.
-                // judgementR is already in local units, so this is a local-unit width.
-                // ───────────────────────────────────────────────────────────
-
                 float widthLocal = judgementR * lane.WidthDeg * Mathf.Deg2Rad * holdLaneWidthRatio;
 
-                // ───────────────────────────────────────────────────────────
-                // Step 7: Assemble the strip-local matrix.
+                // ── Step 7: Build strip-local matrix ──────────────────────────────────────
                 //
-                // Unit strip mesh vertex layout:
-                //   (−0.5, 0, 0) → tail-left    (X = −half-width, Y=0 = tail)
-                //   (+0.5, 0, 0) → tail-right   (X = +half-width, Y=0 = tail)
-                //   (+0.5, 1, 0) → head-right   (X = +half-width, Y=1 = head)
-                //   (−0.5, 1, 0) → head-left    (X = −half-width, Y=1 = head)
+                // Unit strip vertex layout:
+                //   (−0.5, 0, 0) → tail-left    (Y=0 = tail end)
+                //   (+0.5, 0, 0) → tail-right
+                //   (+0.5, 1, 0) → head-right   (Y=1 = head end)
+                //   (−0.5, 1, 0) → head-left
                 //
-                // Each matrix column maps one mesh axis to a local-space vector:
-                //   Col 0 (X) = tangLocal × widthLocal       → strip width direction
-                //   Col 1 (Y) = dirLocal  × segLengthLocal   → strip length direction
-                //   Col 2 (Z) = normLocal (unit)             → surface normal
-                //   Col 3     = tailLocal3                   → origin at tail (Y=0)
-                // ───────────────────────────────────────────────────────────
+                // Column 0 (X): tangent × width → maps X ∈ [−0.5,+0.5] to lane width
+                // Column 1 (Y): headLocal3 − tailLocal3 → full 3D segment vector
+                //               (includes frustum Z component, tilting the strip correctly)
+                // Column 2 (Z): local surface normal (shading; unlit shaders ignore this)
+                // Column 3   : tailLocal3 → strip origin = tail world position
+                //
+                // IMPORTANT: Col 1 is the FULL vector, not normalize(dir) × length.
+                // This ensures Y=1 maps exactly to headLocal3 with correct frustum Z.
+
+                Vector3 segVec = headLocal3 - tailLocal3; // 3D: includes Z tilt from frustum
 
                 var stripLocalMatrix = new Matrix4x4(
-                    // Column 0 — X axis: tangent scaled to ribbon width
-                    new Vector4(tangLocal.x * widthLocal,     tangLocal.y * widthLocal,     0f, 0f),
-                    // Column 1 — Y axis: radial direction scaled to segment length
-                    new Vector4(dirLocal.x  * segLengthLocal, dirLocal.y  * segLengthLocal, 0f, 0f),
-                    // Column 2 — Z axis: surface normal (unit, for shading)
-                    new Vector4(normLocal.x, normLocal.y, normLocal.z, 0f),
-                    // Column 3 — Translation: strip origin = tail position (with Z offset)
+                    // Column 0 — X axis: tangent scaled to ribbon width (stays in XY)
+                    new Vector4(tangLocal.x * widthLocal, tangLocal.y * widthLocal, 0f, 0f),
+                    // Column 1 — Y axis: full 3D segment from tail to head
+                    new Vector4(segVec.x, segVec.y, segVec.z, 0f),
+                    // Column 2 — Z axis: local +Z (surface normal for shading; no effect on positions)
+                    new Vector4(0f, 0f, 1f, 0f),
+                    // Column 3 — Translation: strip origin at tail
                     new Vector4(tailLocal3.x, tailLocal3.y, tailLocal3.z, 1f)
                 );
 
-                // Apply playfieldRoot transform: strips are in local space;
-                // localToWorldMatrix promotes them to world space in one multiply.
+                // Promote local strip to world space using playfieldRoot's full transform.
                 Matrix4x4 worldMatrix = localToWorld * stripLocalMatrix;
 
-                // ───────────────────────────────────────────────────────────
-                // Step 8: Optional debug — draw segment endpoints in world space.
-                // Visible in the Scene view; zero cost in production (flag is false by default).
-                // ───────────────────────────────────────────────────────────
-                if (debugDrawEndpoints)
+                // ── Step 8: Debug visualizations ─────────────────────────────────────────
+
+                if (debugDrawEndpoints || debugDrawMeshOutline)
                 {
-                    // pfRoot.TransformPoint: PlayfieldRoot local → world.
+                    // Tail and head in world space — same TransformPoint as debug renderer uses.
                     Vector3 tailWorld = pfRoot.TransformPoint(tailLocal3);
                     Vector3 headWorld = pfRoot.TransformPoint(headLocal3);
-                    Debug.DrawLine(tailWorld, headWorld, ribbonColor);
+
+                    if (debugDrawEndpoints)
+                    {
+                        // Centerline: matches the debug hold rail line exactly (when frustum
+                        // heights match). Compare in Scene view to verify overlap.
+                        Debug.DrawLine(tailWorld, headWorld, ribbonColor);
+                    }
+
+                    if (debugDrawMeshOutline)
+                    {
+                        // Transform the 4 unit-strip corners + 2 centerline points through the
+                        // same worldMatrix that Graphics.DrawMesh receives.  The resulting
+                        // quad outline should overlap the mesh edges exactly.
+                        //
+                        // _outlineWorldPts layout:
+                        //   [0] tail-left   (−0.5, 0, 0)
+                        //   [1] tail-right  (+0.5, 0, 0)
+                        //   [2] head-right  (+0.5, 1, 0)
+                        //   [3] head-left   (−0.5, 1, 0)
+                        //   [4] center-tail ( 0.0, 0, 0)
+                        //   [5] center-head ( 0.0, 1, 0)
+
+                        _outlineWorldPts[0] = worldMatrix.MultiplyPoint3x4(new Vector3(-0.5f, 0f, 0f));
+                        _outlineWorldPts[1] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.5f, 0f, 0f));
+                        _outlineWorldPts[2] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.5f, 1f, 0f));
+                        _outlineWorldPts[3] = worldMatrix.MultiplyPoint3x4(new Vector3(-0.5f, 1f, 0f));
+                        _outlineWorldPts[4] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.0f, 0f, 0f));
+                        _outlineWorldPts[5] = worldMatrix.MultiplyPoint3x4(new Vector3( 0.0f, 1f, 0f));
+
+                        Color outlineColor = Color.cyan;
+                        Color centerColor  = Color.yellow;
+
+                        // 4 quad edges (white/cyan outline)
+                        Debug.DrawLine(_outlineWorldPts[0], _outlineWorldPts[1], outlineColor); // tail edge
+                        Debug.DrawLine(_outlineWorldPts[2], _outlineWorldPts[3], outlineColor); // head edge
+                        Debug.DrawLine(_outlineWorldPts[0], _outlineWorldPts[3], outlineColor); // left edge
+                        Debug.DrawLine(_outlineWorldPts[1], _outlineWorldPts[2], outlineColor); // right edge
+
+                        // Centerline (yellow) — compare this against the debug hold rail.
+                        // They should overlap when frustum heights are correctly matched.
+                        Debug.DrawLine(_outlineWorldPts[4], _outlineWorldPts[5], centerColor);
+                    }
                 }
 
                 Graphics.DrawMesh(
@@ -362,27 +407,13 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
-        // Hold endpoint radii computation
+        // Hold endpoint radii
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Computes <paramref name="headR"/> and <paramref name="tailR"/> for one hold note,
-        /// both in PlayfieldRoot local units, and sets <paramref name="visible"/> to false when
-        /// the ribbon should not be drawn.
-        ///
-        /// <para>
-        /// <b>Consumption mechanism:</b> headR is computed from <c>startTimeMs</c>.
-        /// Once <c>chartTimeMs ≥ startTimeMs</c>, the approach formula naturally clamps
-        /// headR to <c>judgementR</c> (alpha = 1 because timeToHitMs ≤ 0).
-        /// tailR continues approaching from <c>endTimeMs</c>, so the ribbon length
-        /// decreases — the "consumed" effect.
-        /// </para>
-        ///
-        /// <para>Visibility rules:</para>
-        /// <list type="bullet">
-        ///   <item>Hide if <c>startTimeMs − chartTime &gt; noteLeadTimeMs</c> (head not on screen).</item>
-        ///   <item>Hide if <c>endTimeMs − chartTime &lt; −greatWindowMs</c> (tail past miss window).</item>
-        /// </list>
+        /// Computes headR (outer) and tailR (inner) in PlayfieldLocal units.
+        /// Consumption: headR pins to judgementR once chartTime ≥ startTimeMs (Clamp01 natural behaviour).
+        /// visible = false when note is not on screen or tail has cleared the miss window.
         /// </summary>
         private void ComputeHoldEndpointsR(
             int    startTimeMs,
@@ -395,71 +426,95 @@ namespace RhythmicFlow.Player
             out float tailR,
             out bool  visible)
         {
-            // Time remaining until each event (positive = in the future).
             double headToHit = startTimeMs - chartTimeMs;
             double tailToHit = endTimeMs   - chartTimeMs;
 
-            // Head is not yet on screen: the whole ribbon is invisible.
             if (headToHit > noteLeadTimeMs)
             {
-                headR = spawnR; tailR = spawnR; visible = false;
-                return;
+                // Head not yet on screen — whole ribbon invisible.
+                headR = spawnR; tailR = spawnR; visible = false; return;
             }
 
-            // Tail has fully passed the miss window: ribbon is hidden.
             if (tailToHit < -greatWindowMs)
             {
-                headR = judgementR; tailR = judgementR; visible = false;
-                return;
+                // Tail has cleared the miss window — ribbon done.
+                headR = judgementR; tailR = judgementR; visible = false; return;
             }
 
-            // headApproachParam: approach formula applied to startTimeMs.
-            // When chartTimeMs >= startTimeMs (headToHit <= 0), Clamp01 pins alpha = 1
-            // → headR = judgementR.  Phase B "consumption" is achieved automatically.
-            headR = ComputeApproachR((float)headToHit, spawnR, judgementR);
-
-            // tailApproachParam: approach formula applied to endTimeMs.
-            // Continues approaching throughout the hold duration.
-            tailR = ComputeApproachR((float)tailToHit, spawnR, judgementR);
-
+            // headApproachParam: when headToHit ≤ 0, Clamp01 gives alpha=1 → headR = judgementR (pinned).
+            headR   = ComputeApproachR((float)headToHit, spawnR, judgementR);
+            tailR   = ComputeApproachR((float)tailToHit, spawnR, judgementR);
             visible = true;
         }
 
         /// <summary>
-        /// Maps a time-to-event value to a local radius using the approach formula (spec §6.1).
-        ///
-        /// <code>
-        ///   alpha = 1 − Clamp01( timeToHitMs / noteLeadTimeMs )
-        ///   r     = Lerp( spawnR, judgementR, alpha )
-        /// </code>
-        ///
-        /// <list type="bullet">
-        ///   <item><c>timeToHitMs ≤ 0</c>              → alpha = 1 → <c>r = judgementR</c> (pinned)</item>
-        ///   <item><c>timeToHitMs = noteLeadTimeMs</c>  → alpha = 0 → <c>r = spawnR</c></item>
-        ///   <item>Between: linear interpolation.</item>
-        /// </list>
+        /// Maps time-to-event to a local radius (spec §6.1).
+        /// alpha = 1 − Clamp01(timeToHitMs / noteLeadTimeMs)
+        /// r     = Lerp(spawnR, judgementR, alpha)
         /// </summary>
         private float ComputeApproachR(float timeToHitMs, float spawnR, float judgementR)
         {
             float alpha = (noteLeadTimeMs > 0)
                 ? 1f - Mathf.Clamp01(timeToHitMs / noteLeadTimeMs)
-                : 1f; // guard against divide-by-zero if noteLeadTimeMs is set to 0
+                : 1f;
             return Mathf.Lerp(spawnR, judgementR, alpha);
+        }
+
+        // -------------------------------------------------------------------
+        // Frustum Z helper — matches PlayerDebugRenderer.VisualOnlyLocalZ
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Computes the PlayfieldRoot local Z for a ribbon endpoint at radius <paramref name="r"/>.
+        ///
+        /// Replicates <c>PlayerDebugRenderer.VisualOnlyLocalZ(s01)</c> exactly:
+        /// <code>
+        ///   s01    = Clamp01( (r − innerLocal) / (outerLocal − innerLocal) )
+        ///   localZ = Lerp( frustumHeightInner, frustumHeightOuter, s01 )
+        /// </code>
+        ///
+        /// When <paramref name="arenaSurface"/> is assigned its values are used automatically,
+        /// keeping the ribbon in sync with <see cref="PlayerDebugArenaSurface"/> without manual entry.
+        /// Falls back to the inspector <c>useFrustumProfile</c> / <c>frustumHeightInner/Outer</c>
+        /// fields when arenaSurface is null.
+        /// When the frustum profile is disabled, returns <c>surfaceOffsetLocal</c>.
+        /// </summary>
+        private float ComputeEndpointLocalZ(float r, float innerLocal, float outerLocal)
+        {
+            // Determine whether to use the frustum profile at all.
+            bool useProfile = (arenaSurface != null)
+                ? arenaSurface.UseFrustumProfile
+                : useFrustumProfile;
+
+            if (!useProfile)
+            {
+                // Flat ribbon: tiny constant lift just above the interaction plane.
+                return surfaceOffsetLocal;
+            }
+
+            // Read frustum heights — prefer live values from arenaSurface.
+            float hInner = (arenaSurface != null) ? arenaSurface.FrustumHeightInner : frustumHeightInner;
+            float hOuter = (arenaSurface != null) ? arenaSurface.FrustumHeightOuter : frustumHeightOuter;
+
+            // s01: normalised band position (0 = inner edge, 1 = outer edge).
+            float s01 = (outerLocal > innerLocal)
+                ? Mathf.Clamp01((r - innerLocal) / (outerLocal - innerLocal))
+                : 1f;
+
+            return Mathf.Lerp(hInner, hOuter, s01);
         }
 
         // -------------------------------------------------------------------
         // Unit strip mesh
         // -------------------------------------------------------------------
 
-        // Builds the unit strip in local XY:
+        // Centered unit strip in XY:
+        //   X ∈ [−0.5, +0.5]  — width axis (tangent)
+        //   Y ∈ [0,    1  ]   — length axis (tail at Y=0, head at Y=1)
+        //   Z = 0              — vertices are in the XY plane
         //
-        //   X ∈ [−0.5, +0.5]  — width axis  (tangent, ⊥ to lane radial)
-        //   Y ∈ [0,    1  ]   — length axis  (Y=0 = tail, Y=1 = head)
-        //   Z = 0              — mesh sits on local XY plane (normal = +Z for shading)
-        //
-        // The strip is anchored at its TAIL (Y=0 = origin).  The matrix
-        // translation column (Col 3) sets the tail in world space; Col 1
-        // (radial direction × segment length) extends it to the head.
+        // The origin is at the TAIL (Y=0). The matrix translation column (Col 3)
+        // positions the tail; Col 1 (segment vector) extends to the head.
         private static Mesh BuildUnitStrip()
         {
             var mesh = new Mesh { name = "HoldBodyStrip" };
@@ -480,8 +535,6 @@ namespace RhythmicFlow.Player
                 new Vector2(0f, 1f),  // head-left
             };
 
-            // Single-sided; if the material is double-sided this is fine.
-            // Winding: CCW from the +Z normal direction.
             mesh.triangles = new int[] { 0, 1, 2, 0, 2, 3 };
 
             mesh.RecalculateNormals();
