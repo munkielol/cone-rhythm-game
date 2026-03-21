@@ -20,6 +20,12 @@ using System.Collections.Generic;
 using RhythmicFlow.Shared;
 using UnityEngine;
 
+// Scoring note (spec §4.5):
+//   SweepMissed now accepts an optional onMissed callback so callers (e.g.
+//   PlayerAppController) can react to each newly-swept note for scoring without
+//   any additional list allocation. The callback receives the RuntimeNote whose
+//   State was just set to Missed. Called after State is set.
+
 namespace RhythmicFlow.Player
 {
     public class NoteScheduler
@@ -158,10 +164,16 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Marks all Active notes whose PrimaryTimeMs + missWindowMs < effectiveChartTimeMs
+        /// Marks all Active notes whose PrimaryTimeMs + missWindowMs &lt; effectiveChartTimeMs
         /// as Missed. Call this each frame after AdvanceActive.
+        ///
+        /// <para><paramref name="onMissed"/> is optional. When provided, it is invoked
+        /// for each note immediately after its State is set to Missed — useful for
+        /// scoring/event systems that need to react without an extra list allocation.
+        /// The callback receives the RuntimeNote with State already == Missed.</para>
         /// </summary>
-        public void SweepMissed(double effectiveChartTimeMs, double missWindowMs)
+        public void SweepMissed(double effectiveChartTimeMs, double missWindowMs,
+                                Action<RuntimeNote> onMissed = null)
         {
             foreach (RuntimeNote note in _allNotes)
             {
@@ -173,6 +185,9 @@ namespace RhythmicFlow.Player
                 {
                     note.State = NoteState.Missed;
                     Debug.Log($"[NoteScheduler] MISS note {note.NoteId} (type={note.Type})");
+
+                    // Notify scoring/event systems that this note was swept (spec §4.5).
+                    onMissed?.Invoke(note);
                 }
             }
         }

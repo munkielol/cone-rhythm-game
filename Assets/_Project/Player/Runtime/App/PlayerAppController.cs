@@ -151,17 +151,54 @@ namespace RhythmicFlow.Player
         private bool _mouseWasDown;
 
         // -------------------------------------------------------------------
+        // Scoring (spec §4.5)
+        // -------------------------------------------------------------------
+
+        private ScoreTracker _scoreTracker;
+
+        // Chart-clock time (ms) past which all notes have had a chance to be swept.
+        // Computed at chart load from the latest note end time + greatWindowMs.
+        private double _songEndThresholdMs;
+
+        // True once the end-of-song summary has been logged. Prevents double-firing.
+        private bool _songFinished;
+
+        // Cached delegate for NoteScheduler.SweepMissed callback — avoids per-frame
+        // delegate allocation (spec §9 "no per-frame allocations on gameplay hot path").
+        private Action<RuntimeNote> _onSweepMissDelegate;
+
+        [Header("Scoring Debug")]
+        [Tooltip("When true, logs each individual judgement with updated score/combo. " +
+                 "Default false — enable during playtesting only.")]
+        public bool debugLogScoreEachJudgement = false;
+
+        // -------------------------------------------------------------------
         // Debug overlay
         // -------------------------------------------------------------------
 
         private string _lastJudgementText = "—";
 
         /// <summary>
-        /// Fires each time a note is judged (tap / catch / flick).
-        /// Subscribed by PlayerDebugRenderer for judgement flash visuals.
-        /// Does NOT fire for sweep-misses (those bypass StoreJudgement).
+        /// Fires each time a note is judged (tap / catch / flick / sweep-miss of non-hold).
+        /// Subscribed by PlayerDebugRenderer for judgement flash visuals and by ScoreTracker.
+        ///
+        /// Note: hold-bind events (fired at hold START by TryBindHold) also come through here
+        /// with record.Note.Type == "hold". ScoreTracker ignores them; scoring for holds
+        /// uses OnHoldResolved instead (spec §4.5).
+        ///
+        /// Sweep-missed non-hold notes now also fire this event with Tier = Miss.
         /// </summary>
         public event Action<JudgementRecord> OnJudgement;
+
+        /// <summary>
+        /// Fires when a hold note is fully resolved — exactly once per hold.
+        ///   Tier.Perfect — hold completed (player held through endTimeMs; State = Hit).
+        ///   Tier.Miss    — hold never bound, or released early (State = Missed).
+        ///
+        /// This is distinct from OnJudgement, which fires for the hold-bind event at
+        /// hold START. ScoreTracker subscribes here for hold scoring (spec §4.5).
+        /// </summary>
+        public event Action<JudgementRecord> OnHoldResolved;
 
         // -------------------------------------------------------------------
         // VISUALS API — read-only access for runtime visual renderers.
@@ -302,6 +339,21 @@ namespace RhythmicFlow.Player
             _judgementEngine = new JudgementEngine(
                 gameplayMode, _playfieldTransform, runtimeLanes, _laneToArena);
 
+            // --- Scoring (spec §4.5) ---
+            // Cache the sweep-miss delegate once to avoid per-frame allocation.
+            _onSweepMissDelegate = HandleSweepMiss;
+
+            // Compute the chart-clock time after which all notes have been resolved
+            // and the end-of-song summary can be safely logged.
+            _songEndThresholdMs = ComputeSongEndThresholdMs();
+
+            // Create the score tracker and wire it to this controller's events.
+            _scoreTracker = new ScoreTracker
+            {
+                DebugLogScoreEachJudgement = debugLogScoreEachJudgement
+            };
+            _scoreTracker.Initialize(this);
+
             _statusText = $"Loading audio: {_activePack.Title}";
             _state      = AppState.LoadingAudio;
             StartCoroutine(LoadAudioAndStart());
@@ -360,8 +412,15 @@ namespace RhythmicFlow.Player
             }
 
             // --- Miss sweep: runs after all judgement so notes at the late edge are
-            //     not swept before this frame's input can hit them. ---
-            _scheduler.SweepMissed(chartTimeMs, _judgementEngine.Windows.GreatWindowMs);
+            //     not swept before this frame's input can hit them.
+            //     _onSweepMissDelegate (cached in Start) routes each newly-missed note
+            //     to HandleSweepMiss for scoring — no per-frame allocation (spec §9). ---
+            _scheduler.SweepMissed(chartTimeMs, _judgementEngine.Windows.GreatWindowMs,
+                _onSweepMissDelegate);
+
+            // --- Song end detection: log summary once audio stops and chart clock
+            //     has passed the last note's expiry (spec §4.5 / §8.5). ---
+            if (!_songFinished) { CheckSongEnd(chartTimeMs); }
 
             // --- Clean up ended touches ---
             foreach (int id in _endedTouches)
@@ -583,12 +642,29 @@ namespace RhythmicFlow.Player
                         hitLocal, arenaGeo, laneGeo, _playfieldTransform);
                 }
 
+                // Capture state before evaluation so we can detect the Active→Hit transition.
+                NoteState stateBeforeTicks = hold.State;
+
                 NoteScheduler.EvaluateHoldTicks(hold, _prevChartTimeMs, chartTimeMs, insideLane,
                     (tickMs, isPerfect) =>
                     {
                         Debug.Log($"[HoldTick] hold={hold.NoteId} " +
                                   $"tick@{tickMs}ms → {(isPerfect ? "Perfect" : "Miss")}");
                     });
+
+                // EvaluateHoldTicks sets State = Hit when chartTimeMs >= EndTimeMs while
+                // the hold is still Bound. Fire OnHoldResolved once for scoring (spec §4.5).
+                if (stateBeforeTicks != NoteState.Hit && hold.State == NoteState.Hit)
+                {
+                    var resolveRecord = new JudgementRecord
+                    {
+                        Note          = hold,
+                        Tier          = JudgementTier.Perfect,
+                        IsPerfectPlus = false,
+                        TimingErrorMs = 0.0,
+                    };
+                    OnHoldResolved?.Invoke(resolveRecord);
+                }
             }
 
             // Remove holds that finished this frame.
@@ -620,9 +696,106 @@ namespace RhythmicFlow.Player
                     Debug.Log($"[PlayerApp] Hold {hold.NoteId} released early; " +
                               $"{remaining} tick(s) missed.");
                 }
+                // Note: we do NOT fire OnHoldResolved here. Scoring for an early-released
+                // hold happens later when SweepMissed marks it Missed and HandleSweepMiss
+                // fires OnHoldResolved(Miss) — once, at StartTimeMs+GreatWindowMs. (spec §4.5)
             }
 
             _boundHolds.Remove(touchId);
+        }
+
+        // ===================================================================
+        // Scoring helpers (spec §4.5)
+        // ===================================================================
+
+        // Invoked by NoteScheduler.SweepMissed for each note newly marked Missed.
+        // Routes non-hold notes through OnJudgement (for debug display etc.)
+        // and hold notes through OnHoldResolved (for hold-specific scoring path).
+        //
+        // Hold guard: if a hold is swept while still Bound (can happen because
+        // SweepMissed uses StartTimeMs not EndTimeMs for the expiry check), we
+        // skip firing OnHoldResolved — the hold is still in progress and will
+        // resolve later via EvaluateHoldTicks→State=Hit or the next sweep cycle
+        // once HoldBind transitions to Finished/Unbound.
+        private void HandleSweepMiss(RuntimeNote note)
+        {
+            var r = new JudgementRecord
+            {
+                Note          = note,
+                Tier          = JudgementTier.Miss,
+                IsPerfectPlus = false,
+                TimingErrorMs = 0.0,
+            };
+
+            if (note.Type == NoteType.Hold)
+            {
+                // Score the hold as Missed only when it is truly done:
+                //   Unbound  — player never started it (missed the bind window).
+                //   Finished — player released early (ticks are all done/missed).
+                // Skip if still Bound — mid-hold sweep edge case; let it resolve naturally.
+                if (note.HoldBind != HoldBindState.Bound)
+                {
+                    OnHoldResolved?.Invoke(r);
+                }
+            }
+            else
+            {
+                // Non-hold sweep-miss goes through the standard judgement path so
+                // the debug overlay and any other OnJudgement subscribers see it.
+                StoreJudgement(r);
+            }
+        }
+
+        // Computes the latest chart-clock time at which any note could still be active,
+        // used to confirm the song has fully ended before logging the score summary.
+        // Uses EndTimeMs for holds (since that is when the hold's body expires), and
+        // PrimaryTimeMs (== TimeMs) for all other note types.
+        private double ComputeSongEndThresholdMs()
+        {
+            double maxExpiry = 0.0;
+
+            foreach (RuntimeNote note in _scheduler.AllNotes)
+            {
+                // For holds, the body runs until EndTimeMs; for others, PrimaryTimeMs.
+                double noteEnd = (note.Type == NoteType.Hold)
+                    ? note.EndTimeMs
+                    : note.PrimaryTimeMs;
+
+                if (noteEnd > maxExpiry) { maxExpiry = noteEnd; }
+            }
+
+            // Add one Great window so the final sweep can process the last note.
+            return maxExpiry + _judgementEngine.Windows.GreatWindowMs;
+        }
+
+        // Checks whether the song has ended (audio done + clock past last expiry).
+        // Fires exactly once; sets _songFinished to prevent re-entry.
+        private void CheckSongEnd(double chartTimeMs)
+        {
+            if (_state != AppState.Playing) { return; }
+
+            // Wait for the audio to stop naturally (Unity stops AudioSource when clip ends).
+            if (musicAudioSource.isPlaying) { return; }
+
+            // Wait until the chart clock has passed the last note's expiry so all
+            // pending sweep-misses have fired before we log the final summary.
+            if (chartTimeMs < _songEndThresholdMs) { return; }
+
+            _songFinished = true;
+
+            // Build results snapshot and update status text for the OnGUI overlay.
+            SongResults results = _scoreTracker.BuildResults();
+            _statusText = $"Complete! Score={results.TotalScore}  MaxCombo={results.MaxCombo}  " +
+                          $"P={results.PerfectCount} G={results.GreatCount} M={results.MissCount}";
+
+            // Log the one-line summary (spec §4.5 / §8.5 requirement).
+            _scoreTracker.LogSummary();
+        }
+
+        // Unsubscribes ScoreTracker when the controller is destroyed (e.g. scene change).
+        private void OnDestroy()
+        {
+            _scoreTracker?.Dispose();
         }
 
         // ===================================================================
@@ -825,6 +998,17 @@ namespace RhythmicFlow.Player
                 int    n  = _scheduler?.Count ?? 0;
                 GUI.Label(new Rect(X, y, 700, LH),
                     $"Chart time: {ct:F0} ms   Total notes: {n}"); y += LH;
+            }
+
+            // Score / combo display (spec §4.5 / §8.5).
+            if (_scoreTracker != null)
+            {
+                GUI.Label(new Rect(X, y, 700, LH),
+                    $"Score: {_scoreTracker.TotalScore,8}   " +
+                    $"Combo: {_scoreTracker.CurrentCombo,4} (max {_scoreTracker.MaxCombo,4})   " +
+                    $"P={_scoreTracker.PerfectCount} G={_scoreTracker.GreatCount} " +
+                    $"M={_scoreTracker.MissCount}");
+                y += LH;
             }
 
             GUI.Label(new Rect(X, y, 700, LH),

@@ -153,14 +153,64 @@ Two modes in v0:
 * **Catch notes:** Perfect-or-Miss only (v0)  
 * TickTimes are editor-baked and deterministic.
 
-### **4.5 Scoring profile**
+### **4.5 Scoring profile (v0 locked)**
 
-* Scoring is data-driven via a `ScoringProfile` asset (swappable later).  
-* Score goal is accuracy score (not combo-centric).  
-* v0 should display:  
-  * total score  
-  * Perfect+/Perfect/Great/Miss counts  
-  * hold tick hit stats
+**Scheme: per-note points** (deterministic; no floating-point normalization).
+
+| Tier | Points |
+|---|---|
+| Perfect | 1000 |
+| Great | 700 |
+| Miss | 0 |
+
+`TotalScore = sum of points across all judged notes.`
+
+**Combo rules (locked):**
+
+* Perfect or Great → increment combo; update MaxCombo if new high.
+* Miss → reset combo to 0.
+* Holds: scored **once** on final resolve (see below); hold-bind events do not affect combo.
+
+**Hold scoring (locked):**
+
+* A hold note produces exactly **one** scoring event, on final resolve:
+  * `State = Hit` (player held through `endTimeMs`) → scored as **Perfect**.
+  * `State = Missed` (never bound, or released early) → scored as **Miss**.
+* Individual hold tick results are **not** scored for combo or points in v0.
+* The hold-bind event (fired when the player first presses the hold) is visible on
+  `OnJudgement` but is **ignored** by `ScoreTracker` (hold notes filter in `HandleJudgement`).
+
+**Implementation:**
+
+* `ScoreTracker` (`Assets/_Project/Player/Runtime/Scoring/ScoreTracker.cs`).
+* Wired in `PlayerAppController.Start()` — no prefab edit required.
+* Events:
+  * `PlayerAppController.OnJudgement` → tap, catch, flick hits + sweep-misses of non-hold notes.
+  * `PlayerAppController.OnHoldResolved` → hold final resolve (Hit or Missed).
+* `PointsPerfect = 1000`, `PointsGreat = 700`, `PointsMiss = 0` are `public const int` on `ScoreTracker`.
+
+**Accuracy display formula (v0):**
+
+```
+accuracy% = (Perfect × 1000 + Great × 700) / (TotalJudged × 1000) × 100
+```
+
+**Song-end results (v0):**
+
+`PlayerAppController` detects song end when `!AudioSource.isPlaying && chartTimeMs >= lastNoteExpiry`.
+Logs one-line summary via `ScoreTracker.LogSummary()`:
+
+```
+[Score] ===== Song Complete ===== Score=N  MaxCombo=N  Perfect=N  Great=N  Miss=N  Accuracy=N.NN%
+```
+
+Display requirements (spec §8.5):
+
+* Total score
+* Perfect+/Perfect/Great/Miss counts
+* MaxCombo
+* Accuracy %
+* (hold tick hit stats deferred to future UI layer)
 
 ---
 
