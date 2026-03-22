@@ -441,12 +441,11 @@ Note bodies for all types (Tap, Catch, Flick, Hold) must be:
 * **Frustum-conforming** — note head Z is lifted onto the cone/frustum surface via `NoteApproachMath.FrustumZAtRadius`, matching the arena surface mesh geometry.
 * **Width-stable under lane animation** — the note head width tracks lane width changes smoothly, without popping.
 
-**Target geometry direction (beyond v0 step 1):**
+**Target geometry direction:**
 The intended final direction is **exact lane-curve-following**: note head caps follow the arc of the lane at their current radius, forming curved-edge quads rather than straight-chord approximations. This is reached incrementally:
-* **v0 step 1 (current):** Single-segment trapezoid. One chord per cap edge. Acceptable for straight or nearly-straight lanes; visually readable at v0 polish level.
-* **v0+ target:** Segmented curved-cap geometry — each cap edge subdivided into N arc segments matching the lane's angular extent. Approaches exact arc-following as N increases.
-
-When implementing the curved-cap upgrade, the note head geometry builder should be isolated from the renderer so both the Player and Chart Editor Preview can share it (see §5.9, §5.7.3).
+* **v0 step 1 (done):** Single-segment trapezoid. One chord per cap edge. Acceptable for straight or nearly-straight lanes.
+* **v0 step 2 (current):** Segmented curved-cap geometry — each cap edge subdivided into N arc-sampled column boundaries (ColumnCount = 5 by default). The note body visibly follows the lane arc at all widths. Implemented in `NoteCapGeometryBuilder` (`Assets/_Project/Player/Runtime/Visuals/NoteCapGeometryBuilder.cs`). All three production renderers (Tap/Catch/Flick) use this builder.
+* **v0+ target:** Move `NoteCapGeometryBuilder` to `Assets/_Project/Shared/` so the Chart Editor Playfield Preview can share it (spec §chart_editor §3.3). Increase ColumnCount if very-wide lanes show visible stepping.
 
 **Note skin goal:**
 The preferred skin workflow is **texture/PNG-driven, not material-only authoring**. Materials define the shader and rendering template; the primary artistic content is textures assigned to them. The skin system must keep visual identity stable under variable lane width — see §5.7.3 for the full skin philosophy.
@@ -464,7 +463,7 @@ Three separate MonoBehaviours, each handling one note type, driven by a `NoteSki
 | `CatchNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/CatchNoteRenderer.cs` | `NoteType.Catch` |
 | `FlickNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/FlickNoteRenderer.cs` | `NoteType.Flick` |
 
-All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each). Vertices are overwritten in-place each frame — zero per-frame GC allocation. Current v0 geometry is a single-segment trapezoid (§5.7.0 step 1).
+All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each). Vertices are overwritten in-place each frame — zero per-frame GC allocation. Current v0 geometry is a 5-column segmented curved-cap (§5.7.0 step 2) built by `NoteCapGeometryBuilder`. Mesh templates have 12 vertices and 10 triangles per note.
 
 **`NoteSkinSet` ScriptableObject** (`Assets/_Project/Player/Runtime/Skins/NoteSkinSet.cs`):
 

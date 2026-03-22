@@ -7,42 +7,43 @@
 //  note list from PlayerAppController and draws one mesh per visible Flick note
 //  each LateUpdate — the same pattern as HoldBodyRenderer.
 //
-// ── Geometry (v0 step 1) ─────────────────────────────────────────────────────
+// ── Geometry (v0 step 2: segmented curved-cap) ───────────────────────────────
 //
-//  Current step: single-segment trapezoid (spec §5.7.0 step 1).
-//  The note head spans [r − noteHalfThicknessLocal, r + noteHalfThicknessLocal]
-//  radially, centred on the approach radius r.
+//  Replaces the single-segment trapezoid (step 1) with a curved cap that
+//  arc-samples across the note's angular span using NoteCapGeometryBuilder.
 //
-//  Width is lane-width-aware:
-//    width(r) = 2 · r · sin(halfWidthDeg) · noteLaneWidthRatio
-//  Both inner and outer edges use their own radius so the head is a true
-//  trapezoid (wider at outerR, narrower at innerR).
+//  ColumnCount = 5 columns → 6 column boundaries → 10 triangles per note.
+//  The note body visibly follows the lane arc rather than using a straight
+//  chord approximation.
 //
-//  Z placement is frustum-conforming:
-//    z = NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter)
+//  Key invariants (unchanged from step 1):
+//    - Lane-width-aware: noteHalfAngleDeg = laneHalfWidthDeg × noteLaneWidthRatio
+//    - Frustum-conforming: Z per row = NoteApproachMath.FrustumZAtRadius(r, …)
+//    - Centered on the lane at approach radius r
+//    - Stable under lane centerDeg / widthDeg / arenaRadius animation
+//    - Wrap-safe: cos/sin handle angles outside [0, 360) naturally
 //
 // ── Flick arrow overlay ───────────────────────────────────────────────────────
 //
 //  NOT included in this step. Arrow direction billboard (spec §5.7.2) will be
-//  added in a future step as a separate overlay pass once the base trapezoid
+//  added in a future step as a separate overlay pass once the base curved-cap
 //  geometry is verified. Arrow directions follow spec §5.7.2 / §7.3.1:
 //    U = radialIn (−cosθ, −sinθ)   D = radialOut (+cosθ, +sinθ)
 //    L = CW tangent (+sinθ, −cosθ) R = CCW tangent (−sinθ, +cosθ)
 //
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
-//  Step 2: Add flick arrow overlay billboard per spec §5.7.2.
-//          Extract BuildNoteHeadVertices() to shared geometry builder;
-//          replace single-segment trapezoid with N-segment curved-cap.
-//  Step 3: Assign UV layout on the mesh for fixed-edge + tiled-center texture
-//          mapping (spec §5.7.3).  Replace placeholder color with NoteSkinSet.
+//  Step 3: Add flick arrow overlay billboard per spec §5.7.2.
+//          Assign UV regions on the cap mesh for fixed-edge + tiled-center
+//          texture mapping (spec §5.7.3). Replace placeholder color with
+//          NoteSkinSet — geometry pipeline stays the same.
 //
 // ── This step ────────────────────────────────────────────────────────────────
 //
 //  Geometry only. Placeholder color applied via MaterialPropertyBlock._Color.
-//  No arrow overlay, no NoteSkinSet, no PNG skin, no UV layout.
+//  No arrow overlay, no NoteSkinSet, no PNG skin, no UV region assignment.
 //
-// Spec §5.7.a / §5.7.0.
+// Spec §5.7.a / §5.7.0 step 2.
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -50,10 +51,11 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Production Flick note head renderer. Geometry-first (v0 step 1):
-    /// lane-width-aware, frustum-conforming single-segment trapezoid.
+    /// Production Flick note head renderer. Geometry step 2:
+    /// lane-width-aware, frustum-conforming segmented curved-cap
+    /// (NoteCapGeometryBuilder, ColumnCount = 5).
     /// Flick arrow overlay is NOT included in this step (see file header).
-    /// Assign a simple unlit material with <c>_Color</c> support.
+    /// Assign a simple unlit material with <c>_Color</c> property support.
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Visuals/FlickNoteRenderer")]
     public class FlickNoteRenderer : MonoBehaviour
@@ -112,11 +114,11 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Note Head Sizing")]
-        [Tooltip("Radial half-thickness of the flick head trapezoid in PlayfieldLocal units. " +
+        [Tooltip("Radial half-thickness of the flick head band in PlayfieldLocal units. " +
                  "The head spans [r − half, r + half] radially. Default: 0.022.")]
         [SerializeField] private float noteHalfThicknessLocal = 0.022f;
 
-        [Tooltip("Note head width as a fraction of the lane chord width at the note's radius. " +
+        [Tooltip("Note head width as a fraction of the lane angular span at the note's radius. " +
                  "1.0 = full lane width. Default: 0.9.")]
         [Range(0.1f, 1f)]
         [SerializeField] private float noteLaneWidthRatio = 0.9f;
@@ -138,13 +140,17 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Debug — Geometry Verification")]
-        [Tooltip("Draw note head outline in world space (blue lines: left edge, right edge; " +
-                 "white line: centerline). Use to verify frustum placement and radial sizing.")]
+        [Tooltip("Draw note cap edges in world space:\n" +
+                 "  cyan  — tail arc + head arc (shows curved following)\n" +
+                 "  blue  — left/right radial edges\n" +
+                 "  white — centre radial sample line\n" +
+                 "Use to verify frustum placement and arc-following.")]
         [SerializeField] private bool debugDrawNoteOutline = false;
 
-        [Tooltip("Draw lane boundaries at the note's approach radius (yellow lines at " +
-                 "centerDeg ± widthDeg/2). Compare against note outline to verify " +
-                 "lane occupancy during animated lane width / angle / radius tests.")]
+        [Tooltip("Draw lane and note boundary ticks at the note's approach radius:\n" +
+                 "  yellow — full lane left/right edges (centerDeg ± widthDeg/2)\n" +
+                 "  green  — note left/right edges (centerDeg ± noteHalfAngleDeg)\n" +
+                 "Compare yellow vs green to verify noteLaneWidthRatio occupancy.")]
         [SerializeField] private bool debugDrawLaneBoundary = false;
 
         // -------------------------------------------------------------------
@@ -155,11 +161,13 @@ namespace RhythmicFlow.Player
         // in-place each LateUpdate — zero per-frame GC allocation.
         private const int MaxNotePool = 128;
 
-        private Mesh[]  _meshPool;
-        private int     _poolUsed;
+        private Mesh[] _meshPool;
+        private int    _poolUsed;
 
-        // Shared vertex scratch — written then copied into pooled mesh each note.
-        private readonly Vector3[] _vertScratch = new Vector3[4];
+        // Vertex scratch — length NoteCapGeometryBuilder.VertexCount (12).
+        // Written by NoteCapGeometryBuilder.FillCapVertices then copied to
+        // the pooled mesh via mesh.vertices = _vertScratch.
+        private readonly Vector3[] _vertScratch = new Vector3[NoteCapGeometryBuilder.VertexCount];
 
         // Pre-allocated property block — reused every DrawMesh call.
         private MaterialPropertyBlock _propBlock;
@@ -176,7 +184,7 @@ namespace RhythmicFlow.Player
             _meshPool = new Mesh[MaxNotePool];
             for (int i = 0; i < MaxNotePool; i++)
             {
-                _meshPool[i] = BuildTrapezoidMesh("FlickNoteTrapezoid");
+                _meshPool[i] = NoteCapGeometryBuilder.BuildCapMesh("FlickNoteCurvedCap");
             }
             _propBlock = new MaterialPropertyBlock();
         }
@@ -192,8 +200,8 @@ namespace RhythmicFlow.Player
 
         private void LateUpdate()
         {
-            // Require wiring. Missing controller = warn once; missing material = skip silently
-            // (material may not be assigned yet in a fresh scene setup).
+            // Require wiring. Missing controller = warn once; missing material = skip
+            // silently (material may not be assigned yet in a fresh scene setup).
             if (playerAppController == null)
             {
                 if (!_hasWarnedMissingController)
@@ -227,7 +235,7 @@ namespace RhythmicFlow.Player
             // promotes them to world space for Graphics.DrawMesh.
             Matrix4x4 localToWorld = pfRoot.localToWorldMatrix;
 
-            // Precompute frustum heights once per frame (same for all notes).
+            // Precompute frustum heights once per frame — same for all notes this frame.
             float hInner = ReadFrustumHeightInner();
             float hOuter = ReadFrustumHeightOuter();
 
@@ -235,23 +243,23 @@ namespace RhythmicFlow.Player
 
             foreach (RuntimeNote note in allNotes)
             {
-                // ── Type and state filter ─────────────────────────────────────────────────
+                // ── Type and state filter ──────────────────────────────────────────────
                 if (note.Type != NoteType.Flick) { continue; }
                 if (note.State == NoteState.Hit) { continue; }  // successfully judged
 
-                if (_poolUsed >= MaxNotePool) { break; } // pool full
+                if (_poolUsed >= MaxNotePool) { break; } // pool exhausted
 
-                // ── Visibility window ────────────────────────────────────────────────────
+                // ── Visibility window ──────────────────────────────────────────────────
                 double timeToHit = note.PrimaryTimeMs - chartTimeMs;
-                if (timeToHit > noteLeadTimeMs)    { continue; } // not yet on screen
+                if (timeToHit > noteLeadTimeMs)         { continue; } // not yet on screen
                 if (timeToHit < -(double)greatWindowMs) { continue; } // past miss window
 
-                // ── Geometry lookup ──────────────────────────────────────────────────────
+                // ── Geometry lookup ────────────────────────────────────────────────────
                 if (!laneGeos.TryGetValue(note.LaneId,    out LaneGeometry  lane))  { continue; }
                 if (!laneToArena.TryGetValue(note.LaneId, out string arenaId))      { continue; }
                 if (!arenaGeos.TryGetValue(arenaId,       out ArenaGeometry arena)) { continue; }
 
-                // ── Band radii (PlayfieldLocal units) ────────────────────────────────────
+                // ── Band radii (PlayfieldLocal units) ──────────────────────────────────
                 float outerLocal = pfTf.NormRadiusToLocal(arena.OuterRadiusNorm);
                 float bandLocal  = pfTf.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
@@ -260,61 +268,45 @@ namespace RhythmicFlow.Player
                     outerLocal, pfTf.MinDimLocal, PlayerSettingsStore.JudgementInsetNorm);
                 float spawnR = NoteApproachMath.SpawnRadius(innerLocal, judgementR, spawnRadiusFactor);
 
-                // ── Approach radius at this frame ────────────────────────────────────────
+                // ── Approach radius at this frame ──────────────────────────────────────
                 float r = NoteApproachMath.ApproachRadius(
                     (float)timeToHit, noteLeadTimeMs, spawnR, judgementR);
 
-                // ── Note head radial extent ──────────────────────────────────────────────
+                // ── Note head radial extent ────────────────────────────────────────────
                 // The head is a thin band centred on r, spanning [tailR, headR] radially.
                 // Clamped so it never extends past spawn or judgement ring.
                 float headR = Mathf.Min(r + noteHalfThicknessLocal, judgementR);
                 float tailR = Mathf.Max(r - noteHalfThicknessLocal, spawnR);
                 if (headR - tailR < 0.0001f) { continue; } // degenerate — skip
 
-                // ── Color (placeholder — replaced with NoteSkinSet in a later step) ──────
+                // ── Color (placeholder — replaced with NoteSkinSet in a later step) ────
                 Color noteColor = (note.State == NoteState.Missed) ? missedTintColor : flickColor;
                 _propBlock.SetColor("_Color", noteColor);
 
-                // ── Local-space axes ─────────────────────────────────────────────────────
-                float thetaRad = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
-                float cosT     = Mathf.Cos(thetaRad);
-                float sinT     = Mathf.Sin(thetaRad);
-
-                // tangLocal: 90° CCW from radial direction in local XY — the width axis.
-                var tangLocal = new Vector3(-sinT, cosT, 0f);
-
-                // ── 3D endpoints (local XY + frustum-lifted Z) ───────────────────────────
+                // ── Arena centre in local XY ───────────────────────────────────────────
                 Vector2 ctr = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                var tailLocal3 = new Vector3(
-                    ctr.x + tailR * cosT,
-                    ctr.y + tailR * sinT,
-                    NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter));
+                // ── Curved-cap vertex fill ─────────────────────────────────────────────
+                // NoteCapGeometryBuilder.FillCapVertices arc-samples across the lane's
+                // angular span, placing ColumnCount+1 column boundaries on the actual
+                // arc (not a single chord). Each column boundary has a tail vertex and a
+                // head vertex — the note body visibly follows the lane curve.
+                float laneCenterDeg    = AngleUtil.Normalize360(lane.CenterDeg);
+                float halfWidthDeg     = lane.WidthDeg * 0.5f;
+                float noteHalfAngleDeg = NoteCapGeometryBuilder.NoteHalfAngleDeg(
+                    halfWidthDeg, noteLaneWidthRatio);
 
-                var headLocal3 = new Vector3(
-                    ctr.x + headR * cosT,
-                    ctr.y + headR * sinT,
-                    NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter));
-
-                // ── Trapezoid width (lane-width-aware per spec §5.7.0) ───────────────────
-                //
-                // ── FUTURE: segmented curved-cap upgrade goes here ───────────────────────
-                // Replace BuildSingleSegmentVertices() with BuildCurvedCapVertices(nSegments)
-                // which subdivides each cap edge into N arc segments. All other geometry
-                // (frustum Z, approach radius, width ratio) stays identical.
-                // ────────────────────────────────────────────────────────────────────────
-
-                float halfWidthDeg = lane.WidthDeg * 0.5f;
-                float widthHead = NoteApproachMath.LaneChordWidthAtRadius(headR, halfWidthDeg) * noteLaneWidthRatio;
-                float widthTail = NoteApproachMath.LaneChordWidthAtRadius(tailR, halfWidthDeg) * noteLaneWidthRatio;
-
-                // Vertex layout (matches HoldBodyRenderer / BuildTrapezoidMesh):
-                //   [0] tail-left   [1] tail-right
-                //   [3] head-left   [2] head-right
-                _vertScratch[0] = tailLocal3 - tangLocal * (widthTail * 0.5f); // tail-left
-                _vertScratch[1] = tailLocal3 + tangLocal * (widthTail * 0.5f); // tail-right
-                _vertScratch[2] = headLocal3 + tangLocal * (widthHead * 0.5f); // head-right
-                _vertScratch[3] = headLocal3 - tangLocal * (widthHead * 0.5f); // head-left
+                NoteCapGeometryBuilder.FillCapVertices(
+                    _vertScratch,
+                    ctr,
+                    tailR,
+                    headR,
+                    laneCenterDeg,
+                    noteHalfAngleDeg,
+                    innerLocal,
+                    outerLocal,
+                    hInner,
+                    hOuter);
 
                 Mesh mesh = _meshPool[_poolUsed++];
                 mesh.vertices = _vertScratch;
@@ -323,11 +315,13 @@ namespace RhythmicFlow.Player
                 Graphics.DrawMesh(mesh, localToWorld, flickMaterial,
                     gameObject.layer, null, 0, _propBlock);
 
-                // ── Debug geometry verification (no GC — only Debug.DrawLine) ────────────
+                // ── Debug geometry verification (no GC — only Debug.DrawLine) ──────────
                 if (debugDrawNoteOutline || debugDrawLaneBoundary)
                 {
-                    DrawDebugGeometry(pfRoot, ctr, r, tailR, headR, innerLocal, outerLocal,
-                        lane.CenterDeg, halfWidthDeg, tangLocal, tailLocal3, headLocal3);
+                    DrawDebugGeometry(pfRoot, ctr, r, tailR, headR,
+                        innerLocal, outerLocal,
+                        laneCenterDeg, halfWidthDeg, noteHalfAngleDeg,
+                        hInner, hOuter);
                 }
             }
         }
@@ -337,58 +331,91 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Draws note outline and/or lane boundary lines in world space.
-        /// Called only when the corresponding debug toggle is enabled.
-        /// No allocations: uses only Debug.DrawLine which is allocation-free.
+        /// Draws note cap outline and/or lane+note boundary ticks in world space.
+        /// Called only when a debug toggle is enabled.  No allocations.
         /// </summary>
         private void DrawDebugGeometry(
             Transform pfRoot,
             Vector2   ctr,
-            float     centerR,       // note center radius (for lane boundary ticks)
+            float     centerR,          // note approach radius — for boundary ticks
             float     tailR,
             float     headR,
             float     innerLocal,
             float     outerLocal,
-            float     laneCenterDeg, // lane.CenterDeg — needed for left/right edge angles
-            float     halfWidthDeg,
-            Vector3   tangLocal,
-            Vector3   tailLocal3,
-            Vector3   headLocal3)
+            float     laneCenterDeg,    // Normalize360 already applied
+            float     halfWidthDeg,     // full lane half-width (for lane boundary ticks)
+            float     noteHalfAngleDeg, // note angular half-span (for note boundary ticks)
+            float     hInner,
+            float     hOuter)
         {
             if (debugDrawNoteOutline)
             {
-                // ── Note head outline ─────────────────────────────────────────────────────
-                // Recompute corners in world space for drawing (uses last-written _vertScratch).
-                Vector3 p0 = pfRoot.TransformPoint(_vertScratch[0]); // tail-left
-                Vector3 p1 = pfRoot.TransformPoint(_vertScratch[1]); // tail-right
-                Vector3 p2 = pfRoot.TransformPoint(_vertScratch[2]); // head-right
-                Vector3 p3 = pfRoot.TransformPoint(_vertScratch[3]); // head-left
+                // ── Tail arc (cyan): left→right across inner note edge ─────────────────
+                for (int i = 0; i < NoteCapGeometryBuilder.ColumnCount; i++)
+                {
+                    Debug.DrawLine(
+                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow + i]),
+                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow + i + 1]),
+                        Color.cyan);
+                }
 
-                Color outlineColor = Color.blue;
-                // Left edge (tail-left to head-left) — verifies frustum Z lift along this edge
-                Debug.DrawLine(p0, p3, outlineColor);
-                // Right edge (tail-right to head-right) — verifies radial thickness
-                Debug.DrawLine(p1, p2, outlineColor);
-                // Tail edge (tail-left to tail-right) — verifies inner note width
-                Debug.DrawLine(p0, p1, Color.cyan);
-                // Head edge (head-left to head-right) — verifies outer note width
-                Debug.DrawLine(p3, p2, Color.cyan);
-                // Centerline (tail center to head center) — track approach path
-                Debug.DrawLine(pfRoot.TransformPoint(tailLocal3), pfRoot.TransformPoint(headLocal3), Color.white);
+                // ── Head arc (cyan): left→right across outer note edge (front cap) ─────
+                for (int i = 0; i < NoteCapGeometryBuilder.ColumnCount; i++)
+                {
+                    Debug.DrawLine(
+                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow + i]),
+                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow + i + 1]),
+                        Color.cyan);
+                }
+
+                // ── Left radial edge (blue): column 0, tail→head ──────────────────────
+                Debug.DrawLine(
+                    pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow]),
+                    pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow]),
+                    Color.blue);
+
+                // ── Right radial edge (blue): column N, tail→head ─────────────────────
+                Debug.DrawLine(
+                    pfRoot.TransformPoint(
+                        _vertScratch[NoteCapGeometryBuilder.TailRow + NoteCapGeometryBuilder.ColumnCount]),
+                    pfRoot.TransformPoint(
+                        _vertScratch[NoteCapGeometryBuilder.HeadRow + NoteCapGeometryBuilder.ColumnCount]),
+                    Color.blue);
+
+                // ── Centre radial sample line (white): exact laneCenterDeg, tail→head ──
+                // N=5 has no column exactly at centre, so we sample it independently.
+                float centreRad = laneCenterDeg * Mathf.Deg2Rad;
+                float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter);
+                float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter);
+                Debug.DrawLine(
+                    pfRoot.TransformPoint(new Vector3(
+                        ctr.x + tailR * Mathf.Cos(centreRad),
+                        ctr.y + tailR * Mathf.Sin(centreRad),
+                        zTail)),
+                    pfRoot.TransformPoint(new Vector3(
+                        ctr.x + headR * Mathf.Cos(centreRad),
+                        ctr.y + headR * Mathf.Sin(centreRad),
+                        zHead)),
+                    Color.white);
             }
 
             if (debugDrawLaneBoundary)
             {
-                // ── Lane edge ticks at note center radius ─────────────────────────────────
-                // Draw short arcs at the left and right lane edges at centerR.
-                // Compare against note outline to verify noteLaneWidthRatio occupancy.
-                float leftEdgeDeg  = AngleUtil.Normalize360(laneCenterDeg - halfWidthDeg);
-                float rightEdgeDeg = AngleUtil.Normalize360(laneCenterDeg + halfWidthDeg);
+                // ── Lane boundary ticks (yellow): full lane left/right ─────────────────
+                float leftLaneDeg  = AngleUtil.Normalize360(laneCenterDeg - halfWidthDeg);
+                float rightLaneDeg = AngleUtil.Normalize360(laneCenterDeg + halfWidthDeg);
+                DrawArcTick(pfRoot, ctr, centerR, leftLaneDeg,
+                    innerLocal, outerLocal, hInner, hOuter, Color.yellow);
+                DrawArcTick(pfRoot, ctr, centerR, rightLaneDeg,
+                    innerLocal, outerLocal, hInner, hOuter, Color.yellow);
 
-                // Left lane edge tick (yellow)
-                DrawArcTick(pfRoot, ctr, centerR, leftEdgeDeg,  innerLocal, outerLocal, Color.yellow);
-                // Right lane edge tick (yellow)
-                DrawArcTick(pfRoot, ctr, centerR, rightEdgeDeg, innerLocal, outerLocal, Color.yellow);
+                // ── Note boundary ticks (green): actual note left/right edges ──────────
+                float leftNoteDeg  = AngleUtil.Normalize360(laneCenterDeg - noteHalfAngleDeg);
+                float rightNoteDeg = AngleUtil.Normalize360(laneCenterDeg + noteHalfAngleDeg);
+                DrawArcTick(pfRoot, ctr, centerR, leftNoteDeg,
+                    innerLocal, outerLocal, hInner, hOuter, Color.green);
+                DrawArcTick(pfRoot, ctr, centerR, rightNoteDeg,
+                    innerLocal, outerLocal, hInner, hOuter, Color.green);
             }
         }
 
@@ -397,8 +424,9 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Draws a short arc tick at the given angle and radius to mark a lane edge.
-        /// Allocation-free: only Debug.DrawLine calls.
+        /// Draws a short arc tick at <paramref name="angleDeg"/> and <paramref name="radius"/>
+        /// to mark a lane or note boundary.  Allocation-free: only Debug.DrawLine calls.
+        /// Frustum Z uses the actual frustum profile (not a hardcoded constant).
         /// </summary>
         private static void DrawArcTick(
             Transform pfRoot,
@@ -407,22 +435,26 @@ namespace RhythmicFlow.Player
             float     angleDeg,
             float     innerLocal,
             float     outerLocal,
+            float     hInner,
+            float     hOuter,
             Color     color)
         {
             const float HalfTickDeg = 2f;
-            float span  = (outerLocal > innerLocal) ? (outerLocal - innerLocal) : 1f;
-            float s01   = Mathf.Clamp01((radius - innerLocal) / span);
-            float localZ = Mathf.Lerp(0.001f, 0.15f, s01);
 
-            int    segments = 4;
-            float  startDeg = angleDeg - HalfTickDeg;
-            float  step     = (HalfTickDeg * 2f) / segments;
-            float  a0       = startDeg * Mathf.Deg2Rad;
-            Vector3 prev    = pfRoot.TransformPoint(
+            float localZ = NoteApproachMath.FrustumZAtRadius(
+                radius, innerLocal, outerLocal, hInner, hOuter);
+
+            const int Segments = 4;
+            float startDeg = angleDeg - HalfTickDeg;
+            float step     = (HalfTickDeg * 2f) / Segments;
+
+            float   a0   = startDeg * Mathf.Deg2Rad;
+            Vector3 prev = pfRoot.TransformPoint(
                 center.x + radius * Mathf.Cos(a0),
                 center.y + radius * Mathf.Sin(a0),
                 localZ);
-            for (int i = 1; i <= segments; i++)
+
+            for (int i = 1; i <= Segments; i++)
             {
                 float   a    = (startDeg + i * step) * Mathf.Deg2Rad;
                 Vector3 curr = pfRoot.TransformPoint(
@@ -448,32 +480,6 @@ namespace RhythmicFlow.Player
         {
             if (arenaSurface != null && arenaSurface.UseFrustumProfile) { return arenaSurface.FrustumHeightOuter; }
             return useFrustumProfile ? frustumHeightOuter : surfaceOffsetLocal;
-        }
-
-        // -------------------------------------------------------------------
-        // Trapezoid mesh template
-        // -------------------------------------------------------------------
-
-        /// <summary>
-        /// Builds a 4-vertex mesh template with stable triangle topology and UVs.
-        /// Vertices are placeholder zeros — LateUpdate overwrites them each frame.
-        /// UV layout: [0](0,0) [1](1,0) [2](1,1) [3](0,1) — ready for future texture-driven skins.
-        /// </summary>
-        private static Mesh BuildTrapezoidMesh(string meshName)
-        {
-            var mesh = new Mesh { name = meshName };
-            mesh.vertices  = new Vector3[4];
-            mesh.uv        = new Vector2[]
-            {
-                new Vector2(0f, 0f),  // [0] tail-left  — future: left border start
-                new Vector2(1f, 0f),  // [1] tail-right — future: right border start
-                new Vector2(1f, 1f),  // [2] head-right — future: right border end
-                new Vector2(0f, 1f),  // [3] head-left  — future: left border end
-            };
-            // Two CCW triangles covering the quad.
-            mesh.triangles = new int[] { 0, 1, 2,  0, 2, 3 };
-            mesh.RecalculateBounds();
-            return mesh;
         }
     }
 }
