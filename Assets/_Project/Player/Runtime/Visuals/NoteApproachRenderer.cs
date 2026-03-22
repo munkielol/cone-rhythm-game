@@ -1,7 +1,23 @@
 // NoteApproachRenderer.cs
-// Minimal production note-head renderer for Tap, Flick, and Catch notes.
 //
-// Renders each note as a thin arc-shaped quad (trapezoid) approaching the
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │  TRANSITIONAL / DEBUG RENDERER — NOT THE PRODUCTION PATH               │
+// │                                                                         │
+// │  This renderer is superseded by the per-type production renderers:      │
+// │    TapNoteRenderer   (spec §5.7.a)                                      │
+// │    CatchNoteRenderer (spec §5.7.a)                                      │
+// │    FlickNoteRenderer (spec §5.7.a)                                      │
+// │                                                                         │
+// │  It may remain in the scene as a debug / prototyping aid while the      │
+// │  production renderers are being developed, but it must NOT be treated   │
+// │  as a production code path. Disable or remove it once the production    │
+// │  renderers have been verified in the Inspector.                         │
+// │                                                                         │
+// │  Per spec §5.7.a: "NoteApproachRenderer is transitional/debug only,    │
+// │  not production path."                                                  │
+// └─────────────────────────────────────────────────────────────────────────┘
+//
+// Renders Tap, Flick, and Catch notes as thin trapezoid quads approaching the
 // judgement ring.  Uses the same canonical approach formula and lane-width-at-
 // radius math as HoldBodyRenderer — both delegate to NoteApproachMath.
 //

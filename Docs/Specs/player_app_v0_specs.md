@@ -496,7 +496,7 @@ Create via **Assets → Create → RhythmicFlow → Note Skin Set**. Assign to `
 | `frustumHeightInner` | 0.001 | Local Z at inner ring edge (used when `arenaSurface` is not wired) |
 | `frustumHeightOuter` | 0.15 | Local Z at outer ring edge (used when `arenaSurface` is not wired) |
 
-**Bootstrap:** `PlayerAppController.BootstrapNoteRenderers()` (called from `Start()`) auto-adds all three renderers to the controller's GameObject and calls `Wire(ctrl, skinSet)` if `defaultSkinSet` is assigned. If renderers are already present (manually wired via Inspector), their assignments are left untouched.
+**Scene wiring (manual):** Add `TapNoteRenderer`, `CatchNoteRenderer`, and `FlickNoteRenderer` as components to a suitable scene GameObject (e.g. `GameplayRenderers`). Assign the `PlayerAppController` reference and a material in the Inspector for each. There is no runtime auto-creation; if the `PlayerAppController` reference is missing the renderer logs a one-time warning and skips rendering.
 
 **Visibility rules:**
 * Hidden until `timeToHit ≤ noteLeadTimeMs`.
