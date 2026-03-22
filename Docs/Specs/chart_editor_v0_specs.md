@@ -121,16 +121,17 @@ The Playfield Preview must render note bodies using the same geometry rules as t
 * **Flick notes** — show a direction arrow overlay consistent with the flick arrow billboard spec (player spec §5.7.2). The arrow must point in the gesture direction (§player spec §7.3.1) and remain constant size (not scale with lane width).
 * **Hold bodies** — use the ribbon geometry rules from player spec §5.7.1 (approach formula, trapezoid shape, three-phase visibility, color/state mapping).
 
-**Implementation approach:** The chart editor playfield preview can directly reference and instantiate `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer`, and `NoteSkinSet` from the Player assembly (or Shared equivalents when factored out). This eliminates code duplication and ensures automatic parity.
+**Implementation approach:** The chart editor playfield preview can directly reference and instantiate `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer`, and `NoteSkinSet` from the Player assembly (or Shared equivalents when factored out). This eliminates code duplication and ensures automatic parity. This reuse remains valid regardless of whether the runtime skin implementation is currently CPU-driven UV assignment or later becomes shader-optimized — the `NoteSkinSet` authoring data contract does not change between those two implementations.
 
 **Note skin preview:**
-The Playfield Preview should reflect the production `NoteSkinSet` appearance:
-* Lane-width-aware note bodies with the skin's `noteLaneWidthRatio`.
-* Fixed-edge + tiled-center texture layout (player spec §5.7.3) — if the note head texture has decorative borders, they must not stretch when lane width changes.
-* Flick arrow materials from the skin set (Up/Down/Left/Right materials as configured).
+The Playfield Preview must reflect the full production `NoteSkinSet` appearance. An abstract color-only or full-stretch-UV fallback is acceptable only as a transitional interim step — it is not the intended final preview path:
+* Lane-width-aware note bodies using `noteLaneWidthRatio` from the active `NoteSkinSet`.
+* **Fixed-edge + tiled-center texture layout** (player spec §5.7.3) — decorative borders must not stretch when lane width changes; the center must tile, not stretch. The preview must use the same CPU-driven per-frame UV assignment as the player renderers so behavior is pixel-accurate.
+* The same `noteBodyMaterial` shader template and per-type body textures (`tapBodyTexture`, `catchBodyTexture`, `flickBodyTexture`) from `NoteSkinSet` — not a simplified single-color substitute.
+* Flick arrow materials from the skin set (Up/Down/Left/Right as configured).
 * Hold ribbon color states (approaching / active / released) from `HoldBodyRenderer` color params.
 
-An abstract debug geometry view (outline-only quads, solid colors) is acceptable as an interim implementation step, but the target is full `NoteSkinSet`-driven visual fidelity.
+An abstract debug geometry view (outline-only quads, solid colors) is acceptable as a **transitional** interim step, but the skin preview contract above is the target and must not be permanently simplified away.
 
 ### **3.4 Inspector / Properties panel**
 
@@ -380,12 +381,13 @@ The ribbon is a **trapezoid** (v0 single-segment): lane borders are radial lines
 
 Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear at the inner band edge (`innerLocal`) and travel outward.
 
-**Hold skin philosophy (v0 target, applies to player + playtest preview):**
-Hold ribbon skins follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3):
-* Decorative side borders preserve their art at fixed UV-mapped widths regardless of lane width changes.
-* The center region tiles or safely stretches between the borders.
-* The ribbon tiles along the radial (length) direction rather than stretching, keeping art stable across different hold durations.
-The chart editor playtest should render hold bodies via `HoldBodyRenderer` (or a shared equivalent) so the preview reflects this skin fidelity.
+**Hold skin philosophy (later step — not part of initial Tap/Catch/Flick skin implementation):**
+Hold ribbon skins must follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3). Hold skin migration is explicitly a later step; the initial skin work covers Tap/Catch/Flick only:
+* Decorative side borders must preserve their art at fixed UV-mapped widths regardless of lane width changes. Stretch is not acceptable as a final result.
+* The center region must tile between the borders — not simply stretch. Full-surface stretch is a transitional placeholder only.
+* The ribbon must tile along the radial (length) direction rather than stretching, keeping art stable across different hold durations.
+* The current flat-color `HoldBodyRenderer` implementation is a transitional placeholder and does not meet the above requirements. It must not be treated as the intended final hold skin path.
+The chart editor playtest should eventually render hold bodies via `HoldBodyRenderer` (or a shared equivalent) with full `NoteSkinSet`-driven skin fidelity, once hold migration is implemented.
 
 ---
 

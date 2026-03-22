@@ -467,23 +467,46 @@ All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each
 
 **`NoteSkinSet` ScriptableObject** (`Assets/_Project/Player/Runtime/Skins/NoteSkinSet.cs`):
 
-Create via **Assets → Create → RhythmicFlow → Note Skin Set**. Assign to `PlayerAppController.defaultSkinSet` in the Inspector.
+Create via **Assets → Create → RhythmicFlow → Note Skin Set**. Assign to a serialized field on `TapNoteRenderer`, `CatchNoteRenderer`, and `FlickNoteRenderer` in the Inspector.
+
+The intended authoring workflow is: **import PNG → assign to NoteSkinSet → result appears in-game.** Do not require creating a unique `Material` asset per skin variant. The material is a shared shader template; the texture is the primary authoring artifact.
+
+**Body rendering — shared material + per-type textures:**
 
 | Field | Type | Description |
 |---|---|---|
-| `tapMaterial` | `Material` | Tap note head material (shader template; assign tap texture to it) |
-| `catchMaterial` | `Material` | Catch note head material |
-| `flickBaseMaterialUpDown` | `Material` | Flick head — Up or Down direction |
-| `flickBaseMaterialLeftRight` | `Material` (optional) | Flick head — Left or Right; falls back to UpDown |
-| `flickArrowMaterialUp` | `Material` | Arrow quad — Up direction |
+| `noteBodyMaterial` | `Material` | Shared shader template for all Tap/Catch/Flick note bodies. Must support `_MainTex` and `_Color` via `MaterialPropertyBlock`. A simple Unlit/Transparent shader is sufficient. Do not bake the texture into this asset — it is assigned per draw call. |
+| `tapBodyTexture` | `Texture2D` | Body texture for Tap notes. Assigned to `_MainTex` via `MaterialPropertyBlock` at draw time. |
+| `catchBodyTexture` | `Texture2D` | Body texture for Catch notes. |
+| `flickBodyTexture` | `Texture2D` | Body texture for Flick notes. |
+| `fallbackBodyTexture` | `Texture2D` (optional) | Used when a type-specific texture is null. Renderers log a one-time warning when falling back. |
+
+**Body skin layout — fixed edge + tiled center:**
+
+| Field | Type | Description |
+|---|---|---|
+| `bodyLeftEdgeU` | `float` [0..0.5] | Left decorative border width as a fraction of texture width. The leftmost `bodyLeftEdgeU` of the UV range is reserved for the fixed left edge and never distorted by lane width changes. Default 0.1. |
+| `bodyRightEdgeU` | `float` [0..0.5] | Right decorative border width as a fraction of texture width. The rightmost `bodyRightEdgeU` of the UV range is reserved for the fixed right edge. Default 0.1. |
+| `bodyCenterTileRatePerUnit` | `float` | How many times the center UV region tiles per PlayfieldLocal unit of note chord width. Higher = finer center pattern. Default 1.0. |
+
+**Flick arrow overlays (Flick only — separate from body):**
+
+| Field | Type | Description |
+|---|---|---|
+| `flickArrowMaterialUp` | `Material` | Arrow quad material — Up direction |
 | `flickArrowMaterialDown` | `Material` (optional) | Arrow quad — Down; falls back to Up (rotated 180°) |
 | `flickArrowMaterialLeft` | `Material` | Arrow quad — Left direction |
 | `flickArrowMaterialRight` | `Material` (optional) | Arrow quad — Right; falls back to Left (rotated 180°) |
-| `noteLaneWidthRatio` | `float` [0.1–1] | Head width as fraction of lane chord width. Default 0.9 |
-| `noteRadialHalfThicknessLocal` | `float` | Radial half-thickness of head trapezoid. Default 0.022 |
+
+**Geometry and state parameters:**
+
+| Field | Type | Description |
+|---|---|---|
+| `noteLaneWidthRatio` | `float` [0.1–1] | Head width as fraction of lane angular span. Default 0.9 |
+| `noteRadialHalfThicknessLocal` | `float` | Radial half-thickness of note head. Default 0.022 |
 | `arrowSizeLocal` | `float` | Constant arrow size — does **not** scale with lane width. Default 0.08 |
 | `arrowSurfaceOffsetLocal` | `float` | Z offset to lift arrow above note head. Default 0.003 |
-| `missedTintColor` | `Color` | `_Color` tint via MaterialPropertyBlock on missed notes. Default `(0.4, 0.4, 0.4, 0.55)` |
+| `missedTintColor` | `Color` | `_Color` tint via `MaterialPropertyBlock` on missed notes. Default `(0.4, 0.4, 0.4, 0.55)` |
 
 **Geometry parameters (per-renderer Inspector fields):**
 
@@ -495,7 +518,7 @@ Create via **Assets → Create → RhythmicFlow → Note Skin Set**. Assign to `
 | `frustumHeightInner` | 0.001 | Local Z at inner ring edge (used when `arenaSurface` is not wired) |
 | `frustumHeightOuter` | 0.15 | Local Z at outer ring edge (used when `arenaSurface` is not wired) |
 
-**Scene wiring (manual):** Add `TapNoteRenderer`, `CatchNoteRenderer`, and `FlickNoteRenderer` as components to a suitable scene GameObject (e.g. `GameplayRenderers`). Assign the `PlayerAppController` reference and a material in the Inspector for each. There is no runtime auto-creation; if the `PlayerAppController` reference is missing the renderer logs a one-time warning and skips rendering.
+**Scene wiring (manual):** Add `TapNoteRenderer`, `CatchNoteRenderer`, and `FlickNoteRenderer` as components to a suitable scene GameObject (e.g. `GameplayRenderers`). Assign the `PlayerAppController` reference and a `NoteSkinSet` in the Inspector for each. There is no runtime auto-creation; a missing `PlayerAppController` or `NoteSkinSet` logs a one-time warning and skips rendering for that renderer.
 
 **Visibility rules:**
 * Hidden until `timeToHit ≤ noteLeadTimeMs`.
@@ -567,12 +590,12 @@ The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartT
   ```
 * Drawn via `Graphics.DrawMesh` — vertices written in-place into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
 
-**Target ribbon skin direction (v0+):**
-Hold body skins should progress toward the same philosophy as note head skins (§5.7.3):
-* **Decorative side borders** — fixed-width edge regions that preserve their art regardless of lane width changes. Authored as UV-mapped strips at the left/right edges of the ribbon texture.
-* **Tiled center** — the center region between the borders tiles (or safely stretches) in both width and length as the ribbon geometry changes.
-* **Non-destructive length mapping** — the ribbon texture along the radial direction tiles rather than stretches, so a thick hold does not compress the art into a smear.
-* The current v0 implementation uses flat color passes driven by `MaterialPropertyBlock._Color` per state. Texture-driven hold skins require a more sophisticated UV layout on the segmented ribbon mesh (a future v0+ task).
+**Target ribbon skin direction (later step — not part of initial Tap/Catch/Flick skin implementation):**
+Hold body skins must follow the same philosophy as note head skins (§5.7.3). This migration is a separate later step; do not block Tap/Catch/Flick skin work on it:
+* **Decorative side borders** — fixed UV-mapped edge regions that preserve their art regardless of lane width changes. Must not stretch.
+* **Tiled center (width)** — the center region tiles between the borders as lane width changes. Full-surface stretch is not acceptable as a final result.
+* **Tiled length (radial)** — the ribbon texture tiles along the radial direction at a consistent rate. Stretch-based length mapping is not acceptable as a final result; it smears art on long holds.
+* The current v0 implementation uses flat color passes driven by `MaterialPropertyBlock._Color` per state. This is a transitional placeholder only — not the intended final hold rendering path.
 
 **Visibility and missed-hold lifetime (v0 locked):**
 
@@ -640,11 +663,9 @@ matrix = TRS(
 
 This requires zero per-frame mesh allocation and no arrow-specific pool.
 
-### **5.7.3 Note skin philosophy (v0 target)**
+### **5.7.3 Note skin philosophy (v0 — implemented)**
 
-The note skin system targets **texture/PNG-driven authoring** rather than material-per-variant authoring.
-
-**Core principle:** Materials are shader templates. The primary authoring artifacts are textures. A `NoteSkinSet` ScriptableObject wires textures (via Materials) to note types. Replacing the look of a note type means swapping its texture, not writing a new shader.
+The note skin system uses **texture/PNG-driven authoring**. Materials are shader templates. The primary authoring artifacts are textures. Replacing the look of a note type means swapping its texture in `NoteSkinSet`, not writing a new shader.
 
 **Fixed-edge + tiled-center body layout:**
 
@@ -652,23 +673,42 @@ Note body textures are laid out in three regions along the note width axis:
 
 ```
 [left-border | tiled-center | right-border]
-← fixed px →← scales with width →← fixed px →
+← fixed UV  →← tiles with width →← fixed UV →
 ```
 
-* **Decorative border regions** — fixed width in texture space. Contain art (line detail, glow border, symbol). These must not stretch or compress as lane width changes.
-* **Tiled center region** — occupies the remaining center. Tiles horizontally (or safely stretches if art permits). An empty or gradient center is easiest to tile safely.
+* **Decorative border regions** — fixed UV-space width defined by `bodyLeftEdgeU` / `bodyRightEdgeU` in `NoteSkinSet`. Contain art (line detail, glow, symbol). Must not stretch or compress as lane width changes.
+* **Tiled center region** — occupies the UV range between the two border regions. Tiles horizontally at rate `bodyCenterTileRatePerUnit` per PlayfieldLocal unit of chord width. **Tiling is required** — full-surface stretch is not acceptable as a final result; it causes visible art distortion when lane width animates.
 
-This means that as lanes animate narrower or wider:
-* The border art remains stable (it is UV-mapped to fixed texcoord regions).
-* Only the center expands or contracts.
-* The overall note remains visually clean at any width.
+As lanes animate narrower or wider:
+* Border art remains stable — UV-mapped to fixed texcoord regions.
+* Center region tiles in or out — the number of tile repetitions tracks the current note chord width.
+* The overall note stays visually clean at any animated width.
 
-**Radial (length) axis for hold bodies:** The hold ribbon texture tiles along the radial (approach) direction rather than stretching. A consistent tile rate prevents hold bodies from looking "smeared" at different time lengths.
+**Radial (length) axis for hold bodies:** The hold ribbon texture tiles along the radial direction at a consistent rate. Full-length stretch is not acceptable as a final result; it smears art on long holds.
 
-**Implementation path:**
-* v0 current: flat color note heads via `_Color` MaterialPropertyBlock tinting. Border detail is minimal (material-driven).
-* v0 target: UV-mapped note head texture with fixed border + tiled center. Requires UV assignment on the trapezoid/curved-cap mesh at build time.
-* v0+ hold: segmented ribbon/grid mesh with UV layout supporting the fixed-border + tiled-center + tiled-length scheme.
+**Implementation approach — CPU-driven per-frame UV assignment (v0):**
+
+The initial implementation is **CPU-driven**: the renderer computes edge-aware UVs for the curved-cap mesh each frame and writes them into a pre-allocated `Vector2[]` scratch buffer, then assigns `mesh.uv = _uvScratch`. This is the same pattern used for per-frame vertex positions.
+
+This approach is chosen because:
+* **Correctness first** — UV mapping is geometrically tied to the actual arc-sampled column widths, which vary with lane animation. CPU-side computation is the most direct way to keep UVs accurate.
+* **Debuggable** — per-frame UV values can be inspected directly; shader-side parametric tiling is harder to verify against geometry.
+* **Parity with curved geometry** — the 5-column segmented cap has irregular column widths near the arc edges; CPU assignment handles this naturally.
+* **Safe iteration** — note meshes are small (12 vertices); per-frame UV writes add negligible cost for v0 note counts. Optimization should be profiling-driven, not speculative.
+
+**Shader-side tiling is deferred.** A shader-optimized path (e.g. using a custom tiling shader that receives edge fractions and tile rate as material properties and handles center tiling in the fragment shader) may be added in a future pass. When added, it must be compatible with the same `NoteSkinSet` authoring data (`bodyLeftEdgeU`, `bodyRightEdgeU`, `bodyCenterTileRatePerUnit`) — the data contract must not change.
+
+**Implementation status:**
+
+| Step | Status | Description |
+|---|---|---|
+| Step 1 | done | Single-segment trapezoid, flat `_Color` tinting only |
+| Step 2 | done | Segmented curved-cap geometry (NoteCapGeometryBuilder) |
+| Step 3 | **current** | CPU-driven per-frame UV with fixed-edge + tiled-center (this spec) |
+| Step 4 | future | Hold body skin migration to same fixed-edge + tiled-center philosophy |
+| Step 5 | future | Optional shader-side tiling optimization (same authoring data; no NoteSkinSet changes) |
+
+**Hold body skin direction:** Hold will follow the same fixed-edge + tiled-center philosophy, with an additional tiling requirement along the radial (length) direction. Hold migration is a **later step** and is explicitly not part of the Tap/Catch/Flick initial skin implementation.
 
 The skin geometry rules described above apply equally to the Chart Editor Playfield Preview (§chart_editor §3.3).
 
