@@ -24,12 +24,16 @@
 // This means toggling forceHideArenaSurfaceMesh in the Inspector has instant effect.
 //
 // --- PhysX "cleaning the mesh failed" fix ---
-// The warning occurred because CreateArenaMeshState assigned the MeshCollider
-// sharedMesh before any real geometry existed (the placeholder mesh had all vertices at
-// Vector3.zero, producing degenerate zero-area triangles that PhysX cannot cook).
-// Fix: sharedMesh is only assigned after the first successful RebuildArenaVertices call.
-// The ArenaMeshState.HasValidGeometry flag guards this; collider.enabled is forced false
-// until valid geometry exists.
+// Root cause: when AddComponent<MeshCollider>() is called on a GO that already has a
+// MeshFilter, Unity auto-populates MeshCollider.sharedMesh from MeshFilter.sharedMesh at
+// that exact instant — before any explicit assignment can clear it.  The placeholder mesh
+// has all vertices at Vector3.zero (degenerate), so PhysX immediately tries to cook it and
+// logs the warning.  Setting mc.sharedMesh = null after AddComponent is too late.
+//
+// Fix (Option A): the MeshCollider lives on a SEPARATE child GO that has NO MeshFilter.
+// Unity therefore has nothing to auto-populate from, so no cooking happens at AddComponent
+// time.  sharedMesh is only assigned after the first successful RebuildArenaVertices call
+// (guarded by ArenaMeshState.HasValidGeometry).
 //
 // --- Vertex space ---
 // PlayfieldRoot local XY defines the ring positions; local Z gives the frustum height.
@@ -135,10 +139,18 @@ namespace RhythmicFlow.Player
         private sealed class ArenaMeshState
         {
             // Scene objects — created once per arena, never recreated unless arcSegments changes.
-            public GameObject   ChildGo;   // Child GO; always kept active; visibility via Renderer.enabled.
-            public Mesh         Mesh;      // Runtime mesh; vertices updated in-place on each rebuild.
-            public MeshRenderer Renderer;  // Controlled by forceHideArenaSurfaceMesh + EnabledBool.
-            public MeshCollider Collider;  // Controlled by forceDisableArenaSurfaceCollider + HasValidGeometry.
+            //
+            // Two separate child GOs:
+            //   RenderChildGo  — holds MeshFilter + MeshRenderer only (NO MeshCollider).
+            //   ColliderChildGo — holds MeshCollider only (NO MeshFilter).
+            //
+            // Keeping them separate prevents Unity from auto-populating MeshCollider.sharedMesh
+            // from MeshFilter.sharedMesh at AddComponent time (the root cause of the PhysX warning).
+            public GameObject   RenderChildGo;   // MeshFilter + MeshRenderer child; always active.
+            public GameObject   ColliderChildGo; // MeshCollider child; always active.
+            public Mesh         Mesh;            // Runtime mesh; vertices updated in-place on each rebuild.
+            public MeshRenderer Renderer;        // Controlled by forceHideArenaSurfaceMesh + EnabledBool.
+            public MeshCollider Collider;        // Controlled by forceDisableArenaSurfaceCollider + HasValidGeometry.
 
             // Pre-allocated vertex scratch: length = (arcSegments+1)*2 per arena.
             // Filled in-place during a vertex rebuild — zero per-frame heap allocation.
@@ -284,7 +296,8 @@ namespace RhythmicFlow.Player
                 {
                     // arcSegments was changed at runtime (Inspector edit) — recreate entirely.
                     Destroy(state.Mesh);
-                    if (state.ChildGo != null) { Destroy(state.ChildGo); }
+                    if (state.RenderChildGo   != null) { Destroy(state.RenderChildGo); }
+                    if (state.ColliderChildGo != null) { Destroy(state.ColliderChildGo); }
                     state = CreateArenaMeshState(ea.ArenaId, vertCount, mat);
                     _arenaStates[ea.ArenaId] = state;
                 }
@@ -400,8 +413,8 @@ namespace RhythmicFlow.Player
                 Vector3 wInner = pfRoot.TransformPoint(innerPt.x, innerPt.y, zInner);
                 Vector3 wOuter = pfRoot.TransformPoint(outerPt.x, outerPt.y, zOuter);
 
-                state.VertexScratch[i]         = state.ChildGo.transform.InverseTransformPoint(wInner);
-                state.VertexScratch[N + 1 + i] = state.ChildGo.transform.InverseTransformPoint(wOuter);
+                state.VertexScratch[i]         = state.RenderChildGo.transform.InverseTransformPoint(wInner);
+                state.VertexScratch[N + 1 + i] = state.RenderChildGo.transform.InverseTransformPoint(wOuter);
             }
 
             // Assign pre-allocated array to the existing Mesh instance.
@@ -506,15 +519,17 @@ namespace RhythmicFlow.Player
         // Lazy creation
         // -------------------------------------------------------------------
 
-        // Creates the child GO, Mesh, and all pre-allocated buffers for a new arena.
+        // Creates two child GOs, Mesh, and all pre-allocated buffers for a new arena.
         // Triangles and UVs depend only on N (arcSegments), not on geometry, so they
         // are written once here and never change.
         //
-        // IMPORTANT: MeshCollider.sharedMesh is intentionally left null at creation.
-        // The placeholder mesh has all vertices at Vector3.zero (degenerate), which causes
-        // PhysX to log "cleaning the mesh failed" if assigned to a MeshCollider.
-        // The collider is only populated after the first successful RebuildArenaVertices call
-        // (indicated by ArenaMeshState.HasValidGeometry = true).
+        // Two child GOs are created (Option A PhysX fix — see header comment):
+        //   renderGo   — MeshFilter + MeshRenderer; this is the visual surface.
+        //   colliderGo — MeshCollider ONLY; no MeshFilter on this GO, so Unity cannot
+        //                auto-populate MeshCollider.sharedMesh at AddComponent time.
+        //
+        // MeshCollider.sharedMesh is left null at creation and only assigned after the
+        // first successful RebuildArenaVertices call (ArenaMeshState.HasValidGeometry = true).
         private ArenaMeshState CreateArenaMeshState(
             string arenaId, int vertCount, Material mat)
         {
@@ -551,8 +566,6 @@ namespace RhythmicFlow.Player
             }
 
             // --- Mesh (placeholder vertices — overwritten on first RebuildArenaVertices call) ---
-            // Do NOT assign to MeshCollider yet; placeholder vertices are all Vector3.zero
-            // (degenerate) and would trigger PhysX "cleaning the mesh failed" warnings.
             var mesh = new Mesh
             {
                 name      = $"ArenaSurface_{arenaId}",
@@ -563,15 +576,14 @@ namespace RhythmicFlow.Player
             mesh.triangles = triangles;
             mesh.RecalculateBounds();
 
-            // --- Child GO ---
-            var go = new GameObject($"ArenaSurface_{arenaId}");
-            // worldPositionStays:false → child GO has identity local pose within this GO.
-            go.transform.SetParent(transform, worldPositionStays: false);
+            // --- Render child GO (MeshFilter + MeshRenderer only) ---
+            var renderGo = new GameObject($"ArenaSurface_{arenaId}");
+            renderGo.transform.SetParent(transform, worldPositionStays: false);
             // Inherit physics layer so PlayerAppController.visualSurfaceLayerMask matches.
-            go.layer = gameObject.layer;
+            renderGo.layer = gameObject.layer;
 
-            var mf = go.AddComponent<MeshFilter>();
-            var mr = go.AddComponent<MeshRenderer>();
+            var mf = renderGo.AddComponent<MeshFilter>();
+            var mr = renderGo.AddComponent<MeshRenderer>();
             mf.sharedMesh     = mesh;
             mr.sharedMaterial = mat;
 
@@ -579,18 +591,29 @@ namespace RhythmicFlow.Player
             // the frame it's created (before the first RebuildArenaVertices call).
             mr.enabled = !forceHideArenaSurfaceMesh;
 
-            // MeshCollider for parallax-correct input raycast (spec §5.2.1).
-            // sharedMesh intentionally left null — assigned after first valid rebuild.
-            var mc = go.AddComponent<MeshCollider>();
+            // --- Collider child GO (MeshCollider only — NO MeshFilter) ---
+            // CRITICAL: no MeshFilter on this GO.  If a MeshFilter were present, Unity would
+            // read its sharedMesh during AddComponent<MeshCollider>() and auto-assign it to
+            // the collider, immediately cooking the degenerate placeholder and producing the
+            // "[Physics.PhysX] cleaning the mesh failed" warning.  With no MeshFilter, Unity
+            // has nothing to auto-populate from, so the collider is clean at creation.
+            var colliderGo = new GameObject($"ArenaSurface_{arenaId}_Collider");
+            colliderGo.transform.SetParent(transform, worldPositionStays: false);
+            colliderGo.layer = gameObject.layer;
+
+            // AddComponent is safe here: no MeshFilter on colliderGo → no auto-population.
+            var mc = colliderGo.AddComponent<MeshCollider>();
             mc.enabled    = false; // disabled until HasValidGeometry is true
-            mc.sharedMesh = null;  // explicit: no mesh until first valid rebuild
+            // mc.sharedMesh is already null by default; explicit for clarity.
+            mc.sharedMesh = null;
 
             return new ArenaMeshState
             {
-                ChildGo       = go,
-                Mesh          = mesh,
-                Renderer      = mr,
-                Collider      = mc,
+                RenderChildGo   = renderGo,
+                ColliderChildGo = colliderGo,
+                Mesh            = mesh,
+                Renderer        = mr,
+                Collider        = mc,
                 VertexScratch = new Vector3[vertCount],
                 HasValidGeometry              = false,
                 HasLoggedColliderSkipWarning  = false,
