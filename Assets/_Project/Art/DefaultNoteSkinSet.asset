@@ -1,0 +1,33 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c2e4a6b8d0f2c4e6a8b0d2f4c6e8a0b2, type: 3}
+  m_Name: DefaultNoteSkinSet
+  m_EditorClassIdentifier: Player::RhythmicFlow.Player.NoteSkinSet
+  noteBodyMaterial: {fileID: 0}
+  tapBodyTexture: {fileID: 0}
+  catchBodyTexture: {fileID: 0}
+  flickBodyTexture: {fileID: 0}
+  fallbackBodyTexture: {fileID: 0}
+  bodyLeftEdgeU: 0.1
+  bodyRightEdgeU: 0.1
+  bodyLeftEdgeLocalWidth: 0.012
+  bodyRightEdgeLocalWidth: 0.012
+  bodyCenterTileRatePerUnit: 1
+  flickArrowMaterialUp: {fileID: 0}
+  flickArrowMaterialDown: {fileID: 0}
+  flickArrowMaterialLeft: {fileID: 0}
+  flickArrowMaterialRight: {fileID: 0}
+  noteLaneWidthRatio: 0.9
+  noteRadialHalfThicknessLocal: 0.022
+  arrowSizeLocal: 0.08
+  arrowSurfaceOffsetLocal: 0.003
+  missedTintColor: {r: 0.4, g: 0.4, b: 0.4, a: 0.55}
