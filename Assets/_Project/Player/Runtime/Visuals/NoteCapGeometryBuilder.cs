@@ -30,14 +30,16 @@
 //    Tri B (CCW): tail_i,  head_i+1, head_i
 //    Total: N×2 = 10 triangles, N×6 = 30 indices  (for N = 5)
 //
-// ── UV layout (ready for future skin mapping) ────────────────────────────────
+// ── UV layout ────────────────────────────────────────────────────────────────
 //
-//    Tail row column i: U = i/N,  V = 0
-//    Head row column i: U = i/N,  V = 1
+//  BuildCapMesh sets placeholder UVs (U = i/N, V = 0/1) used until a
+//  NoteSkinSet is wired.  FillCapUVs (step 3) overwrites these each frame
+//  with the three-region fixed-edge + tiled-center layout (spec §5.7.3):
 //
-//  This is compatible with fixed-edge + tiled-center UV conventions (spec
-//  §5.7.3): the next step assigns edge/center UV regions without changing
-//  the geometry pipeline.
+//    [ left border | ← tiled center → | right border ]
+//    ←  fixed UV  →←  tiles with width →←  fixed UV  →
+//
+//  V = 0 on the tail row, V = 1 on the head row in both layouts.
 //
 // ── Angular occupancy ────────────────────────────────────────────────────────
 //
@@ -49,9 +51,10 @@
 //
 // ── No per-frame allocations ─────────────────────────────────────────────────
 //
-//  Mesh templates are built once in Awake.  Per-frame work writes into a
-//  pre-allocated scratch buffer (Vector3[VertexCount]); the scratch is then
-//  assigned to the pooled mesh with mesh.vertices = scratch.
+//  Mesh templates are built once in Awake.  Per-frame work writes into
+//  pre-allocated scratch buffers (Vector3[VertexCount] for verts,
+//  Vector2[VertexCount] for UVs); the scratches are then assigned to the pooled
+//  mesh with mesh.vertices = vertScratch; mesh.uv = uvScratch.
 //
 // ── Isolation note ───────────────────────────────────────────────────────────
 //
@@ -59,7 +62,7 @@
 //  Preview (spec §chart_editor §3.3) needs note head geometry, move this file
 //  to Assets/_Project/Shared/ so both assemblies share it (spec §5.7.0).
 //
-// Spec §5.7.a / §5.7.0 step 2.
+// Spec §5.7.a / §5.7.0 step 2 (geometry) / step 3 (UV).
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -227,6 +230,189 @@ namespace RhythmicFlow.Player
                     ctr.x + headR * cosA,
                     ctr.y + headR * sinA,
                     zHead);
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Per-frame UV fill  (zero allocations — spec §5.7.3 step 3)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Writes fixed-edge + tiled-center UV coordinates into a pre-allocated scratch buffer.
+        /// Call once per visible note each LateUpdate immediately after
+        /// <see cref="FillCapVertices"/>, then assign both buffers to the pooled mesh:
+        /// <c>mesh.vertices = vertScratch; mesh.uv = uvScratch; mesh.RecalculateBounds();</c>
+        ///
+        /// <para><b>Three-region layout (spec §5.7.3):</b>
+        ///
+        /// <code>
+        ///   [ left border | ← tiled center → | right border ]
+        ///   ← fixed UV  →←  tiles with width →←  fixed UV  →
+        /// </code>
+        ///
+        /// The left and right decorative border regions occupy fixed physical widths in
+        /// PlayfieldLocal units (<see cref="NoteSkinSet.bodyLeftEdgeLocalWidth"/> /
+        /// <see cref="NoteSkinSet.bodyRightEdgeLocalWidth"/>).  They map to fixed UV-space
+        /// fractions (<see cref="NoteSkinSet.bodyLeftEdgeU"/> /
+        /// <see cref="NoteSkinSet.bodyRightEdgeU"/>) and are never distorted by lane width
+        /// changes.
+        ///
+        /// The center region occupies the remaining physical width and tiles horizontally at
+        /// <see cref="NoteSkinSet.bodyCenterTileRatePerUnit"/> repetitions per PlayfieldLocal
+        /// unit of chord width.
+        /// </para>
+        ///
+        /// <para><b>Narrow-width fallback:</b>
+        /// When the total note chord is narrower than the combined edge local widths, both
+        /// edge widths are scaled down proportionally so they still fit, and the center
+        /// collapses to zero.  UVs remain valid with no inversion.
+        /// </para>
+        ///
+        /// <para><b>V convention:</b>
+        /// V = 0 on the tail row (inner edge), V = 1 on the head row (outer edge).
+        /// This matches the placeholder UVs written by <see cref="BuildCapMesh"/>.
+        /// </para>
+        ///
+        /// <para><b>Radius choice:</b>
+        /// <paramref name="noteRadiusLocal"/> is the note's approach radius (centre of the
+        /// note band).  Using the approach centre rather than tailR or headR keeps the ratio
+        /// of left-edge : center : right-edge stable as the note travels — the border widths
+        /// do not appear to grow or shrink relative to the body as the note approaches.
+        /// </para>
+        /// </summary>
+        /// <param name="uvs">Pre-allocated scratch, length ≥ <see cref="VertexCount"/> (12).</param>
+        /// <param name="noteRadiusLocal">Note approach radius in PlayfieldLocal units.
+        /// Used to convert <paramref name="noteHalfAngleDeg"/> into a chord width and to
+        /// map physical edge widths to column positions.</param>
+        /// <param name="noteHalfAngleDeg">Note cap half-span in degrees.  Must be the same
+        /// value passed to <see cref="FillCapVertices"/> for this note on the same frame.</param>
+        /// <param name="skin">Active <see cref="NoteSkinSet"/> providing UV region fractions,
+        /// physical edge widths, and tile rate.  Must not be null.</param>
+        public static void FillCapUVs(
+            Vector2[]   uvs,
+            float       noteRadiusLocal,
+            float       noteHalfAngleDeg,
+            NoteSkinSet skin)
+        {
+            // ── Total chord width at the approach radius ──────────────────────────
+            //
+            // The cap spans 2 × noteHalfAngleDeg of arc at noteRadiusLocal.
+            // The chord (straight-line distance) subtending that full angular span is:
+            //
+            //   totalChord = 2 × r × sin(noteHalfAngleDeg × Deg2Rad)
+            //
+            // This is exact — the same formula used by NoteApproachMath.LaneChordWidthAtRadius,
+            // applied here to the note's own angular half-span.
+            float totalChord = 2f * noteRadiusLocal * Mathf.Sin(noteHalfAngleDeg * Mathf.Deg2Rad);
+
+            // ── Physical edge widths with narrow-width fallback ───────────────────
+            //
+            // Left and right decorative borders each occupy a fixed physical width
+            // (PlayfieldLocal units) that does NOT scale with lane width.  If the total
+            // chord is narrower than their combined width, scale both down proportionally
+            // so they still fill the note without inverting.  Center collapses to zero.
+            float leftW  = skin.bodyLeftEdgeLocalWidth;
+            float rightW = skin.bodyRightEdgeLocalWidth;
+
+            float sumEdgeW = leftW + rightW;
+            if (sumEdgeW > totalChord && sumEdgeW > 0f)
+            {
+                // Proportional scale: leftW/rightW maintain their ratio to each other
+                // but together now exactly fill totalChord.
+                float scale = totalChord / sumEdgeW;
+                leftW  *= scale;
+                rightW *= scale;
+            }
+
+            // Physical width of the tiled center after edges are reserved.
+            // Mathf.Max guards against tiny negative values from floating-point drift.
+            float centerW = Mathf.Max(0f, totalChord - leftW - rightW);
+
+            // Chord distance at which the right decorative border begins.
+            float rightEdgeStartChord = totalChord - rightW;
+
+            // ── UV region boundaries (from NoteSkinSet) ───────────────────────────
+            //
+            // Texture layout:
+            //   [0 .. bodyLeftEdgeU]              ← left decorative border
+            //   [bodyLeftEdgeU .. 1-bodyRightEdgeU] ← tiled center (CenterUStart..CenterUEnd)
+            //   [1-bodyRightEdgeU .. 1]            ← right decorative border
+            float leftEdgeU    = skin.bodyLeftEdgeU;
+            float rightEdgeU   = skin.bodyRightEdgeU;
+            float centerUStart = skin.CenterUStart;  // == bodyLeftEdgeU
+            float centerUWidth = skin.CenterUWidth;  // == 1 - bodyRightEdgeU - bodyLeftEdgeU
+
+            // Tile rate: repetitions per PlayfieldLocal unit of center chord width.
+            // NoteSkinSet.OnValidate guarantees > 0, but guard defensively.
+            float tileRate = Mathf.Max(0.01f, skin.bodyCenterTileRatePerUnit);
+
+            // ── Per-column UV assignment ──────────────────────────────────────────
+            //
+            // Column i (0..ColumnCount) is at angular offset i × stepDeg from the left
+            // cap boundary, where stepDeg = 2 × noteHalfAngleDeg / ColumnCount.
+            //
+            // The chord distance from the left cap edge to column i is derived from
+            // the arc geometry:  the angular separation between column 0 and column i
+            // is i × stepDeg, so the subtended chord is:
+            //
+            //   chordToI = 2 × r × sin( i × noteHalfAngleDeg / ColumnCount × Deg2Rad )
+            //            = 2 × r × sin( i × stepHalfAngleDeg × Deg2Rad )
+            //
+            // where stepHalfAngleDeg = noteHalfAngleDeg / ColumnCount.
+            //
+            // Verification:
+            //   i = 0  → sin(0)                 = 0           = left cap edge   ✓
+            //   i = N  → sin(noteHalfAngleDeg)  = totalChord/2r → totalChord    ✓
+            //
+            // We use noteRadiusLocal (approach centre) for all columns.  The tail and
+            // head rows share the same U — only V differs (0 vs 1).
+            float stepHalfAngleDeg = noteHalfAngleDeg / ColumnCount;
+
+            for (int i = 0; i <= ColumnCount; i++)
+            {
+                // Chord distance from the left cap boundary to this column boundary.
+                float chordToI = 2f * noteRadiusLocal
+                    * Mathf.Sin(i * stepHalfAngleDeg * Mathf.Deg2Rad);
+
+                float u;
+
+                if (chordToI <= leftW)
+                {
+                    // ── Left decorative border ────────────────────────────────────
+                    // Linear ramp: U goes from 0 (left cap edge) to bodyLeftEdgeU
+                    // (border/center boundary) as chordToI goes from 0 to leftW.
+                    // Guard: if leftW was collapsed to 0 (zero-width cap), map to U=0.
+                    u = (leftW > 0f)
+                        ? (chordToI / leftW) * leftEdgeU
+                        : 0f;
+                }
+                else if (chordToI >= rightEdgeStartChord)
+                {
+                    // ── Right decorative border ───────────────────────────────────
+                    // Linear ramp: U goes from (1-bodyRightEdgeU) to 1 as chordToI
+                    // goes from rightEdgeStartChord to totalChord.
+                    // Guard: if rightW was collapsed to 0, map to U=1.
+                    u = (rightW > 0f)
+                        ? (1f - rightEdgeU) + ((chordToI - rightEdgeStartChord) / rightW) * rightEdgeU
+                        : 1f;
+                }
+                else
+                {
+                    // ── Tiled center region ───────────────────────────────────────
+                    // Position within the center in PlayfieldLocal units.
+                    float posInCenter = chordToI - leftW;
+
+                    // Tile the center UV region horizontally.
+                    // One tile = (1 / tileRate) PlayfieldLocal units.
+                    // Mathf.Repeat(x, 1f) = fractional part of x — allocation-free.
+                    // The result maps into [CenterUStart .. CenterUStart + CenterUWidth].
+                    float tileFrac = Mathf.Repeat(posInCenter * tileRate, 1f);
+                    u = centerUStart + tileFrac * centerUWidth;
+                }
+
+                // Both rows share the same U value; V separates tail (0) from head (1).
+                uvs[TailRow + i] = new Vector2(u, 0f);
+                uvs[HeadRow + i] = new Vector2(u, 1f);
             }
         }
 
