@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "song": {
-    "songId": "test_min_radius_only",
+    "songId": "test_wrap_torture",
     "difficultyId": "standard",
     "audioFile": "audio/song.ogg",
     "audioOffsetMs": 0
@@ -19,16 +19,16 @@
       "centerX": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
       "centerY": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
 
-      "outerRadius": {
+      "outerRadius": { "keyframes": [ { "timeMs": 0, "value": 0.45, "easing": "hold" } ] },
+      "bandThickness": { "keyframes": [ { "timeMs": 0, "value": 0.12, "easing": "hold" } ] },
+
+      "arcStartDeg": {
         "keyframes": [
-          { "timeMs": 0, "value": 0.40, "easing": "hold" },
-          { "timeMs": 4000, "value": 0.50, "easing": "easeInOut" },
-          { "timeMs": 8000, "value": 0.40, "easing": "easeInOut" }
+          { "timeMs": 0, "value": 350, "easing": "hold" },
+          { "timeMs": 2000, "value": 10, "easing": "linear" },
+          { "timeMs": 4000, "value": 350, "easing": "linear" }
         ]
       },
-
-      "bandThickness": { "keyframes": [ { "timeMs": 0, "value": 0.12, "easing": "hold" } ] },
-      "arcStartDeg": { "keyframes": [ { "timeMs": 0, "value": 190, "easing": "hold" } ] },
       "arcSweepDeg": { "keyframes": [ { "timeMs": 0, "value": 220, "easing": "hold" } ] }
     }
   ],
@@ -39,12 +39,20 @@
       "priority": 1,
       "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
-      "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 250, "easing": "hold" } ] },
+
+      "centerDeg": {
+        "keyframes": [
+          { "timeMs": 0, "value": 359, "easing": "hold" },
+          { "timeMs": 2000, "value": 1, "easing": "linear" },
+          { "timeMs": 4000, "value": 359, "easing": "linear" }
+        ]
+      },
       "widthDeg": { "keyframes": [ { "timeMs": 0, "value": 30, "easing": "hold" } ] }
     }
   ],
   "camera": {},
   "notes": [
-    { "noteId": "t1", "laneId": "lane-1", "type": "tap", "timeMs": 2000 }
+    { "noteId": "t1", "laneId": "lane-1", "type": "tap", "timeMs": 1500 },
+    { "noteId": "t2", "laneId": "lane-1", "type": "tap", "timeMs": 3500 }
   ]
 }
