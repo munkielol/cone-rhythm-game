@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using RhythmicFlow.Shared;
 
@@ -137,6 +138,23 @@ namespace RhythmicFlow.Player
         [SerializeField] private Color flashGreatColor       = Color.cyan;
         [SerializeField] private Color flashMissColor        = Color.red;
 
+        [Header("Geometry Snapshot (DEBUG)")]
+
+        [Tooltip("When enabled, displays a compact readout of evaluated arena + lane geometry " +
+                 "in the bottom-left of the Game view, updated once per debugSnapshotIntervalSeconds. " +
+                 "Shows arcStartDeg / arcSweepDeg, outerLocal / innerLocal / judgementRadiusLocal, " +
+                 "frustum Z heights, and lane center/width/edge angles. " +
+                 "Reads from ChartRuntimeEvaluator directly — the same source used by " +
+                 "JudgementRingRenderer, NoteApproachRenderer, and ArenaHitTester (spec §5.9). " +
+                 "Does NOT require DebugShowTouchBand to be on.")]
+        [SerializeField] private bool debugShowEvaluatedGeometrySnapshot = false;
+
+        [Tooltip("How often (seconds) the snapshot text is refreshed. " +
+                 "Default 1.0 s means you can watch a slowly-animated chart and see the values " +
+                 "change each second. " +
+                 "Clamped to a minimum of 0.1 s to avoid update-storm in fast tests.")]
+        [SerializeField] private float debugSnapshotIntervalSeconds = 1.0f;
+
         // -------------------------------------------------------------------
         // Internal state
         // -------------------------------------------------------------------
@@ -216,6 +234,33 @@ namespace RhythmicFlow.Player
         private int _debugHoldRendered;  // Hold notes that passed all filters and were drawn
 
         // -------------------------------------------------------------------
+        // Geometry snapshot state
+        // -------------------------------------------------------------------
+        // Updated at most once per debugSnapshotIntervalSeconds — not every frame.
+        // _snapshotText is the cached display string; OnGUI reads it every frame without
+        // rebuilding.  _snapshotSb is pre-allocated and reused on each rebuild so the
+        // only GC allocation per interval is the single _snapshotSb.ToString() call.
+
+        // Elapsed unscaled time since the last snapshot rebuild.
+        // Unscaled so the readout still updates when timeScale = 0 (editor pause).
+        private float _snapshotTimer;
+
+        // Most-recently built display string; null until the first interval fires.
+        private string _snapshotText;
+
+        // Number of '\n'-delimited lines in _snapshotText (cached to avoid per-frame counting).
+        private int _snapshotLineCount;
+
+        // Pre-allocated StringBuilder — cleared and reused each rebuild.
+        private StringBuilder _snapshotSb;
+        private const int SnapshotSbCapacity = 512;
+
+        // Pixel height of a single OnGUI label row.  Centralised here so all OnGUI
+        // drawing uses the same value without re-declaring a local in every if-block
+        // (which triggers CS0136 when two sibling scopes share a name).
+        private const int GuiLineHeight = 18;
+
+        // -------------------------------------------------------------------
         // Unity lifecycle
         // -------------------------------------------------------------------
 
@@ -224,6 +269,10 @@ namespace RhythmicFlow.Player
             // "Sprites/Default" is unlit and requires no extra shader setup.
             _lineMat = new Material(Shader.Find("Sprites/Default"));
             _lineMat.hideFlags = HideFlags.HideAndDontSave;
+
+            // Pre-allocate the snapshot StringBuilder so no heap allocation happens on the
+            // first rebuild.  Capacity 512 is comfortably larger than a 5-line snapshot.
+            _snapshotSb = new StringBuilder(SnapshotSbCapacity);
         }
 
         private void OnDestroy()
@@ -280,6 +329,7 @@ namespace RhythmicFlow.Player
             UpdateTouchMarker();
             UpdateLaneHighlights();
             UpdateJudgementFlashes();
+            UpdateGeometrySnapshot();  // timer-gated; rebuilds cached string at most once per interval
         }
 
         // Repositions arena LineRenderers [0]–[4] from the current evaluated arena geometry
@@ -1115,10 +1165,33 @@ namespace RhythmicFlow.Player
         //   [Input] usedVisualSurface=true  plane=(0.12, -0.05)  surface=(0.10, -0.07)  delta=0.022
         private void OnGUI()
         {
-            bool showBand = PlayerSettingsStore.DebugShowTouchBand;
-            bool showProj = PlayerSettingsStore.DebugShowInputProjection;
-            if (!showBand && !showProj) { return; }
+            bool showBand     = PlayerSettingsStore.DebugShowTouchBand;
+            bool showProj     = PlayerSettingsStore.DebugShowInputProjection;
+            bool showSnapshot = debugShowEvaluatedGeometrySnapshot;
+
+            // At least one overlay must be active, otherwise skip all GUI work.
+            if (!showBand && !showProj && !showSnapshot) { return; }
             if (!_geometryBuilt || playerAppController == null) { return; }
+
+            // --- Geometry snapshot (bottom-left, independent of touch state) ---
+            // Drawn first so other overlays (touch band etc.) can render on top if needed.
+            // _snapshotText is cached — rebuilt only once per interval in UpdateGeometrySnapshot,
+            // so OnGUI itself performs no string work beyond the GUI.Label call.
+            if (showSnapshot && _snapshotText != null)
+            {
+                int boxH  = _snapshotLineCount * GuiLineHeight;
+                int snapY = Screen.height - boxH - 10;
+
+                // Drop-shadow (black, 1px offset) then light-green foreground.
+                GUI.color = Color.black;
+                GUI.Label(new Rect(11, snapY + 1, Screen.width - 20, boxH), _snapshotText);
+                GUI.color = new Color(0.7f, 1f, 0.7f); // light green
+                GUI.Label(new Rect(10, snapY,     Screen.width - 20, boxH), _snapshotText);
+                GUI.color = Color.white;
+            }
+
+            // Only proceed with touch-dependent overlays when they are enabled.
+            if (!showBand && !showProj) { return; }
 
             // Lane-1 animated geometry readout — visible every frame so animated movement is
             // immediately apparent without needing an active touch.
@@ -1128,13 +1201,12 @@ namespace RhythmicFlow.Player
                     playerAppController.DebugLaneGeometries;
                 if (lanesAll != null && lanesAll.TryGetValue("lane-1", out LaneGeometry dbgLane1))
                 {
-                    const int lh = 18;
                     string laneLine =
                         $"[lane-1] centerDeg={dbgLane1.CenterDeg:F2}  widthDeg={dbgLane1.WidthDeg:F2}";
                     GUI.color = Color.black;
-                    GUI.Label(new Rect(11, 11, Screen.width, lh), laneLine);
+                    GUI.Label(new Rect(11, 11, Screen.width, GuiLineHeight), laneLine);
                     GUI.color = Color.yellow;
-                    GUI.Label(new Rect(10, 10, Screen.width, lh), laneLine);
+                    GUI.Label(new Rect(10, 10, Screen.width, GuiLineHeight), laneLine);
                     GUI.color = Color.white;
                 }
             }
@@ -1142,12 +1214,11 @@ namespace RhythmicFlow.Player
             // Hold debug counter — always visible when DebugShowTouchBand is on.
             if (showBand)
             {
-                const int lhh = 18;
                 string holdLine = $"HoldRendered={_debugHoldRendered}  HoldPresent={_debugHoldPresent}";
                 GUI.color = Color.black;
-                GUI.Label(new Rect(11, 29, Screen.width, lhh), holdLine);
+                GUI.Label(new Rect(11, 29, Screen.width, GuiLineHeight), holdLine);
                 GUI.color = Color.cyan;
-                GUI.Label(new Rect(10, 28, Screen.width, lhh), holdLine);
+                GUI.Label(new Rect(10, 28, Screen.width, GuiLineHeight), holdLine);
                 GUI.color = Color.white;
             }
 
@@ -1162,8 +1233,7 @@ namespace RhythmicFlow.Player
 
             Vector2 hitLocal = playerAppController.DebugLastTouchLocalXY;
 
-            const int lineH = 18;
-            int       y     = 10;
+            int y = 10;
 
             // Input projection line (DebugShowInputProjection).
             if (showProj)
@@ -1178,11 +1248,11 @@ namespace RhythmicFlow.Player
                     $"  surface=({surfXY.x:F3},{surfXY.y:F3})" +
                     $"  delta={delta:F4}";
                 GUI.color = Color.black;
-                GUI.Label(new Rect(11, y + 1, Screen.width, lineH), projLine);
+                GUI.Label(new Rect(11, y + 1, Screen.width, GuiLineHeight), projLine);
                 GUI.color = new Color(1f, 0.65f, 0f); // orange
-                GUI.Label(new Rect(10, y,     Screen.width, lineH), projLine);
+                GUI.Label(new Rect(10, y,     Screen.width, GuiLineHeight), projLine);
                 GUI.color = Color.white;
-                y += lineH;
+                y += GuiLineHeight;
             }
 
             // Per-arena touch-band lines (DebugShowTouchBand).
@@ -1232,14 +1302,160 @@ namespace RhythmicFlow.Player
 
                 // Drop-shadow + white label.
                 GUI.color = Color.black;
-                GUI.Label(new Rect(11, y + 1, Screen.width, lineH), line);
+                GUI.Label(new Rect(11, y + 1, Screen.width, GuiLineHeight), line);
                 GUI.color = Color.white;
-                GUI.Label(new Rect(10, y,     Screen.width, lineH), line);
+                GUI.Label(new Rect(10, y,     Screen.width, GuiLineHeight), line);
 
-                y += lineH;
+                y += GuiLineHeight;
             }
 
             GUI.color = Color.white; // restore default
+        }
+
+        // -------------------------------------------------------------------
+        // Geometry snapshot
+        // -------------------------------------------------------------------
+
+        // Rebuilds the cached snapshot text at most once per debugSnapshotIntervalSeconds.
+        //
+        // Data sources (spec §5.9 single-source-of-truth):
+        //   • ChartRuntimeEvaluator.GetArena(0) / TryGetLane("lane-1", ...) — raw evaluated floats.
+        //   • PlayfieldTransform.NormRadiusToLocal  — normalised → local-unit radius conversion.
+        //   • ArenaHitTester.ComputeHitBandLocal    — same judgementRadiusLocal formula used by
+        //     JudgementRingRenderer, UpdateHitBandArcs, and gameplay hit-testing.
+        //   • arenaSurface.FrustumHeightInner/Outer — frustum Z (visual only; null-guarded).
+        //
+        // Allocation policy:
+        //   _snapshotSb is pre-allocated in Awake and reused (Length = 0 to clear).
+        //   value.ToString("F2") allocates one small string per field per interval — acceptable
+        //   at one-per-second.  The final _snapshotSb.ToString() is the only durable allocation.
+        //   No allocations occur on frames where the timer has not expired.
+        private void UpdateGeometrySnapshot()
+        {
+            if (!debugShowEvaluatedGeometrySnapshot) { return; }
+
+            // Accumulate unscaled time so the readout works when timeScale = 0.
+            _snapshotTimer += Time.unscaledDeltaTime;
+
+            // Floor at 0.1 s to avoid update-storm in fast or unit-test contexts.
+            float interval = Mathf.Max(0.1f, debugSnapshotIntervalSeconds);
+            if (_snapshotTimer < interval) { return; }
+
+            _snapshotTimer = 0f;
+
+            // Defensive init in case Awake was not called (e.g. component added at runtime).
+            if (_snapshotSb == null)
+                _snapshotSb = new StringBuilder(SnapshotSbCapacity);
+
+            ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
+            PlayfieldTransform    pfT       = playerAppController.DebugPlayfieldTransform;
+
+            _snapshotSb.Length = 0; // clear without allocation
+
+            // Case 1: evaluator not yet ready (PlayerAppController hasn't finished Start).
+            if (evaluator == null || pfT == null)
+            {
+                _snapshotSb.Append("Evaluator: null");
+                _snapshotLineCount = 1;
+                _snapshotText = _snapshotSb.ToString();
+                return;
+            }
+
+            double timeMs = playerAppController.DebugEffectiveChartTimeMs;
+
+            // ── Line 1: header ────────────────────────────────────────────────────────
+            _snapshotSb.Append("--- EvalSnapshot @ ");
+            _snapshotSb.Append(((long)timeMs).ToString());
+            _snapshotSb.Append("ms ---");
+            int lines = 1;
+
+            // ── Lines 2-N: first arena ────────────────────────────────────────────────
+            if (evaluator.ArenaCount > 0)
+            {
+                EvaluatedArena ea = evaluator.GetArena(0);
+
+                float outerLocal = pfT.NormRadiusToLocal(ea.OuterRadiusNorm);
+                float bandLocal  = pfT.NormRadiusToLocal(ea.BandThicknessNorm);
+                float innerLocal = outerLocal - bandLocal;
+
+                // Build an ArenaGeometry view of the evaluated data to call ComputeHitBandLocal —
+                // this is the single source of truth for judgementRadiusLocal (same path as
+                // JudgementRingRenderer and UpdateHitBandArcs).
+                var ag = new ArenaGeometry
+                {
+                    CenterXNorm       = ea.CenterXNorm,
+                    CenterYNorm       = ea.CenterYNorm,
+                    OuterRadiusNorm   = ea.OuterRadiusNorm,
+                    BandThicknessNorm = ea.BandThicknessNorm,
+                    ArcStartDeg       = ea.ArcStartDeg,
+                    ArcSweepDeg       = ea.ArcSweepDeg,
+                };
+                ArenaHitTester.ComputeHitBandLocal(ag, pfT,
+                    out _, out _, out float jdgLocal, out _);
+
+                // Arena geometry line.
+                _snapshotSb.Append("\nArena[");
+                _snapshotSb.Append(ea.ArenaId ?? "?");
+                _snapshotSb.Append("]:  arcStart=");
+                _snapshotSb.Append(ea.ArcStartDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0  sweep=");   // °  (degree symbol)
+                _snapshotSb.Append(ea.ArcSweepDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0  |  outer=");
+                _snapshotSb.Append(outerLocal.ToString("F3"));
+                _snapshotSb.Append("L  inner=");
+                _snapshotSb.Append(innerLocal.ToString("F3"));
+                _snapshotSb.Append("L  jdg=");
+                _snapshotSb.Append(jdgLocal.ToString("F3"));
+                _snapshotSb.Append("L");
+                lines++;
+
+                // Frustum heights line (only when arenaSurface is wired up).
+                if (arenaSurface != null)
+                {
+                    _snapshotSb.Append("\nFrustum:  zInner=");
+                    _snapshotSb.Append(arenaSurface.FrustumHeightInner.ToString("F3"));
+                    _snapshotSb.Append("  zOuter=");
+                    _snapshotSb.Append(arenaSurface.FrustumHeightOuter.ToString("F3"));
+                    lines++;
+                }
+            }
+            else
+            {
+                _snapshotSb.Append("\n(no arenas in evaluator)");
+                lines++;
+            }
+
+            // ── Lane line: "lane-1" preferred, fallback to index 0 ────────────────────
+            // We need the parent arena to compute judgementRadiusLocal for the lane display.
+            // Use the same arena we sampled above (GetArena(0)) as the lane's arena reference.
+            bool gotLane = evaluator.TryGetLane("lane-1", out EvaluatedLane el);
+            if (!gotLane && evaluator.LaneCount > 0)
+            {
+                el      = evaluator.GetLane(0);
+                gotLane = true;
+            }
+
+            if (gotLane)
+            {
+                float leftDeg  = el.CenterDeg - el.WidthDeg * 0.5f;
+                float rightDeg = el.CenterDeg + el.WidthDeg * 0.5f;
+
+                _snapshotSb.Append("\nLane[");
+                _snapshotSb.Append(el.LaneId ?? "?");
+                _snapshotSb.Append("]:  center=");
+                _snapshotSb.Append(el.CenterDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0  width=");
+                _snapshotSb.Append(el.WidthDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0  |  left=");
+                _snapshotSb.Append(leftDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0  right=");
+                _snapshotSb.Append(rightDeg.ToString("F2"));
+                _snapshotSb.Append("\u00B0");
+                lines++;
+            }
+
+            _snapshotLineCount = lines;
+            _snapshotText      = _snapshotSb.ToString(); // one allocation per interval — acceptable
         }
 
         // -------------------------------------------------------------------

@@ -720,6 +720,8 @@ MonoBehaviour:
   flashPerfectColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   flashGreatColor: {r: 0, g: 1, b: 1, a: 1}
   flashMissColor: {r: 1, g: 0, b: 0, a: 1}
+  debugShowEvaluatedGeometrySnapshot: 1
+  debugSnapshotIntervalSeconds: 1
 --- !u!4 &714554979
 Transform:
   m_ObjectHideFlags: 0

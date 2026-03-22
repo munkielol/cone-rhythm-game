@@ -610,6 +610,41 @@ and `PlayerDebugRenderer` also consume evaluated geometry and animate with track
   [outer arc, inner arc, start/end rays, judgement ring] every frame from the current
   `DebugArenaGeometries`, exactly as `UpdateLaneLineRenderers()` does for lanes.
 
+**Evaluated-geometry snapshot readout (`PlayerDebugRenderer`, debug-only):**
+
+`PlayerDebugRenderer` contains a compact once-per-second text overlay (bottom-left of the
+Game view) that prints the evaluated geometry values at the current `effectiveChartTimeMs`.
+Toggle `debugShowEvaluatedGeometrySnapshot` in the Inspector to enable it.  It does **not**
+require `DebugShowTouchBand` to be on.
+
+| Inspector field | Default | Effect |
+|---|---|---|
+| `debugShowEvaluatedGeometrySnapshot` | `false` | Enables the snapshot overlay in the bottom-left of the Game view. |
+| `debugSnapshotIntervalSeconds` | `1.0` | How often (seconds) the snapshot text is rebuilt. Clamped to ≥ 0.1 s. |
+
+Snapshot content (one rebuild per interval; cached `string` read every `OnGUI` frame):
+```
+--- EvalSnapshot @ 1234ms ---
+Arena[arena-a]:  arcStart=350.12°  sweep=60.00°  |  outer=0.412L  inner=0.212L  jdg=0.402L
+Frustum:  zInner=0.001  zOuter=0.150          ← only when arenaSurface is assigned
+Lane[lane-1]:  center=359.50°  width=20.00°  |  left=349.50°  right=9.50°
+```
+
+Data sources — all values come from the same single-source-of-truth path as gameplay:
+* **Arena fields**: `ChartRuntimeEvaluator.GetArena(0)` + `PlayfieldTransform.NormRadiusToLocal`.
+* **`jdg` (judgementRadiusLocal)**: `ArenaHitTester.ComputeHitBandLocal` — identical formula to `JudgementRingRenderer`, `UpdateHitBandArcs`, and `JudgementEngine`.
+* **Frustum Z**: `PlayerDebugArenaSurface.FrustumHeightInner/Outer` (visual only; hidden when `arenaSurface` is not wired in the Inspector).
+* **Lane fields**: `ChartRuntimeEvaluator.TryGetLane("lane-1", ...)`, falling back to index 0.
+
+Allocation policy: `_snapshotSb` (`StringBuilder`, capacity 512) is pre-allocated in `Awake`
+and reused via `Length = 0` on each rebuild.  The only GC allocation per interval is the
+final `StringBuilder.ToString()` call.  **No per-frame heap allocation.**
+
+Use this overlay to verify:
+* `arcStartDeg` / lane `centerDeg` animate smoothly on wrap-torture charts (e.g. 350→10→350°).
+* `outerLocal` / `jdg` change over time on radius-breathing charts.
+* The snapshot text does **not** update every frame (watch the timestamp — it advances in ≥ 1 s steps).
+
 **Judgement ring radius — single source of truth:** All of the following compute
 `judgementR = outerLocal − JudgementInsetNorm × minDimLocal` via the same path:
 * `JudgementRingRenderer` → `NoteApproachMath.JudgementRadius()`
