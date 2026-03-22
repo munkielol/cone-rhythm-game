@@ -594,6 +594,18 @@ and `PlayerDebugRenderer` also consume evaluated geometry and animate with track
   Disabling then re-enabling the component mid-song causes meshes to snap to the current
   evaluated state immediately (watermarks are reset in `OnEnable`).
 
+  **Debug visibility toggles (Inspector, `PlayerDebugArenaSurface`):**
+
+  | Toggle | Default | Effect |
+  |---|---|---|
+  | `forceHideArenaSurfaceMesh` | `false` | Hides the grey fill mesh (`MeshRenderer.enabled = false` per arena child) while evaluation, mesh updates, and debug line overlays continue running. Use this to see lane/hitband debug lines without the opaque surface obscuring them. Does **not** affect chart evaluation or hit-testing. |
+  | `forceDisableArenaSurfaceCollider` | `false` | Disables the `MeshCollider` (`Collider.enabled = false`) so parallax-correct visual-surface raycasts (spec §5.2.1) do not hit the arena mesh. Leave false when testing the visual-surface input path. |
+
+  Both toggles work by controlling `Renderer.enabled` / `Collider.enabled` on arena child GOs.
+  Child GOs are **never** disabled via `SetActive` — that would conflict with per-frame evaluation.
+  `MeshCollider.sharedMesh` is only assigned after the first valid mesh build (`HasValidGeometry = true`);
+  assigning a zero-vertex placeholder to PhysX causes "cleaning the mesh failed" warnings.
+
 * `PlayerDebugRenderer.UpdateArenaLineRenderers()` repositions the arena arc outlines
   [outer arc, inner arc, start/end rays, judgement ring] every frame from the current
   `DebugArenaGeometries`, exactly as `UpdateLaneLineRenderers()` does for lanes.

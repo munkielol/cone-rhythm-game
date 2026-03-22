@@ -176,7 +176,7 @@ MonoBehaviour:
   visualSurfaceLayerMask:
     serializedVersion: 2
     m_Bits: 64
-  visualSurfaceRoot: {fileID: 0}
+  visualSurfaceRoot: {fileID: 412451163}
   debugLogScoreEachJudgement: 0
 --- !u!1 &58450156
 GameObject:
@@ -345,6 +345,8 @@ MonoBehaviour:
   frustumHeightInner: 4
   frustumHeightOuter: 0
   materialOverride: {fileID: 0}
+  forceHideArenaSurfaceMesh: 1
+  forceDisableArenaSurfaceCollider: 1
 --- !u!4 &412451163
 Transform:
   m_ObjectHideFlags: 0

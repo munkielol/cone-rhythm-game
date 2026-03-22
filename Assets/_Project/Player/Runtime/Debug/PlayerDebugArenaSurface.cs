@@ -10,11 +10,26 @@
 // outerRadius, bandThickness, center) in real time, consistent with all other visual
 // overlays (spec §5.9).
 //
-// --- Why per-frame instead of one-shot ---
-// The previous version built meshes once at the first LateUpdate when the controller
-// was ready, then set _built=true and never updated again.  That caused arena meshes
-// to be frozen at time-0 geometry while lane arcs and judgement-ring renderers animated.
-// Now UpdateArenaMeshes() runs every LateUpdate and rebuilds only on change.
+// --- Visibility toggles ---
+// forceHideArenaSurfaceMesh disables MeshRenderer.enabled per arena child — it does not
+// fight with UpdateArenaMeshes because we never use SetActive for the hide toggle.
+// Child GOs remain active at all times; only Renderer.enabled and Collider.enabled change.
+//
+// --- Why child GOs stay active ---
+// Previously the code called state.ChildGo.SetActive(ea.EnabledBool) each frame, which
+// conflicted with any Inspector-level hide attempt.  Now:
+//   • spec §5.6 disabled arenas → Renderer.enabled = false + Collider.enabled = false
+//   • forceHideArenaSurfaceMesh → Renderer.enabled = false (Collider unaffected by default)
+//   • forceDisableArenaSurfaceCollider → Collider.enabled = false
+// This means toggling forceHideArenaSurfaceMesh in the Inspector has instant effect.
+//
+// --- PhysX "cleaning the mesh failed" fix ---
+// The warning occurred because CreateArenaMeshState assigned the MeshCollider
+// sharedMesh before any real geometry existed (the placeholder mesh had all vertices at
+// Vector3.zero, producing degenerate zero-area triangles that PhysX cannot cook).
+// Fix: sharedMesh is only assigned after the first successful RebuildArenaVertices call.
+// The ArenaMeshState.HasValidGeometry flag guards this; collider.enabled is forced false
+// until valid geometry exists.
 //
 // --- Vertex space ---
 // PlayfieldRoot local XY defines the ring positions; local Z gives the frustum height.
@@ -35,6 +50,7 @@
 // Each arc segment forms a quad from two CCW triangles (winding from +localZ):
 //   Tri 1: inner[i] → outer[i]   → inner[i+1]
 //   Tri 2: outer[i] → outer[i+1] → inner[i+1]
+// Triangle indices are static (set once at creation); only vertex positions change.
 //
 // --- Allocation policy ---
 // Per-arena vertex arrays (Vector3[(arcSegments+1)*2]) are pre-allocated lazily on first
@@ -47,11 +63,11 @@
 //   3. Assign PlayerAppController reference in the Inspector.
 //   4. (Optional) assign a Material to materialOverride.
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using RhythmicFlow.Shared;
-using System;
 
 namespace RhythmicFlow.Player
 {
@@ -96,23 +112,45 @@ namespace RhythmicFlow.Player
                  "Assign a transparent material here for a see-through surface.")]
         [SerializeField] private Material materialOverride;
 
+        [Header("Visibility (DEBUG)")]
+
+        [Tooltip("When true, the grey arena fill mesh is hidden (MeshRenderer.enabled = false " +
+                 "per arena child) while evaluation and debug line renderers continue running. " +
+                 "Toggle this to see through the surface to the lane/hitband overlays. " +
+                 "Does NOT affect hit-testing or chart evaluation. See spec §5.8 debug toggles.")]
+        [SerializeField] private bool forceHideArenaSurfaceMesh = false;
+
+        [Tooltip("When true, the MeshCollider is also disabled. This prevents visual-surface " +
+                 "raycasts (spec §5.2.1) from hitting the arena surface mesh. Leave false if " +
+                 "you rely on the parallax-correct input path for touch testing.")]
+        [SerializeField] private bool forceDisableArenaSurfaceCollider = false;
+
         // -------------------------------------------------------------------
         // Per-arena mutable state (one instance created lazily per arena)
         // -------------------------------------------------------------------
 
         // Holds all mutable runtime data for a single arena's mesh.
         // Created lazily when an arena is first encountered in the evaluator.
-        // All reference-type fields (GO, Mesh, Collider) are allocated once and reused.
+        // All reference-type fields (GO, Mesh, Renderer, Collider) are allocated once.
         private sealed class ArenaMeshState
         {
             // Scene objects — created once per arena, never recreated unless arcSegments changes.
-            public GameObject   ChildGo;   // Child GO with MeshFilter + MeshRenderer + MeshCollider.
+            public GameObject   ChildGo;   // Child GO; always kept active; visibility via Renderer.enabled.
             public Mesh         Mesh;      // Runtime mesh; vertices updated in-place on each rebuild.
-            public MeshCollider Collider;  // Kept in sync so parallax raycast (spec §5.2.1) stays accurate.
+            public MeshRenderer Renderer;  // Controlled by forceHideArenaSurfaceMesh + EnabledBool.
+            public MeshCollider Collider;  // Controlled by forceDisableArenaSurfaceCollider + HasValidGeometry.
 
             // Pre-allocated vertex scratch: length = (arcSegments+1)*2 per arena.
             // Filled in-place during a vertex rebuild — zero per-frame heap allocation.
             public Vector3[] VertexScratch;
+
+            // True once the first successful RebuildArenaVertices has produced valid geometry.
+            // The MeshCollider sharedMesh is only assigned when this is true, preventing the
+            // PhysX "cleaning the mesh failed" warning that occurs with zero-vertex placeholders.
+            public bool HasValidGeometry;
+
+            // Rate-limit flag: logs at most one collider-skip warning per arena per session.
+            public bool HasLoggedColliderSkipWarning;
 
             // Change-detection watermarks for the nine parameters that drive vertex positions.
             // Initialized to float.MaxValue so the first LateUpdate always triggers an initial build.
@@ -202,8 +240,14 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         // Iterates all arenas from the evaluator each LateUpdate.
-        // Uses the evaluator directly (not DebugArenaGeometries) so that disabled arenas
-        // can have their child GOs hidden — disabled arenas are absent from _arenaGeos.
+        // Uses the evaluator directly (not DebugArenaGeometries) so that arenas disabled
+        // by chart tracks can have their mesh hidden via Renderer.enabled rather than
+        // SetActive, which would conflict with external visibility toggles.
+        //
+        // Child GOs remain active at all times.  Visibility is controlled by:
+        //   Renderer.enabled = ea.EnabledBool && !forceHideArenaSurfaceMesh
+        //   Collider.enabled = ea.EnabledBool && !forceDisableArenaSurfaceCollider && HasValidGeometry
+        //
         // Rebuilds each arena's mesh vertices in-place only when a geometry parameter
         // has changed past the epsilon threshold (avoids heavy work on static charts).
         private void UpdateArenaMeshes()
@@ -233,7 +277,7 @@ namespace RhythmicFlow.Player
                 // Lazy-create per-arena state the first time this arena is encountered.
                 if (!_arenaStates.TryGetValue(ea.ArenaId, out ArenaMeshState state))
                 {
-                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat, pfRoot);
+                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat);
                     _arenaStates[ea.ArenaId] = state;
                 }
                 else if (state.VertexScratch.Length != vertCount)
@@ -241,13 +285,29 @@ namespace RhythmicFlow.Player
                     // arcSegments was changed at runtime (Inspector edit) — recreate entirely.
                     Destroy(state.Mesh);
                     if (state.ChildGo != null) { Destroy(state.ChildGo); }
-                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat, pfRoot);
+                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat);
                     _arenaStates[ea.ArenaId] = state;
                 }
 
-                // Follow spec §5.6: disabled arenas hide their visual entirely.
-                state.ChildGo.SetActive(ea.EnabledBool);
-                if (!ea.EnabledBool) { continue; }
+                // ── Visibility: Renderer and Collider, NOT SetActive ─────────────────────────
+                // Child GO stays active so mesh updates can run regardless of visible state.
+                // Using SetActive here would conflict with forceHideArenaSurfaceMesh because
+                // this code runs every frame and would immediately re-enable a hidden GO.
+                //
+                // spec §5.6: disabled arenas have their visual hidden (Renderer off) and
+                // collider disabled (no raycasts).
+                bool arenaEnabled   = ea.EnabledBool;
+                bool showRenderer   = arenaEnabled && !forceHideArenaSurfaceMesh;
+                // Collider only activates once valid geometry has been built (see HasValidGeometry).
+                bool showCollider   = arenaEnabled && !forceDisableArenaSurfaceCollider
+                                      && state.HasValidGeometry;
+
+                state.Renderer.enabled = showRenderer;
+                state.Collider.enabled = showCollider;
+
+                // Skip geometry updates for disabled arenas — their mesh doesn't need to be
+                // current since the collider is off and no raycasts will hit it.
+                if (!arenaEnabled) { continue; }
 
                 // ── Derive vertex parameters ────────────────────────────────────────────────
                 float outerLocal       = pfT.NormRadiusToLocal(ea.OuterRadiusNorm);
@@ -284,9 +344,13 @@ namespace RhythmicFlow.Player
                 if (!changed) { continue; }
 
                 // ── Rebuild vertices in-place ───────────────────────────────────────────────
-                RebuildArenaVertices(state, ea.ArcStartDeg, ea.ArcSweepDeg,
+                RebuildArenaVertices(state, ea.ArenaId, ea.ArcStartDeg, ea.ArcSweepDeg,
                     center, innerLocal, visualOuterLocal,
                     effectiveZInner, effectiveZOuter, N, pfRoot);
+
+                // Re-evaluate collider enable now that HasValidGeometry may have changed.
+                state.Collider.enabled = arenaEnabled && !forceDisableArenaSurfaceCollider
+                                         && state.HasValidGeometry;
 
                 // ── Update watermarks ───────────────────────────────────────────────────────
                 state.LastOuterLocal       = outerLocal;
@@ -302,10 +366,16 @@ namespace RhythmicFlow.Player
         }
 
         // Fills VertexScratch in-place from the supplied geometry, then assigns the array
-        // to the mesh and refreshes bounds, normals, and the MeshCollider.
+        // to the mesh and refreshes bounds and normals.
+        //
+        // Collider assignment is deferred until IsGeometryValidForCollider() passes.
+        // This prevents the PhysX "cleaning the mesh failed" warning that occurs when
+        // the collider is updated with degenerate (zero-area) geometry.
+        //
         // Only called when change detection determines a rebuild is necessary.
         private void RebuildArenaVertices(
             ArenaMeshState state,
+            string         arenaId,
             float arcStartDeg, float arcSweepDeg,
             Vector2 center,
             float innerLocal, float visualOuterLocal,
@@ -340,11 +410,96 @@ namespace RhythmicFlow.Player
             state.Mesh.RecalculateBounds();
             state.Mesh.RecalculateNormals();
 
-            // Refresh the MeshCollider so parallax raycasts (spec §5.2.1) remain accurate
-            // after the vertices change.  Setting sharedMesh = null first forces Unity to
-            // rebuild the internal BVH from the updated vertex data.
-            state.Collider.sharedMesh = null;
-            state.Collider.sharedMesh = state.Mesh;
+            // Validate before touching the MeshCollider.
+            // Degenerate geometry (zero/negative radii, near-zero sweep, or NaN vertices)
+            // causes PhysX mesh cooking to fail with "cleaning the mesh failed" in the console.
+            // We skip the collider update and mark HasValidGeometry = false when invalid,
+            // rather than forwarding bad data to PhysX.
+            bool valid = IsGeometryValidForCollider(state, arenaId,
+                innerLocal, visualOuterLocal, arcSweepDeg, N);
+
+            state.HasValidGeometry = valid;
+
+            if (valid)
+            {
+                // Refresh the MeshCollider so parallax raycasts (spec §5.2.1) remain accurate
+                // after the vertices change.  Setting sharedMesh = null first forces Unity to
+                // rebuild the internal BVH from the updated vertex data.
+                state.Collider.sharedMesh = null;
+                state.Collider.sharedMesh = state.Mesh;
+            }
+        }
+
+        // Lightweight validation: checks the conditions that most commonly cause PhysX to
+        // fail mesh cooking without iterating every vertex (allocation-free).
+        //
+        // Checks (in order of cost — cheapest first):
+        //   1. arcSweepDeg > threshold   — near-zero sweep → all quads degenerate
+        //   2. innerLocal > 0            — zero/negative inner radius → degenerate ring
+        //   3. visualOuterLocal > inner  — outer must exceed inner
+        //   4. First vertex of each ring for NaN/Infinity (spot-check — catches pfRoot NaN)
+        //
+        // Logs at most once per arena per session (HasLoggedColliderSkipWarning guard).
+        private bool IsGeometryValidForCollider(
+            ArenaMeshState state,
+            string         arenaId,
+            float innerLocal, float visualOuterLocal,
+            float arcSweepDeg, int N)
+        {
+            // 1. Arc sweep must be at least a few degrees to avoid zero-area quads.
+            if (arcSweepDeg < 0.1f)
+            {
+                LogColliderSkipOnce(state, arenaId,
+                    $"arcSweepDeg={arcSweepDeg:F3} < 0.1 — degenerate sweep");
+                return false;
+            }
+
+            // 2. Inner radius must be positive (a ring with innerLocal <= 0 collapses to a disk
+            //    or inverts, producing overlapping triangles that PhysX cannot cook).
+            if (innerLocal <= 0f)
+            {
+                LogColliderSkipOnce(state, arenaId,
+                    $"innerLocal={innerLocal:F4} <= 0 — degenerate ring");
+                return false;
+            }
+
+            // 3. Outer must exceed inner so the band has positive radial width.
+            if (visualOuterLocal <= innerLocal)
+            {
+                LogColliderSkipOnce(state, arenaId,
+                    $"visualOuterLocal={visualOuterLocal:F4} <= innerLocal={innerLocal:F4}");
+                return false;
+            }
+
+            // 4. Spot-check first vertex of inner ring and first vertex of outer ring.
+            //    If pfRoot has a NaN transform, all vertices will be NaN.
+            Vector3 v0 = state.VertexScratch[0];       // first inner vertex
+            Vector3 v1 = state.VertexScratch[N + 1];   // first outer vertex
+
+            if (HasNaNOrInfinity(v0) || HasNaNOrInfinity(v1))
+            {
+                LogColliderSkipOnce(state, arenaId,
+                    $"vertex NaN/Infinity detected (v[0]={v0}, v[{N + 1}]={v1})");
+                return false;
+            }
+
+            return true;
+        }
+
+        // True if any component of v is NaN or Infinity.
+        private static bool HasNaNOrInfinity(Vector3 v)
+        {
+            return float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z)
+                || float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z);
+        }
+
+        // Logs a warning once per arena per session to avoid console spam.
+        private static void LogColliderSkipOnce(ArenaMeshState state, string arenaId, string reason)
+        {
+            if (state.HasLoggedColliderSkipWarning) { return; }
+            state.HasLoggedColliderSkipWarning = true;
+            Debug.LogWarning($"[ArenaSurface] Skipping collider update for '{arenaId}': {reason}. " +
+                             "MeshCollider will be enabled once geometry is valid.");
         }
 
         // -------------------------------------------------------------------
@@ -354,8 +509,14 @@ namespace RhythmicFlow.Player
         // Creates the child GO, Mesh, and all pre-allocated buffers for a new arena.
         // Triangles and UVs depend only on N (arcSegments), not on geometry, so they
         // are written once here and never change.
+        //
+        // IMPORTANT: MeshCollider.sharedMesh is intentionally left null at creation.
+        // The placeholder mesh has all vertices at Vector3.zero (degenerate), which causes
+        // PhysX to log "cleaning the mesh failed" if assigned to a MeshCollider.
+        // The collider is only populated after the first successful RebuildArenaVertices call
+        // (indicated by ArenaMeshState.HasValidGeometry = true).
         private ArenaMeshState CreateArenaMeshState(
-            string arenaId, int vertCount, Material mat, Transform pfRoot)
+            string arenaId, int vertCount, Material mat)
         {
             int N = (vertCount / 2) - 1; // inverse of: vertCount = (N+1)*2
 
@@ -389,13 +550,15 @@ namespace RhythmicFlow.Player
                 uvs[N + 1 + i] = new Vector2(t, 1f);
             }
 
-            // --- Mesh (placeholder vertices overwritten on first RebuildArenaVertices call) ---
+            // --- Mesh (placeholder vertices — overwritten on first RebuildArenaVertices call) ---
+            // Do NOT assign to MeshCollider yet; placeholder vertices are all Vector3.zero
+            // (degenerate) and would trigger PhysX "cleaning the mesh failed" warnings.
             var mesh = new Mesh
             {
                 name      = $"ArenaSurface_{arenaId}",
                 hideFlags = HideFlags.HideAndDontSave,
             };
-            mesh.vertices  = new Vector3[vertCount];
+            mesh.vertices  = new Vector3[vertCount]; // zeroed placeholder; real data written on rebuild
             mesh.uv        = uvs;
             mesh.triangles = triangles;
             mesh.RecalculateBounds();
@@ -412,16 +575,25 @@ namespace RhythmicFlow.Player
             mf.sharedMesh     = mesh;
             mr.sharedMaterial = mat;
 
+            // Apply current hide toggle immediately so the mesh doesn't flash visible on
+            // the frame it's created (before the first RebuildArenaVertices call).
+            mr.enabled = !forceHideArenaSurfaceMesh;
+
             // MeshCollider for parallax-correct input raycast (spec §5.2.1).
+            // sharedMesh intentionally left null — assigned after first valid rebuild.
             var mc = go.AddComponent<MeshCollider>();
-            mc.sharedMesh = mesh;
+            mc.enabled    = false; // disabled until HasValidGeometry is true
+            mc.sharedMesh = null;  // explicit: no mesh until first valid rebuild
 
             return new ArenaMeshState
             {
                 ChildGo       = go,
                 Mesh          = mesh,
+                Renderer      = mr,
                 Collider      = mc,
                 VertexScratch = new Vector3[vertCount],
+                HasValidGeometry              = false,
+                HasLoggedColliderSkipWarning  = false,
                 // Watermarks default to float.MaxValue (set in class field initializers),
                 // guaranteeing an initial RebuildArenaVertices call on the very first frame.
             };
