@@ -1,6 +1,6 @@
 # **Rhythm Game Chart Editor v0 Specification**
 
-**Document version:** 0.3 (v0 Claude-ready)  
+**Document version:** 0.4 (v0 Claude-ready)
 **Primary goal:** Provide a Windows Unity editor to author charts and export playable `.rpk` song packs for the mobile player app.  
 **Core principle:** Everything is authored in **timeMs** (integer milliseconds). Beat/grid tooling is **derived** from the tempo map and used only for editor UX.
 
@@ -88,22 +88,20 @@ Tempo is stored as non-overlapping segments sorted by `startTimeMs`.
   * click a lane to set “active lane” for placement
 * (v0) May be rendered as 2D top-down; a 3D preview is optional and can be added later.
 
-**Shared evaluation utilities (available for Playfield Preview):**
+**Shared evaluation utilities (required for Playfield Preview):**
 
-The chart editor Playfield Preview **should** reuse the same Shared evaluation infrastructure as the player:
+The chart editor Playfield Preview **must** reuse the same Shared evaluation infrastructure as the player app. Do not reimplement keyframe evaluation, approach math, or geometry formulas in editor-only code — doing so creates divergence that can only be caught at runtime.
 
 * `ChartRuntimeEvaluator` (`Assets/_Project/Shared/Runtime/Evaluation/ChartRuntimeEvaluator.cs`) —
   call `Evaluate(playheadMs)` each update to sample all arena/lane/camera geometry with zero allocations.
   Returns `EvaluatedArena[]` and `EvaluatedLane[]` (pre-allocated arrays; safe to call every frame).
-* `NoteApproachMath` (`Assets/_Project/Shared/Runtime/Evaluation/NoteApproachMath.cs`) —
-  static helpers for `JudgementRadius`, `ApproachRadius`, `FrustumZAtRadius`, `LaneChordWidthAtRadius`, etc.
-  Use these when rendering note approach previews in the Playfield Preview so the visual matches the player exactly.
+* `NoteApproachMath` (`Assets/_Project/Shared/Runtime/Evaluation/NoteApproachMath.cs`) — **parity-critical.**
+  Static helpers for `JudgementRadius`, `ApproachRadius`, `FrustumZAtRadius`, `LaneChordWidthAtRadius`, etc.
+  These must be used for all note approach rendering in the preview so the visual matches the player exactly.
+  Any formula in the preview that differs from these helpers is a bug.
 * `EvaluatedArena` / `EvaluatedLane` / `EvaluatedCamera` structs
   (`Assets/_Project/Shared/Runtime/Evaluation/EvaluatedGeometry.cs`) —
   fully evaluated per-frame state; no keyframe math required after `Evaluate()`.
-
-Using these Shared utilities ensures the chart editor preview is **pixel-accurate** with the player's
-runtime geometry at all times, with no duplication of keyframe interpolation logic.
 
 **Arena surface mesh in the preview must animate:**
 The arena surface mesh (cone/frustum sector) must be rebuilt whenever evaluated arena parameters
@@ -112,6 +110,27 @@ bandThickness, arcStartDeg, arcSweepDeg, center against watermarks; rebuild vert
 change).  A preview that builds the mesh once at `t=0` and never updates it will show lane overlays
 animating while the surface stays frozen — the same bug that existed in the player debug scaffolding
 before it was fixed.
+
+**Note body rendering in the Playfield Preview:**
+
+The Playfield Preview must render note bodies using the same geometry rules as the player app. The goal is pixel-accurate preview fidelity so charters see exactly what players will see.
+
+* **Note head width** — use `NoteApproachMath.LaneChordWidthAtRadius(r, halfWidthDeg) × noteLaneWidthRatio`. Must be computed per-frame from the current evaluated lane geometry, not baked at a fixed width.
+* **Note head Z (frustum placement)** — use `NoteApproachMath.FrustumZAtRadius` with the same frustum parameters as the player arena surface. Notes must sit on the cone surface, not hover flat at Z=0.
+* **Approach radius** — use `NoteApproachMath.ApproachRadius` with the same `noteLeadTimeMs` (2000 ms) and `spawnRadiusFactor` (0) as the player renderers.
+* **Flick notes** — show a direction arrow overlay consistent with the flick arrow billboard spec (player spec §5.7.2). The arrow must point in the gesture direction (§player spec §7.3.1) and remain constant size (not scale with lane width).
+* **Hold bodies** — use the ribbon geometry rules from player spec §5.7.1 (approach formula, trapezoid shape, three-phase visibility, color/state mapping).
+
+**Implementation approach:** The chart editor playfield preview can directly reference and instantiate `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer`, and `NoteSkinSet` from the Player assembly (or Shared equivalents when factored out). This eliminates code duplication and ensures automatic parity.
+
+**Note skin preview:**
+The Playfield Preview should reflect the production `NoteSkinSet` appearance:
+* Lane-width-aware note bodies with the skin's `noteLaneWidthRatio`.
+* Fixed-edge + tiled-center texture layout (player spec §5.7.3) — if the note head texture has decorative borders, they must not stretch when lane width changes.
+* Flick arrow materials from the skin set (Up/Down/Left/Right materials as configured).
+* Hold ribbon color states (approaching / active / released) from `HoldBodyRenderer` color params.
+
+An abstract debug geometry view (outline-only quads, solid colors) is acceptable as an interim implementation step, but the target is full `NoteSkinSet`-driven visual fidelity.
 
 ### **3.4 Inspector / Properties panel**
 
@@ -357,9 +376,16 @@ In v0 the ribbon uses the **current lane geometry** (center angle, width) each f
 
 If the hold is **missed** (player never bound it) or **released early**, the ribbon continues to shrink geometrically until `endTimeMs` using a dim non-judging color (`holdColorReleased`). Judging stops immediately; the visual persists so the player can see the missed hold's extent. After `endTimeMs` the ribbon disappears.
 
-The ribbon is a **trapezoid**: lane borders are radial lines at `centerDeg ± widthDeg/2`, so the chord width at radius `r` is `2 · r · sin(widthDeg/2 · Deg2Rad)`. Head and tail sit at different radii and therefore have different widths. The `holdLaneWidthRatio` (skin parameter, default 0.7) scales both widths uniformly (1.0 = exact lane border width).
+The ribbon is a **trapezoid** (v0 single-segment): lane borders are radial lines at `centerDeg ± widthDeg/2`, so the chord width at radius `r` is `2 · r · sin(widthDeg/2 · Deg2Rad)`. Head and tail sit at different radii and therefore have different widths. The `holdLaneWidthRatio` (skin parameter, default 0.7) scales both widths uniformly (1.0 = exact lane border width).
 
 Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear at the inner band edge (`innerLocal`) and travel outward.
+
+**Hold skin philosophy (v0 target, applies to player + playtest preview):**
+Hold ribbon skins follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3):
+* Decorative side borders preserve their art at fixed UV-mapped widths regardless of lane width changes.
+* The center region tiles or safely stretches between the borders.
+* The ribbon tiles along the radial (length) direction rather than stretching, keeping art stable across different hold durations.
+The chart editor playtest should render hold bodies via `HoldBodyRenderer` (or a shared equivalent) so the preview reflects this skin fidelity.
 
 ---
 

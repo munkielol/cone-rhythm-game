@@ -1,6 +1,6 @@
 # **Rhythm Game Player App v0 Specification** 
 
-**Document version:** 0.3 (v0 Claude-ready)  
+**Document version:** 0.4 (v0 Claude-ready)
 **Primary goal:** Play `.rpk` song packs end-to-end on mobile to validate feel, timing, input, and visuals.  
 **v0 scope:** Core gameplay only. No meta systems (accounts/story/events/currency).
 
@@ -433,29 +433,70 @@ See §8.3.1 for the default values of all hit-band and visual parameters.
 
 ### **5.7 Note visuals**
 
-* Notes visually occupy the **entire lane width** at that time (expands/contracts with lane width).
-* Applies to tap/flick/catch/hold heads (and holds stretch along approach direction).
+#### **5.7.0 Design direction (v0 and target)**
 
-**Tap / Flick / Catch note heads — production renderer:**
+**Note body geometry goal:**
+Note bodies for all types (Tap, Catch, Flick, Hold) must be:
+* **Lane-width-aware** — width at any approach radius equals `LaneChordWidthAtRadius(r, widthDeg/2) × widthRatio`, computed per-frame from the current evaluated lane geometry.
+* **Frustum-conforming** — note head Z is lifted onto the cone/frustum surface via `NoteApproachMath.FrustumZAtRadius`, matching the arena surface mesh geometry.
+* **Width-stable under lane animation** — the note head width tracks lane width changes smoothly, without popping.
 
-Implemented by `NoteApproachRenderer` (`Assets/_Project/Player/Runtime/Visuals/NoteApproachRenderer.cs`).
-Draws a trapezoid mesh per visible note using the same canonical approach formula as hold ribbons (§5.7.1 / §6.1).
-Delegates all geometry to `NoteApproachMath` (Shared).
+**Target geometry direction (beyond v0 step 1):**
+The intended final direction is **exact lane-curve-following**: note head caps follow the arc of the lane at their current radius, forming curved-edge quads rather than straight-chord approximations. This is reached incrementally:
+* **v0 step 1 (current):** Single-segment trapezoid. One chord per cap edge. Acceptable for straight or nearly-straight lanes; visually readable at v0 polish level.
+* **v0+ target:** Segmented curved-cap geometry — each cap edge subdivided into N arc segments matching the lane's angular extent. Approaches exact arc-following as N increases.
+
+When implementing the curved-cap upgrade, the note head geometry builder should be isolated from the renderer so both the Player and Chart Editor Preview can share it (see §5.9, §5.7.3).
+
+**Note skin goal:**
+The preferred skin workflow is **texture/PNG-driven, not material-only authoring**. Materials define the shader and rendering template; the primary artistic content is textures assigned to them. The skin system must keep visual identity stable under variable lane width — see §5.7.3 for the full skin philosophy.
+
+**Note body occupancy:**
+Notes visually occupy a fraction of the lane width controlled by `noteLaneWidthRatio` in `NoteSkinSet` (default 0.9). This applies to all note types including hold bodies (`holdLaneWidthRatio`).
+
+#### **5.7.a Tap / Catch / Flick note heads — production renderers**
+
+Three separate MonoBehaviours, each handling one note type, driven by a `NoteSkinSet` ScriptableObject:
+
+| Renderer | Script | Note type |
+|---|---|---|
+| `TapNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/TapNoteRenderer.cs` | `NoteType.Tap` |
+| `CatchNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/CatchNoteRenderer.cs` | `NoteType.Catch` |
+| `FlickNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/FlickNoteRenderer.cs` | `NoteType.Flick` |
+
+All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each). Vertices are overwritten in-place each frame — zero per-frame GC allocation. Current v0 geometry is a single-segment trapezoid (§5.7.0 step 1).
+
+**`NoteSkinSet` ScriptableObject** (`Assets/_Project/Player/Runtime/Skins/NoteSkinSet.cs`):
+
+Create via **Assets → Create → RhythmicFlow → Note Skin Set**. Assign to `PlayerAppController.defaultSkinSet` in the Inspector.
+
+| Field | Type | Description |
+|---|---|---|
+| `tapMaterial` | `Material` | Tap note head material (shader template; assign tap texture to it) |
+| `catchMaterial` | `Material` | Catch note head material |
+| `flickBaseMaterialUpDown` | `Material` | Flick head — Up or Down direction |
+| `flickBaseMaterialLeftRight` | `Material` (optional) | Flick head — Left or Right; falls back to UpDown |
+| `flickArrowMaterialUp` | `Material` | Arrow quad — Up direction |
+| `flickArrowMaterialDown` | `Material` (optional) | Arrow quad — Down; falls back to Up (rotated 180°) |
+| `flickArrowMaterialLeft` | `Material` | Arrow quad — Left direction |
+| `flickArrowMaterialRight` | `Material` (optional) | Arrow quad — Right; falls back to Left (rotated 180°) |
+| `noteLaneWidthRatio` | `float` [0.1–1] | Head width as fraction of lane chord width. Default 0.9 |
+| `noteRadialHalfThicknessLocal` | `float` | Radial half-thickness of head trapezoid. Default 0.022 |
+| `arrowSizeLocal` | `float` | Constant arrow size — does **not** scale with lane width. Default 0.08 |
+| `arrowSurfaceOffsetLocal` | `float` | Z offset to lift arrow above note head. Default 0.003 |
+| `missedTintColor` | `Color` | `_Color` tint via MaterialPropertyBlock on missed notes. Default `(0.4, 0.4, 0.4, 0.55)` |
+
+**Geometry parameters (per-renderer Inspector fields):**
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `noteLeadTimeMs` | 2000 ms | Must match HoldBodyRenderer; notes appear this far before hit time |
-| `noteHalfThicknessLocal` | 0.022 | Radial half-thickness of the head quad in PlayfieldLocal units |
-| `noteWidthRatio` | 0.85 | Width as fraction of `LaneChordWidthAtRadius(r, halfWidthDeg)` |
+| `noteLeadTimeMs` | 2000 ms | Must match HoldBodyRenderer and PlayerDebugRenderer |
+| `spawnRadiusFactor` | 0 | Spawn at inner arc edge (v0 default) |
+| `useFrustumProfile` | true | Lift note heads onto frustum cone surface via `FrustumZAtRadius` |
+| `frustumHeightInner` | 0.001 | Local Z at inner ring edge (used when `arenaSurface` is not wired) |
+| `frustumHeightOuter` | 0.15 | Local Z at outer ring edge (used when `arenaSurface` is not wired) |
 
-**Colors (inspector-configurable defaults):**
-
-| Note type | Default color |
-|---|---|
-| Tap | White `(1, 1, 1, 0.95)` |
-| Flick | Amber `(1, 0.65, 0.1, 0.95)` |
-| Catch | Green `(0.3, 1, 0.4, 0.95)` |
-| Missed (tint) | Dim grey `(0.4, 0.4, 0.4, 0.55)` |
+**Bootstrap:** `PlayerAppController.BootstrapNoteRenderers()` (called from `Start()`) auto-adds all three renderers to the controller's GameObject and calls `Wire(ctrl, skinSet)` if `defaultSkinSet` is assigned. If renderers are already present (manually wired via Inspector), their assignments are left untouched.
 
 **Visibility rules:**
 * Hidden until `timeToHit ≤ noteLeadTimeMs`.
@@ -463,11 +504,14 @@ Delegates all geometry to `NoteApproachMath` (Shared).
 * Missed notes remain visible (dimmed by `missedTintColor`) until `timeToHit < −greatWindowMs`.
 * Hold notes are excluded — rendered by `HoldBodyRenderer`.
 
+**Transitional renderer (debug/prototyping only):**
+`NoteApproachRenderer` (`Assets/_Project/Player/Runtime/Visuals/NoteApproachRenderer.cs`) is a minimal single-material renderer (one `noteHeadMaterial` + per-type color tint). It predates the skin system and is retained for prototyping and debug comparison only. It is **not** the production rendering path and should not be used as the basis for new visual work.
+
 ### **5.7.1 Hold body rendering — scroll / long-note style (v0)**
 
 A hold note is rendered as a **ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note.
 
-**Approach formula (canonical, same as tap/flick, spec §6.1):**
+**Approach formula (canonical, same as tap/flick):**
 
 ```
 timeToHitMs = eventTimeMs − chartTimeMs
@@ -505,7 +549,7 @@ If `noteLeadTimeMs > noteLeadTimeMs_of_debug_renderer`, holds appear mid-approac
 
 The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartTime` advances through the hold, the head is pinned and the tail catches up — the ribbon shrinks until it disappears.
 
-**Ribbon geometry (trapezoid):**
+**Ribbon geometry (v0 — single-segment trapezoid):**
 
 * Direction: current `lane.CenterDeg` each frame (follows animated lane — no bending in v0).
 * Width: the ribbon is a **trapezoid** — head and tail have different widths because they sit at different radii. Lane borders are radial lines at `centerDeg ± widthDeg/2`; the chord between them at radius `r` is:
@@ -514,7 +558,7 @@ The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartT
   widthHead = width(headR)   (wider — farther from center)
   widthTail = width(tailR)   (narrower — closer to center)
   ```
-  `holdLaneWidthRatio ≈ 0.7` (skin parameter; 1.0 = exact lane border width).
+  `holdLaneWidthRatio` is a skin parameter (default 0.7; 1.0 = exact lane border width).
 * Vertex layout in PlayfieldRoot local space:
   ```
   tailLeft  = tailCenter − tangLocal × (widthTail / 2)
@@ -523,6 +567,13 @@ The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartT
   headLeft  = headCenter − tangLocal × (widthHead / 2)
   ```
 * Drawn via `Graphics.DrawMesh` — vertices written in-place into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
+
+**Target ribbon skin direction (v0+):**
+Hold body skins should progress toward the same philosophy as note head skins (§5.7.3):
+* **Decorative side borders** — fixed-width edge regions that preserve their art regardless of lane width changes. Authored as UV-mapped strips at the left/right edges of the ribbon texture.
+* **Tiled center** — the center region between the borders tiles (or safely stretches) in both width and length as the ribbon geometry changes.
+* **Non-destructive length mapping** — the ribbon texture along the radial direction tiles rather than stretches, so a thick hold does not compress the art into a smear.
+* The current v0 implementation uses flat color passes driven by `MaterialPropertyBlock._Color` per state. Texture-driven hold skins require a more sophisticated UV layout on the segmented ribbon mesh (a future v0+ task).
 
 **Visibility and missed-hold lifetime (v0 locked):**
 
@@ -549,6 +600,78 @@ Judging eligibility and visual lifetime are **decoupled**:
 
 **Implementation:** `HoldBodyRenderer` (`Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs`).
 Approach radius, frustum Z, and lane chord width computations delegate to `NoteApproachMath` (Shared).
+
+### **5.7.2 Flick arrow billboard (v0)**
+
+Each `FlickNoteRenderer` draws a second quad per flick note: a camera-facing direction arrow.
+
+**Direction convention:**
+The arrow points in the **gesture direction** — the same direction the player is expected to swipe (consistent with the flick basis vectors in §7.3.1). The texture's `+Y` axis aligns with the gesture direction vector in PlayfieldRoot local XY:
+
+| FlickDirection | Gesture meaning (§7.3.1) | dir2DLocal in PlayfieldRoot XY |
+|---|---|---|
+| `"U"` (Up) | Toward arena center | `(−cosθ, −sinθ)` — radial inward |
+| `"D"` (Down) | Away from arena center | `(cosθ, sinθ)` — radial outward |
+| `"L"` (Left) | Clockwise tangential | `(sinθ, −cosθ)` — CW tangent |
+| `"R"` (Right) | Counter-clockwise tangential | `(−sinθ, cosθ)` — CCW tangent |
+
+where `θ` = `laneCenterDeg` in radians.
+
+> **Implementation note (v0 transitional):** The current `FlickNoteRenderer.cs` has the U/D directions inverted relative to this table (U renders as radialOut, D as radialIn) and L/R tangent directions swapped. This is a known divergence — the spec above is the authoritative target. Align the renderer's `dir2DLocal` switch block in a follow-up task.
+
+**Arrow size:** `arrowSizeLocal` is constant — it does **not** scale with lane width. Flick arrows are readability elements, not lane-body elements; scaling them with narrow lanes would make them unreadable.
+
+**Up/Down visual family:** Up and Down arrows may share one material/texture and differ only by 180° rotation (achieved automatically by the billboard matrix). Left and Right may use distinct assets or also share-with-rotation.
+
+**Billboard construction:**
+
+A single unit-square mesh (`_arrowMesh`) is shared by all simultaneous arrows — shape never changes. Per-note orientation is encoded entirely in the `Matrix4x4` passed to `Graphics.DrawMesh`:
+
+```
+arrowUp    = pfRoot.TransformDirection(dir2DLocal)          // world
+arrowRight = Cross(arrowUp, −camForward).normalize          // world
+arrowNorm  = Cross(arrowRight, arrowUp)                     // world (faces camera)
+
+matrix = TRS(
+  pos:   pfRoot.TransformPoint(noteCenter + Z*surfaceOffset),
+  rot:   LookRotation(forward=arrowNorm, up=arrowUp),
+  scale: (arrowSizeLocal, arrowSizeLocal, 1)
+)
+```
+
+This requires zero per-frame mesh allocation and no arrow-specific pool.
+
+### **5.7.3 Note skin philosophy (v0 target)**
+
+The note skin system targets **texture/PNG-driven authoring** rather than material-per-variant authoring.
+
+**Core principle:** Materials are shader templates. The primary authoring artifacts are textures. A `NoteSkinSet` ScriptableObject wires textures (via Materials) to note types. Replacing the look of a note type means swapping its texture, not writing a new shader.
+
+**Fixed-edge + tiled-center body layout:**
+
+Note body textures are laid out in three regions along the note width axis:
+
+```
+[left-border | tiled-center | right-border]
+← fixed px →← scales with width →← fixed px →
+```
+
+* **Decorative border regions** — fixed width in texture space. Contain art (line detail, glow border, symbol). These must not stretch or compress as lane width changes.
+* **Tiled center region** — occupies the remaining center. Tiles horizontally (or safely stretches if art permits). An empty or gradient center is easiest to tile safely.
+
+This means that as lanes animate narrower or wider:
+* The border art remains stable (it is UV-mapped to fixed texcoord regions).
+* Only the center expands or contracts.
+* The overall note remains visually clean at any width.
+
+**Radial (length) axis for hold bodies:** The hold ribbon texture tiles along the radial (approach) direction rather than stretching. A consistent tile rate prevents hold bodies from looking "smeared" at different time lengths.
+
+**Implementation path:**
+* v0 current: flat color note heads via `_Color` MaterialPropertyBlock tinting. Border detail is minimal (material-driven).
+* v0 target: UV-mapped note head texture with fixed border + tiled center. Requires UV assignment on the trapezoid/curved-cap mesh at build time.
+* v0+ hold: segmented ribbon/grid mesh with UV layout supporting the fixed-border + tiled-center + tiled-length scheme.
+
+The skin geometry rules described above apply equally to the Chart Editor Playfield Preview (§chart_editor §3.3).
 
 ### **5.8) Judgement line / hit indicator (v0)**
 
@@ -657,6 +780,8 @@ and all its lane sub-arcs update in sync.
 
 ### **5.9) Runtime geometry evaluation pipeline (per-frame)**
 
+**Parity rule:** `ChartRuntimeEvaluator`, `NoteApproachMath`, and the `EvaluatedArena` / `EvaluatedLane` / `EvaluatedCamera` structs are **shared, parity-critical systems**. Both the Player App and the Chart Editor Playfield Preview must consume these — not reimplement them. Any change to evaluation logic must be applied once in `Assets/_Project/Shared/` and takes effect in both apps immediately.
+
 Arena, lane, and camera keyframe tracks are sampled **every frame** by `ChartRuntimeEvaluator`
 (`Assets/_Project/Shared/Runtime/Evaluation/ChartRuntimeEvaluator.cs`).
 `PlayerAppController.Update()` calls `_evaluator.Evaluate((int)chartTimeMs)` then
@@ -673,10 +798,12 @@ Arena, lane, and camera keyframe tracks are sampled **every frame** by `ChartRun
 * Camera keyframes are only applied to the scene camera when the chart has authored position keyframes
   (guard against snapping the camera to default on charts without camera animation).
 
-**Shared math utilities — `NoteApproachMath`**
+**Shared math utilities — `NoteApproachMath` (parity-critical)**
 (`Assets/_Project/Shared/Runtime/Evaluation/NoteApproachMath.cs`)
 
-Static, allocation-free helpers used by all renderers and the evaluator:
+These are **parity-critical** — the Player App and Chart Editor Playfield Preview must both use these helpers. Duplicating any of this logic in editor-side code creates divergence between the preview and the runtime. Any change to these formulas must be reflected in both apps simultaneously.
+
+Static, allocation-free helpers used by all renderers, the evaluator, and the chart editor preview:
 
 | Method | Purpose |
 |---|---|
