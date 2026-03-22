@@ -581,16 +581,10 @@ namespace RhythmicFlow.Player
 
         /// <summary>
         /// Maps time-to-event to a local radius (spec §6.1).
-        /// alpha = 1 − Clamp01(timeToHitMs / noteLeadTimeMs)
-        /// r     = Lerp(spawnR, judgementR, alpha)
+        /// Delegates to <see cref="NoteApproachMath.ApproachRadius"/> — single source of truth.
         /// </summary>
         private float ComputeApproachR(float timeToHitMs, float spawnR, float judgementR)
-        {
-            float alpha = (noteLeadTimeMs > 0)
-                ? 1f - Mathf.Clamp01(timeToHitMs / noteLeadTimeMs)
-                : 1f;
-            return Mathf.Lerp(spawnR, judgementR, alpha);
-        }
+            => NoteApproachMath.ApproachRadius(timeToHitMs, noteLeadTimeMs, spawnR, judgementR);
 
         // -------------------------------------------------------------------
         // Frustum Z helper — matches PlayerDebugRenderer.VisualOnlyLocalZ
@@ -598,12 +592,7 @@ namespace RhythmicFlow.Player
 
         /// <summary>
         /// Computes the PlayfieldRoot local Z for a ribbon endpoint at radius <paramref name="r"/>.
-        ///
-        /// Replicates <c>PlayerDebugRenderer.VisualOnlyLocalZ(s01)</c> exactly:
-        /// <code>
-        ///   s01    = Clamp01( (r − innerLocal) / (outerLocal − innerLocal) )
-        ///   localZ = Lerp( frustumHeightInner, frustumHeightOuter, s01 )
-        /// </code>
+        /// Delegates to <see cref="NoteApproachMath.FrustumZAtRadius"/> — single source of truth.
         ///
         /// When <see cref="arenaSurface"/> is assigned its values are used automatically,
         /// keeping the ribbon in sync with <see cref="PlayerDebugArenaSurface"/> without manual entry.
@@ -613,27 +602,16 @@ namespace RhythmicFlow.Player
         /// </summary>
         private float ComputeEndpointLocalZ(float r, float innerLocal, float outerLocal)
         {
-            // Determine whether to use the frustum profile at all.
             bool useProfile = (arenaSurface != null)
                 ? arenaSurface.UseFrustumProfile
                 : useFrustumProfile;
 
-            if (!useProfile)
-            {
-                // Flat ribbon: tiny constant lift just above the interaction plane.
-                return surfaceOffsetLocal;
-            }
+            if (!useProfile) { return surfaceOffsetLocal; }
 
-            // Read frustum heights — prefer live values from arenaSurface.
             float hInner = (arenaSurface != null) ? arenaSurface.FrustumHeightInner : frustumHeightInner;
             float hOuter = (arenaSurface != null) ? arenaSurface.FrustumHeightOuter : frustumHeightOuter;
 
-            // s01: normalised band position (0 = inner edge, 1 = outer edge).
-            float s01 = (outerLocal > innerLocal)
-                ? Mathf.Clamp01((r - innerLocal) / (outerLocal - innerLocal))
-                : 1f;
-
-            return Mathf.Lerp(hInner, hOuter, s01);
+            return NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter);
         }
 
         // -------------------------------------------------------------------
@@ -642,19 +620,10 @@ namespace RhythmicFlow.Player
 
         /// <summary>
         /// Computes the chord width of a lane at a given local radius.
-        ///
-        /// Lane borders are radial lines at <c>centerDeg ± halfWidthDeg</c>.
-        /// The straight-line chord between those borders at radius <paramref name="r"/> is:
-        /// <code>
-        ///   width = 2 · r · sin( halfWidthDeg · Deg2Rad )
-        /// </code>
-        /// This is the actual PlayfieldRoot-local width of the lane at that radius,
-        /// matching the border lines drawn by PlayerDebugRenderer.
+        /// Delegates to <see cref="NoteApproachMath.LaneChordWidthAtRadius"/> — single source of truth.
         /// </summary>
         private static float ComputeLaneWidthAtRadiusLocal(float r, float halfWidthDeg)
-        {
-            return 2f * r * Mathf.Sin(halfWidthDeg * Mathf.Deg2Rad);
-        }
+            => NoteApproachMath.LaneChordWidthAtRadius(r, halfWidthDeg);
 
         // -------------------------------------------------------------------
         // Debug draw helpers (no GC — only Debug.DrawLine calls)

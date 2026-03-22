@@ -4,8 +4,17 @@
 // Generates a solid ring-sector (annular arc band) mesh per arena so lanes appear
 // to sit on a visible cone/frustum track in the Game view.
 //
-// Geometry is read from PlayerAppController debug getters and is generated once
-// (v0 geometry is static).  Rebuilds automatically once the controller is ready.
+// Geometry is read from ChartRuntimeEvaluator via PlayerAppController.Evaluator each
+// LateUpdate and meshes are rebuilt only when evaluated arena parameters change past an
+// epsilon threshold.  This ensures the surface follows animated arena tracks (arcStartDeg,
+// outerRadius, bandThickness, center) in real time, consistent with all other visual
+// overlays (spec §5.9).
+//
+// --- Why per-frame instead of one-shot ---
+// The previous version built meshes once at the first LateUpdate when the controller
+// was ready, then set _built=true and never updated again.  That caused arena meshes
+// to be frozen at time-0 geometry while lane arcs and judgement-ring renderers animated.
+// Now UpdateArenaMeshes() runs every LateUpdate and rebuilds only on change.
 //
 // --- Vertex space ---
 // PlayfieldRoot local XY defines the ring positions; local Z gives the frustum height.
@@ -17,10 +26,8 @@
 // world position regardless of where the ArenaSurface GO is placed.
 //
 // --- Frustum profile ---
-// Inner arc vertices are at localZ = frustumHeightInner (default 0.001 — just above
-// the z=0 interaction plane to avoid z-fighting).
-// Outer arc vertices are at localZ = frustumHeightOuter (default 0.15 — tilts the
-// surface to create a cone/ramp effect).
+// Inner arc vertices are at localZ = frustumHeightInner (default 0.001).
+// Outer arc vertices are at localZ = frustumHeightOuter (default 0.15).
 // Hit-testing is always on the z=0 plane; these offsets are visual only.
 //
 // --- Triangulation ---
@@ -28,6 +35,11 @@
 // Each arc segment forms a quad from two CCW triangles (winding from +localZ):
 //   Tri 1: inner[i] → outer[i]   → inner[i+1]
 //   Tri 2: outer[i] → outer[i+1] → inner[i+1]
+//
+// --- Allocation policy ---
+// Per-arena vertex arrays (Vector3[(arcSegments+1)*2]) are pre-allocated lazily on first
+// encounter and reused in-place every rebuild.  Mesh and child GO instances are created
+// once per arena and updated in-place — no per-frame heap allocation.
 //
 // Wiring:
 //   1. Create empty GO "ArenaSurface" in PlayerBoot scene.
@@ -38,11 +50,15 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
+using RhythmicFlow.Shared;
+using System;
 
 namespace RhythmicFlow.Player
 {
     /// <summary>
     /// DEBUG SCAFFOLDING: Generates a solid cone/frustum-sector mesh per arena band.
+    /// Meshes follow animated arena tracks (arcStartDeg, outerRadius, etc.) by rebuilding
+    /// on geometry change each LateUpdate.
     /// Visual only — no effect on hit-testing or judgement.
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Debug/PlayerDebugArenaSurface")]
@@ -81,18 +97,48 @@ namespace RhythmicFlow.Player
         [SerializeField] private Material materialOverride;
 
         // -------------------------------------------------------------------
-        // Internal state
+        // Per-arena mutable state (one instance created lazily per arena)
         // -------------------------------------------------------------------
 
-        // Meshes created at runtime — tracked so they can be explicitly Destroyed
-        // in OnDestroy (sharedMesh is not destroyed with its MeshFilter's GO).
-        private readonly List<Mesh> _meshes = new List<Mesh>();
+        // Holds all mutable runtime data for a single arena's mesh.
+        // Created lazily when an arena is first encountered in the evaluator.
+        // All reference-type fields (GO, Mesh, Collider) are allocated once and reused.
+        private sealed class ArenaMeshState
+        {
+            // Scene objects — created once per arena, never recreated unless arcSegments changes.
+            public GameObject   ChildGo;   // Child GO with MeshFilter + MeshRenderer + MeshCollider.
+            public Mesh         Mesh;      // Runtime mesh; vertices updated in-place on each rebuild.
+            public MeshCollider Collider;  // Kept in sync so parallax raycast (spec §5.2.1) stays accurate.
 
-        // Runtime material created when materialOverride is null.
+            // Pre-allocated vertex scratch: length = (arcSegments+1)*2 per arena.
+            // Filled in-place during a vertex rebuild — zero per-frame heap allocation.
+            public Vector3[] VertexScratch;
+
+            // Change-detection watermarks for the nine parameters that drive vertex positions.
+            // Initialized to float.MaxValue so the first LateUpdate always triggers an initial build.
+            public float LastOuterLocal       = float.MaxValue;
+            public float LastInnerLocal       = float.MaxValue;
+            public float LastVisualOuterLocal = float.MaxValue;
+            public float LastCenterX          = float.MaxValue; // PlayfieldLocal units
+            public float LastCenterY          = float.MaxValue; // PlayfieldLocal units
+            public float LastArcStartDeg      = float.MaxValue;
+            public float LastArcSweepDeg      = float.MaxValue;
+            public float LastEffectiveZInner  = float.MaxValue; // accounts for useFrustumProfile toggle
+            public float LastEffectiveZOuter  = float.MaxValue;
+        }
+
+        // Keyed by arenaId — one entry per arena encountered in the evaluator.
+        private readonly Dictionary<string, ArenaMeshState> _arenaStates =
+            new Dictionary<string, ArenaMeshState>(StringComparer.Ordinal);
+
+        // Runtime material created on demand when materialOverride is null.
         private Material _runtimeMat;
 
-        // True after all arena meshes have been successfully generated.
-        private bool _built;
+        // Change-detection thresholds.
+        // Normalized radius units (~0.001 % of playfield width at epsilon 1e-5).
+        private const float GeomEpsilon  = 1e-5f;
+        // Degrees — 0.01° is sub-pixel at normal playfield sizes.
+        private const float AngleEpsilon = 0.01f;
 
         // -------------------------------------------------------------------
         // Public read-only API for PlayerDebugRenderer
@@ -112,127 +158,209 @@ namespace RhythmicFlow.Player
         // Unity lifecycle
         // -------------------------------------------------------------------
 
+        private void OnEnable()
+        {
+            // Reset all change-detection watermarks so the next LateUpdate immediately
+            // rebuilds every arena mesh to the current evaluated state.
+            // This ensures that disabling then re-enabling the component mid-song causes
+            // meshes to snap to the current geometry, not linger at a stale frame.
+            foreach (ArenaMeshState state in _arenaStates.Values)
+            {
+                state.LastOuterLocal       = float.MaxValue;
+                state.LastInnerLocal       = float.MaxValue;
+                state.LastVisualOuterLocal = float.MaxValue;
+                state.LastCenterX          = float.MaxValue;
+                state.LastCenterY          = float.MaxValue;
+                state.LastArcStartDeg      = float.MaxValue;
+                state.LastArcSweepDeg      = float.MaxValue;
+                state.LastEffectiveZInner  = float.MaxValue;
+                state.LastEffectiveZOuter  = float.MaxValue;
+            }
+        }
+
         private void LateUpdate()
         {
-            // Retry each LateUpdate until PlayerAppController geometry is ready.
-            // (Script execution order is not guaranteed, so Start() may run before
-            // the controller has finished its own Start().)
-            if (!_built) { TryBuildMeshes(); }
+            // Always run — UpdateArenaMeshes handles lazy creation and change-driven updates.
+            UpdateArenaMeshes();
         }
 
         private void OnDestroy()
         {
-            // Child GOs (mesh objects) are destroyed automatically as children of this GO.
-            // Meshes are separate assets and must be explicitly destroyed to prevent leaks.
-            foreach (Mesh m in _meshes)
+            // Child GOs are destroyed automatically as children of this GO.
+            // Mesh assets are separate runtime objects and must be explicitly destroyed
+            // to prevent memory leaks when the component is removed.
+            foreach (ArenaMeshState state in _arenaStates.Values)
             {
-                if (m != null) { Destroy(m); }
+                if (state.Mesh != null) { Destroy(state.Mesh); }
             }
 
             if (_runtimeMat != null) { Destroy(_runtimeMat); }
         }
 
         // -------------------------------------------------------------------
-        // Mesh generation (one-shot)
+        // Per-frame mesh update
         // -------------------------------------------------------------------
 
-        private void TryBuildMeshes()
+        // Iterates all arenas from the evaluator each LateUpdate.
+        // Uses the evaluator directly (not DebugArenaGeometries) so that disabled arenas
+        // can have their child GOs hidden — disabled arenas are absent from _arenaGeos.
+        // Rebuilds each arena's mesh vertices in-place only when a geometry parameter
+        // has changed past the epsilon threshold (avoids heavy work on static charts).
+        private void UpdateArenaMeshes()
         {
             if (playerAppController == null) { return; }
 
-            IReadOnlyDictionary<string, ArenaGeometry> arenas =
-                playerAppController.DebugArenaGeometries;
-            PlayfieldTransform pfT = playerAppController.DebugPlayfieldTransform;
+            ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
+            PlayfieldTransform    pfT       = playerAppController.DebugPlayfieldTransform;
+            Transform             pfRoot    = playerAppController.playfieldRoot;
 
-            // Controller hasn't finished Start() yet.
-            if (arenas == null || pfT == null) { return; }
+            // Evaluator and pfT are null until PlayerAppController.Start() completes.
+            if (evaluator == null || pfT == null || pfRoot == null) { return; }
 
             Material mat = materialOverride != null
                 ? materialOverride
                 : GetOrCreateRuntimeMaterial();
 
-            Transform pfRoot = playerAppController.playfieldRoot;
+            // Vertex count is the same for every arena (driven by arcSegments).
+            int N         = Mathf.Max(1, arcSegments);
+            int vertCount = (N + 1) * 2;
 
-            foreach (KeyValuePair<string, ArenaGeometry> kvp in arenas)
+            for (int i = 0; i < evaluator.ArenaCount; i++)
             {
-                BuildArenaMesh(kvp.Key, kvp.Value, pfT, pfRoot, mat);
-            }
+                EvaluatedArena ea = evaluator.GetArena(i);
+                if (string.IsNullOrEmpty(ea.ArenaId)) { continue; }
 
-            _built = true;
+                // Lazy-create per-arena state the first time this arena is encountered.
+                if (!_arenaStates.TryGetValue(ea.ArenaId, out ArenaMeshState state))
+                {
+                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat, pfRoot);
+                    _arenaStates[ea.ArenaId] = state;
+                }
+                else if (state.VertexScratch.Length != vertCount)
+                {
+                    // arcSegments was changed at runtime (Inspector edit) — recreate entirely.
+                    Destroy(state.Mesh);
+                    if (state.ChildGo != null) { Destroy(state.ChildGo); }
+                    state = CreateArenaMeshState(ea.ArenaId, vertCount, mat, pfRoot);
+                    _arenaStates[ea.ArenaId] = state;
+                }
+
+                // Follow spec §5.6: disabled arenas hide their visual entirely.
+                state.ChildGo.SetActive(ea.EnabledBool);
+                if (!ea.EnabledBool) { continue; }
+
+                // ── Derive vertex parameters ────────────────────────────────────────────────
+                float outerLocal       = pfT.NormRadiusToLocal(ea.OuterRadiusNorm);
+                float bandLocal        = pfT.NormRadiusToLocal(ea.BandThicknessNorm);
+                float innerLocal       = outerLocal - bandLocal;
+
+                // Visual outer rim extends beyond chart outerLocal. VISUAL ONLY.
+                float visualOuterLocal = outerLocal
+                    + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
+
+                // Arena center in PlayfieldRoot local XY (spec §5.5).
+                Vector2 center = pfT.NormalizedToLocal(new Vector2(ea.CenterXNorm, ea.CenterYNorm));
+
+                // Effective Z heights — account for the useFrustumProfile toggle so that
+                // toggling the bool mid-song triggers a mesh rebuild.
+                float effectiveZInner = useFrustumProfile ? frustumHeightInner : 0.001f;
+                float effectiveZOuter = useFrustumProfile ? frustumHeightOuter : 0.001f;
+
+                // ── Change detection ────────────────────────────────────────────────────────
+                // Compare all nine derived vertex parameters against their watermarks.
+                // Mathf.DeltaAngle gives the shortest path between two angles (handles 0/360
+                // wraparound correctly), so a 1° animated step near 0° is always detected.
+                bool changed =
+                    Mathf.Abs(outerLocal       - state.LastOuterLocal)       > GeomEpsilon  ||
+                    Mathf.Abs(innerLocal       - state.LastInnerLocal)       > GeomEpsilon  ||
+                    Mathf.Abs(visualOuterLocal - state.LastVisualOuterLocal) > GeomEpsilon  ||
+                    Mathf.Abs(center.x         - state.LastCenterX)          > GeomEpsilon  ||
+                    Mathf.Abs(center.y         - state.LastCenterY)          > GeomEpsilon  ||
+                    Mathf.Abs(Mathf.DeltaAngle(ea.ArcStartDeg, state.LastArcStartDeg)) > AngleEpsilon ||
+                    Mathf.Abs(ea.ArcSweepDeg   - state.LastArcSweepDeg)     > AngleEpsilon ||
+                    Mathf.Abs(effectiveZInner  - state.LastEffectiveZInner)  > GeomEpsilon  ||
+                    Mathf.Abs(effectiveZOuter  - state.LastEffectiveZOuter)  > GeomEpsilon;
+
+                if (!changed) { continue; }
+
+                // ── Rebuild vertices in-place ───────────────────────────────────────────────
+                RebuildArenaVertices(state, ea.ArcStartDeg, ea.ArcSweepDeg,
+                    center, innerLocal, visualOuterLocal,
+                    effectiveZInner, effectiveZOuter, N, pfRoot);
+
+                // ── Update watermarks ───────────────────────────────────────────────────────
+                state.LastOuterLocal       = outerLocal;
+                state.LastInnerLocal       = innerLocal;
+                state.LastVisualOuterLocal = visualOuterLocal;
+                state.LastCenterX          = center.x;
+                state.LastCenterY          = center.y;
+                state.LastArcStartDeg      = ea.ArcStartDeg;
+                state.LastArcSweepDeg      = ea.ArcSweepDeg;
+                state.LastEffectiveZInner  = effectiveZInner;
+                state.LastEffectiveZOuter  = effectiveZOuter;
+            }
         }
 
-        // Builds one ring-sector mesh and attaches it to a new child GameObject.
-        private void BuildArenaMesh(
-            string arenaId, ArenaGeometry geo,
-            PlayfieldTransform pfT, Transform pfRoot,
-            Material mat)
+        // Fills VertexScratch in-place from the supplied geometry, then assigns the array
+        // to the mesh and refreshes bounds, normals, and the MeshCollider.
+        // Only called when change detection determines a rebuild is necessary.
+        private void RebuildArenaVertices(
+            ArenaMeshState state,
+            float arcStartDeg, float arcSweepDeg,
+            Vector2 center,
+            float innerLocal, float visualOuterLocal,
+            float zInner, float zOuter,
+            int N, Transform pfRoot)
         {
-            // Compute local-unit radii (spec §5.5).
-            float outerLocal = pfT.NormRadiusToLocal(geo.OuterRadiusNorm);
-            float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
-            float innerLocal = outerLocal - bandLocal;
-
-            // Visual outer rim: extends beyond chart outerLocal by VisualOuterExpandNorm. VISUAL ONLY.
-            // With default VisualOuterExpandNorm = 0, visualOuterLocal == outerLocal (no change).
-            // The mesh extends to visualOuterLocal so the track surface covers the full visual band
-            // including any rim beyond the judgement ring.
-            float visualOuterLocal = outerLocal
-                + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal; // VISUAL ONLY
-
-            // Arena center in PlayfieldRoot local XY (spec §5.5).
-            Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
-
-            // PlayfieldRoot local Z offsets for the frustum profile.
-            // A tiny non-zero inner offset avoids z-fighting with the z=0 interaction plane.
-            float zInner = useFrustumProfile ? frustumHeightInner : 0.001f;
-            float zOuter = useFrustumProfile ? frustumHeightOuter : 0.001f;
-
-            int N = Mathf.Max(1, arcSegments);
-
-            // Vertex layout:
-            //   indices  0 .. N   → inner arc  (s = 0, at innerLocal radius,       z = zInner)
-            //   indices N+1..2N+1 → outer arc  (s = 1, at visualOuterLocal radius, z = zOuter)
-            int        vertCount = (N + 1) * 2;
-            Vector3[]  vertices  = new Vector3[vertCount];
-            Vector2[]  uvs       = new Vector2[vertCount];
-            int[]      triangles = new int[N * 6];   // N quads × 2 tris × 3 indices
-
-            // Create the child GO now so InverseTransformPoint is available.
-            // SetParent with worldPositionStays:false gives it the same world pose as
-            // this component's GO (local pos/rot/scale = identity).
-            var go = new GameObject($"ArenaSurface_{arenaId}");
-            go.transform.SetParent(transform, worldPositionStays: false);
-
-            // Populate vertices.
+            // Fill vertex scratch in-place — no heap allocation.
+            // Layout:
+            //   indices 0..N      → inner arc  (innerLocal radius, z = zInner)
+            //   indices N+1..2N+1 → outer arc  (visualOuterLocal, z = zOuter)
             for (int i = 0; i <= N; i++)
             {
                 float t   = (float)i / N;
-                float deg = geo.ArcStartDeg + t * geo.ArcSweepDeg;
+                float deg = arcStartDeg + t * arcSweepDeg;
                 float rad = deg * Mathf.Deg2Rad;
-                Vector2 dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
+                var   dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
 
-                // PlayfieldRoot local XY positions for inner and outer (visual) arc.
                 Vector2 innerPt = center + dir * innerLocal;
                 Vector2 outerPt = center + dir * visualOuterLocal; // VISUAL ONLY
 
-                // Convert: pfRoot local → world → mesh GO local.
-                // This correctly handles any world placement of the ArenaSurface GO.
+                // pfRoot local → world → mesh GO local (see header comment).
                 Vector3 wInner = pfRoot.TransformPoint(innerPt.x, innerPt.y, zInner);
                 Vector3 wOuter = pfRoot.TransformPoint(outerPt.x, outerPt.y, zOuter);
 
-                vertices[i]         = go.transform.InverseTransformPoint(wInner);
-                vertices[N + 1 + i] = go.transform.InverseTransformPoint(wOuter);
-
-                // UVs: u = arc progress [0..1], v = 0 at inner edge, 1 at outer edge.
-                uvs[i]         = new Vector2(t, 0f);
-                uvs[N + 1 + i] = new Vector2(t, 1f);
+                state.VertexScratch[i]         = state.ChildGo.transform.InverseTransformPoint(wInner);
+                state.VertexScratch[N + 1 + i] = state.ChildGo.transform.InverseTransformPoint(wOuter);
             }
 
-            // Triangulate as a strip.
-            // For each segment i (0..N-1), one quad = two CCW triangles:
-            //   Tri 1: inner[i]  → outer[i]   → inner[i+1]
-            //   Tri 2: outer[i]  → outer[i+1] → inner[i+1]
-            // This winding is CCW when viewed from PlayfieldRoot +localZ (front face).
+            // Assign pre-allocated array to the existing Mesh instance.
+            // Unity copies the array data internally; we do not allocate a new array.
+            state.Mesh.vertices = state.VertexScratch;
+            state.Mesh.RecalculateBounds();
+            state.Mesh.RecalculateNormals();
+
+            // Refresh the MeshCollider so parallax raycasts (spec §5.2.1) remain accurate
+            // after the vertices change.  Setting sharedMesh = null first forces Unity to
+            // rebuild the internal BVH from the updated vertex data.
+            state.Collider.sharedMesh = null;
+            state.Collider.sharedMesh = state.Mesh;
+        }
+
+        // -------------------------------------------------------------------
+        // Lazy creation
+        // -------------------------------------------------------------------
+
+        // Creates the child GO, Mesh, and all pre-allocated buffers for a new arena.
+        // Triangles and UVs depend only on N (arcSegments), not on geometry, so they
+        // are written once here and never change.
+        private ArenaMeshState CreateArenaMeshState(
+            string arenaId, int vertCount, Material mat, Transform pfRoot)
+        {
+            int N = (vertCount / 2) - 1; // inverse of: vertCount = (N+1)*2
+
+            // --- Triangle indices (static — topology never changes) ---
+            var triangles = new int[N * 6]; // N quads × 2 triangles × 3 indices
             for (int i = 0; i < N; i++)
             {
                 int ti  = i * 6;
@@ -241,48 +369,62 @@ namespace RhythmicFlow.Player
                 int oI  = N + 1 + i;
                 int oI1 = N + 1 + i + 1;
 
-                // Triangle 1
+                // Triangle 1: inner[i] → outer[i] → inner[i+1]  (CCW from +localZ)
                 triangles[ti + 0] = iI;
                 triangles[ti + 1] = oI;
                 triangles[ti + 2] = iI1;
 
-                // Triangle 2
+                // Triangle 2: outer[i] → outer[i+1] → inner[i+1]
                 triangles[ti + 3] = oI;
                 triangles[ti + 4] = oI1;
                 triangles[ti + 5] = iI1;
             }
 
-            // Assemble the Mesh.
-            var mesh = new Mesh();
-            mesh.name      = $"ArenaSurface_{arenaId}";
-            mesh.hideFlags = HideFlags.HideAndDontSave; // prevent accidental serialization
-            mesh.vertices  = vertices;
-            mesh.triangles = triangles;
+            // --- UVs (static — u = arc progress, v = 0 inner / 1 outer) ---
+            var uvs = new Vector2[vertCount];
+            for (int i = 0; i <= N; i++)
+            {
+                float t = (float)i / N;
+                uvs[i]         = new Vector2(t, 0f);
+                uvs[N + 1 + i] = new Vector2(t, 1f);
+            }
+
+            // --- Mesh (placeholder vertices overwritten on first RebuildArenaVertices call) ---
+            var mesh = new Mesh
+            {
+                name      = $"ArenaSurface_{arenaId}",
+                hideFlags = HideFlags.HideAndDontSave,
+            };
+            mesh.vertices  = new Vector3[vertCount];
             mesh.uv        = uvs;
-            mesh.RecalculateNormals();
+            mesh.triangles = triangles;
             mesh.RecalculateBounds();
 
-            // Inherit the parent's physics layer so PlayerAppController.visualSurfaceLayerMask
-            // can match these children without extra setup.
+            // --- Child GO ---
+            var go = new GameObject($"ArenaSurface_{arenaId}");
+            // worldPositionStays:false → child GO has identity local pose within this GO.
+            go.transform.SetParent(transform, worldPositionStays: false);
+            // Inherit physics layer so PlayerAppController.visualSurfaceLayerMask matches.
             go.layer = gameObject.layer;
 
-            // Attach rendering components to the child GO.
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             mf.sharedMesh     = mesh;
             mr.sharedMaterial = mat;
 
-            // Needed for parallax-correct input raycast; children are generated at runtime.
-            // PlayerAppController casts Physics.Raycast against visualSurfaceLayerMask and uses
-            // only the XY of the hit in PlayfieldRoot local space, discarding Z (spec §5.2.1).
-            var mc = go.GetComponent<MeshCollider>();
-            if (mc == null) { mc = go.AddComponent<MeshCollider>(); }
-            mc.sharedMesh = null;      // force refresh if rebuilding
-            mc.sharedMesh = mesh;      // same Mesh instance assigned to MeshFilter
-            // mc.convex and mc.isTrigger remain false (defaults) — non-convex, non-trigger.
+            // MeshCollider for parallax-correct input raycast (spec §5.2.1).
+            var mc = go.AddComponent<MeshCollider>();
+            mc.sharedMesh = mesh;
 
-            // Track the Mesh asset for manual cleanup in OnDestroy.
-            _meshes.Add(mesh);
+            return new ArenaMeshState
+            {
+                ChildGo       = go,
+                Mesh          = mesh,
+                Collider      = mc,
+                VertexScratch = new Vector3[vertCount],
+                // Watermarks default to float.MaxValue (set in class field initializers),
+                // guaranteeing an initial RebuildArenaVertices call on the very first frame.
+            };
         }
 
         // -------------------------------------------------------------------
@@ -290,7 +432,7 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         // Creates a simple opaque material when no materialOverride is assigned.
-        // Tries URP Lit → Standard → Unlit/Color, using whichever shader is available.
+        // Tries URP Lit → Standard → Unlit/Color in priority order.
         // Sets CullMode.Off so the surface is visible from both sides of the playfield.
         private Material GetOrCreateRuntimeMaterial()
         {
@@ -304,12 +446,9 @@ namespace RhythmicFlow.Player
             _runtimeMat.hideFlags = HideFlags.HideAndDontSave;
 
             // Neutral blue-gray, fully opaque.
-            // To use a semi-transparent surface, assign a materialOverride with
-            // transparency already configured.
             _runtimeMat.color = new Color(0.25f, 0.30f, 0.45f, 1.0f);
 
-            // Disable back-face culling — the surface should be visible from both sides
-            // of the playfield plane. This property name is shared by URP Lit and Standard.
+            // Disable back-face culling — surface should be visible from both sides.
             _runtimeMat.SetInt("_Cull", (int)CullMode.Off);
 
             return _runtimeMat;

@@ -8,17 +8,20 @@
 //      via UnityWebRequestMultimedia (coroutine).
 //   4) Start AudioSource and Conductor on the same frame (DSP-time locked, spec §3.3).
 //   5) Each Update:
-//        a) Advance/sweep NoteScheduler.
-//        b) Poll touches (mouse in Editor/Standalone, Input.touches on mobile).
-//        c) Raycast screen→ playfieldRoot local XY plane → normalized XY.
-//        d) Feed touches into FlickGestureTracker (Begin/Update/End).
-//        e) Run JudgementEngine: TryJudgeCatch (once), then per-touch
+//        a) Evaluate all animated chart tracks at effectiveChartTimeMs via ChartRuntimeEvaluator.
+//        b) Advance/sweep NoteScheduler.
+//        c) Poll touches (mouse in Editor/Standalone, Input.touches on mobile).
+//        d) Raycast screen→ playfieldRoot local XY plane → normalized XY.
+//        e) Feed touches into FlickGestureTracker (Begin/Update/End).
+//        f) Run JudgementEngine: TryJudgeCatch (once), then per-touch
 //           TryJudgeTap / TryBindHold / TryJudgeFlick.
-//        f) Evaluate hold ticks (spec §7.5.1).
-//        g) Clean up ended touches.
+//        g) Evaluate hold ticks (spec §7.5.1).
+//        h) Clean up ended touches.
 //   6) OnGUI overlay: status, chart time, note count, last judgement.
 //
-// NO note rendering — geometry snapshots use first-keyframe values only (v0 harness).
+// Geometry is evaluated per-frame via ChartRuntimeEvaluator (not time-0 snapshot).
+// Visual renderers (HoldBodyRenderer, NoteApproachRenderer, JudgementRingRenderer)
+// read from the geometry dictionaries that are synced from the evaluator each frame.
 // NO UnityEditor APIs.
 // NO .meta file creation.
 
@@ -106,12 +109,19 @@ namespace RhythmicFlow.Player
         private Conductor           _conductor;
 
         // -------------------------------------------------------------------
-        // Geometry — static snapshots (first-keyframe, v0 harness)
+        // Geometry — per-frame evaluated via ChartRuntimeEvaluator (spec §5.9)
         // -------------------------------------------------------------------
 
+        // Single source of truth for all animated chart geometry.
+        // Created once per loaded chart; Evaluate(timeMs) called each frame.
+        private ChartRuntimeEvaluator _evaluator;
+
+        // Synced from _evaluator each frame; exposed to renderers and JudgementEngine.
+        // Contains only ENABLED arenas/lanes — disabled ones are excluded so
+        // hit-testing and visuals automatically skip them (spec §5.6).
         private Dictionary<string, ArenaGeometry> _arenaGeos;
         private Dictionary<string, LaneGeometry>  _laneGeos;
-        private Dictionary<string, string>        _laneToArena; // laneId → arenaId
+        private Dictionary<string, string>        _laneToArena; // laneId → arenaId (immutable)
 
         // -------------------------------------------------------------------
         // Per-frame reuse buffers (avoid per-frame allocation)
@@ -193,12 +203,26 @@ namespace RhythmicFlow.Player
         /// <summary>
         /// Fires when a hold note is fully resolved — exactly once per hold.
         ///   Tier.Perfect — hold completed (player held through endTimeMs; State = Hit).
-        ///   Tier.Miss    — hold never bound, or released early (State = Missed).
+        ///   Tier.Miss    — hold never bound (State = Missed with HoldBind = Unbound).
         ///
-        /// This is distinct from OnJudgement, which fires for the hold-bind event at
-        /// hold START. ScoreTracker subscribes here for hold scoring (spec §4.5).
+        /// This event is now LIFECYCLE-ONLY for completed/released holds; scoring is
+        /// driven entirely by OnHoldTick.  The only case that still affects score is
+        /// HoldBind == Unbound (player never started the hold), which counts as one Miss
+        /// to break the combo (spec §4.5).
         /// </summary>
         public event Action<JudgementRecord> OnHoldResolved;
+
+        /// <summary>
+        /// Fires for each baked tick of an active hold note (spec §4.4 / §7.5.1).
+        ///   Tier.Perfect — bound touch was inside the lane at the tick time.
+        ///   Tier.Miss    — bound touch was outside the lane, OR hold was released early.
+        ///
+        /// Exactly one Miss fires when a hold fails (first missed tick or early release),
+        /// then no further tick events are emitted for that hold (spec §4.5 — "no spam").
+        ///
+        /// ScoreTracker subscribes here for all hold-related combo/score updates.
+        /// </summary>
+        public event Action<JudgementRecord> OnHoldTick;
 
         // -------------------------------------------------------------------
         // VISUALS API — read-only access for runtime visual renderers.
@@ -225,6 +249,14 @@ namespace RhythmicFlow.Player
 
         /// <summary>Great-window size in ms from the active gameplay mode (default 90 if not yet ready).</summary>
         public double                                     GreatWindowMs    => _judgementEngine?.Windows.GreatWindowMs ?? 90.0;
+
+        /// <summary>
+        /// Per-frame chart evaluator — the single source of truth for animated arena/lane/camera
+        /// geometry.  NoteApproachRenderer and JudgementRingRenderer read EvaluatedArena/Lane
+        /// values (including enabledBool and opacity) directly from here.
+        /// Null before Start() completes.
+        /// </summary>
+        public ChartRuntimeEvaluator                      Evaluator        => _evaluator;
 
         // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
@@ -324,8 +356,8 @@ namespace RhythmicFlow.Player
                 return;
             }
 
-            // Build static geometry snapshots (first keyframe of each track).
-            BuildGeometrySnapshots();
+            // Build the chart evaluator and pre-populate geometry at t=0.
+            InitEvaluator();
 
             // Build RuntimeLane list for JudgementEngine (priority + laneId).
             var runtimeLanes = new List<RuntimeLane>(_chart.lanes.Count);
@@ -365,8 +397,12 @@ namespace RhythmicFlow.Player
 
             double chartTimeMs = _conductor.EffectiveChartTimeMs;
 
-            // --- Geometry: re-evaluate all animated tracks at current chart time ---
-            EvaluateGeometry((int)chartTimeMs);
+            // --- Geometry: per-frame evaluation via ChartRuntimeEvaluator (spec §5.9) ---
+            // All animated arena/lane/camera tracks are sampled at effectiveChartTimeMs
+            // (includes audioOffsetMs + UserOffsetMs per spec §3.3).
+            _evaluator.Evaluate((int)chartTimeMs);
+            SyncGeometryFromEvaluator();
+            ApplyEvaluatedCamera();
 
             // --- Note lifecycle ---
             _scheduler.AdvanceActive(chartTimeMs, ActivationLeadMs);
@@ -648,12 +684,40 @@ namespace RhythmicFlow.Player
                 NoteScheduler.EvaluateHoldTicks(hold, _prevChartTimeMs, chartTimeMs, insideLane,
                     (tickMs, isPerfect) =>
                     {
+                        JudgementTier tickTier = isPerfect
+                            ? JudgementTier.Perfect
+                            : JudgementTier.Miss;
+
                         Debug.Log($"[HoldTick] hold={hold.NoteId} " +
-                                  $"tick@{tickMs}ms → {(isPerfect ? "Perfect" : "Miss")}");
+                                  $"tick@{tickMs}ms → {tickTier}");
+
+                        // Emit tick judgement for scoring and combo (spec §4.4 / §4.5).
+                        // ScoreTracker.HandleHoldTick updates PerfectCount/MissCount, combo,
+                        // and TotalScore for each tick.
+                        var tickRecord = new JudgementRecord
+                        {
+                            Note          = hold,
+                            Tier          = tickTier,
+                            IsPerfectPlus = false,
+                            TimingErrorMs = 0.0,
+                        };
+                        OnHoldTick?.Invoke(tickRecord);
+
+                        // On the first missed tick, fail the hold immediately:
+                        //   - Set HoldBind = Finished so EvaluateHoldTicks breaks its loop
+                        //     (no further ticks emitted — spec §4.5 "no spam").
+                        //   - The visual system (HoldBodyRenderer) already handles
+                        //     HoldBind == Finished by showing dim color until endTimeMs.
+                        if (!isPerfect)
+                        {
+                            hold.HoldBind = HoldBindState.Finished;
+                        }
                     });
 
                 // EvaluateHoldTicks sets State = Hit when chartTimeMs >= EndTimeMs while
-                // the hold is still Bound. Fire OnHoldResolved once for scoring (spec §4.5).
+                // the hold is still Bound (all ticks passed).  Fire OnHoldResolved for
+                // lifecycle subscribers; ScoreTracker ignores this for non-Unbound holds
+                // because ticks already handled the score (spec §4.5).
                 if (stateBeforeTicks != NoteState.Hit && hold.State == NoteState.Hit)
                 {
                     var resolveRecord = new JudgementRecord
@@ -691,14 +755,31 @@ namespace RhythmicFlow.Player
                 // Spec §7.5: early release → remaining ticks are Missed.
                 hold.HoldBind = HoldBindState.Finished;
                 int remaining = hold.TickTimesMs.Count - hold.NextTickIndex;
+
                 if (remaining > 0)
                 {
                     Debug.Log($"[PlayerApp] Hold {hold.NoteId} released early; " +
                               $"{remaining} tick(s) missed.");
+
+                    // Emit exactly ONE Miss tick for the first unprocessed tick.
+                    // This breaks the combo and marks the hold as failed for scoring,
+                    // matching the rule "first missed tick fails the hold" (spec §7.5 / §4.5).
+                    // We emit at most one so the player is not penalised for all remaining
+                    // ticks — consistent with "no spam" (spec §4.5).
+                    var earlyReleaseMiss = new JudgementRecord
+                    {
+                        Note          = hold,
+                        Tier          = JudgementTier.Miss,
+                        IsPerfectPlus = false,
+                        TimingErrorMs = 0.0,
+                    };
+                    OnHoldTick?.Invoke(earlyReleaseMiss);
                 }
-                // Note: we do NOT fire OnHoldResolved here. Scoring for an early-released
-                // hold happens later when SweepMissed marks it Missed and HandleSweepMiss
-                // fires OnHoldResolved(Miss) — once, at StartTimeMs+GreatWindowMs. (spec §4.5)
+                else
+                {
+                    // Touch released after all ticks were already processed — no miss emitted.
+                    Debug.Log($"[PlayerApp] Hold {hold.NoteId} released after all ticks processed.");
+                }
             }
 
             _boundHolds.Remove(touchId);
@@ -823,17 +904,20 @@ namespace RhythmicFlow.Player
         }
 
         // ===================================================================
-        // Geometry — track evaluation
+        // Geometry — evaluator setup and per-frame sync
         // ===================================================================
 
-        // Initializes geometry dictionaries and builds the static lane→arena map.
-        // Calls EvaluateGeometry(0) so the dicts are populated before playback begins.
-        private void BuildGeometrySnapshots()
+        // Creates the evaluator, builds the immutable lane→arena map, and populates
+        // the geometry dicts at t=0 so they are ready before playback begins.
+        private void InitEvaluator()
         {
+            // Allocate output dicts. The evaluator owns evaluation; these dicts are
+            // populated by SyncGeometryFromEvaluator() called every frame.
             _arenaGeos   = new Dictionary<string, ArenaGeometry>(StringComparer.Ordinal);
             _laneGeos    = new Dictionary<string, LaneGeometry>(StringComparer.Ordinal);
             _laneToArena = new Dictionary<string, string>(StringComparer.Ordinal);
 
+            // Build the immutable lane→arena map from chart data (never changes).
             foreach (ChartLane lane in _chart.lanes)
             {
                 if (lane == null || string.IsNullOrEmpty(lane.laneId)) { continue; }
@@ -843,41 +927,92 @@ namespace RhythmicFlow.Player
                 }
             }
 
-            EvaluateGeometry(0);
+            // Create the evaluator. Its constructor runs Evaluate(0) internally.
+            _evaluator = new ChartRuntimeEvaluator(_chart);
 
-            Debug.Log($"[PlayerApp] Geometry built: " +
-                      $"{_arenaGeos.Count} arena(s), {_laneGeos.Count} lane(s).");
+            // Sync dicts from initial evaluation so geometry is ready before first Update.
+            SyncGeometryFromEvaluator();
+
+            Debug.Log($"[PlayerApp] Evaluator ready: " +
+                      $"{_evaluator.ArenaCount} arena(s), {_evaluator.LaneCount} lane(s).");
         }
 
-        // Evaluates all animated arena/lane tracks at timeMs and updates the geometry dicts.
-        // Called once at chart load (t=0) and every frame during playback.
-        private void EvaluateGeometry(int timeMs)
+        // Syncs _arenaGeos and _laneGeos from the evaluator's latest Evaluate() results.
+        // Only ENABLED arenas/lanes are included — disabled ones are removed from the dicts
+        // so hit-testing and visuals skip them automatically (spec §5.6).
+        // Called every frame immediately after _evaluator.Evaluate(timeMs).
+        private void SyncGeometryFromEvaluator()
         {
-            foreach (ChartArena arena in _chart.arenas)
+            // Arenas — map EvaluatedArena → ArenaGeometry (drop disabled).
+            for (int i = 0; i < _evaluator.ArenaCount; i++)
             {
-                if (arena == null || string.IsNullOrEmpty(arena.arenaId)) { continue; }
+                EvaluatedArena ea = _evaluator.GetArena(i);
+                if (string.IsNullOrEmpty(ea.ArenaId)) { continue; }
 
-                _arenaGeos[arena.arenaId] = new ArenaGeometry
+                if (ea.EnabledBool)
                 {
-                    CenterXNorm       = arena.centerX.Evaluate(timeMs,       0.5f),
-                    CenterYNorm       = arena.centerY.Evaluate(timeMs,       0.5f),
-                    OuterRadiusNorm   = arena.outerRadius.Evaluate(timeMs,   0.4f),
-                    BandThicknessNorm = arena.bandThickness.Evaluate(timeMs, 0.1f),
-                    ArcStartDeg       = arena.arcStartDeg.Evaluate(timeMs,   0f),
-                    ArcSweepDeg       = arena.arcSweepDeg.Evaluate(timeMs,   360f),
-                };
+                    _arenaGeos[ea.ArenaId] = new ArenaGeometry
+                    {
+                        CenterXNorm       = ea.CenterXNorm,
+                        CenterYNorm       = ea.CenterYNorm,
+                        OuterRadiusNorm   = ea.OuterRadiusNorm,
+                        BandThicknessNorm = ea.BandThicknessNorm,
+                        ArcStartDeg       = ea.ArcStartDeg,
+                        ArcSweepDeg       = ea.ArcSweepDeg,
+                    };
+                }
+                else
+                {
+                    // Remove disabled arenas so they receive no hit-testing or visuals.
+                    _arenaGeos.Remove(ea.ArenaId);
+                }
             }
 
-            foreach (ChartLane lane in _chart.lanes)
+            // Lanes — map EvaluatedLane → LaneGeometry (drop disabled).
+            for (int i = 0; i < _evaluator.LaneCount; i++)
             {
-                if (lane == null || string.IsNullOrEmpty(lane.laneId)) { continue; }
+                EvaluatedLane el = _evaluator.GetLane(i);
+                if (string.IsNullOrEmpty(el.LaneId)) { continue; }
 
-                _laneGeos[lane.laneId] = new LaneGeometry
+                if (el.EnabledBool)
                 {
-                    CenterDeg = lane.centerDeg.EvaluateAngleDeg(timeMs, 0f),
-                    WidthDeg  = lane.widthDeg.Evaluate(timeMs,          30f),
-                };
+                    _laneGeos[el.LaneId] = new LaneGeometry
+                    {
+                        CenterDeg = el.CenterDeg,
+                        WidthDeg  = el.WidthDeg,
+                    };
+                }
+                else
+                {
+                    _laneGeos.Remove(el.LaneId);
+                }
             }
+        }
+
+        // Applies the evaluated camera tracks to the gameplay camera.
+        // Only overrides the scene camera if the chart has authored position keyframes.
+        // Charts without camera tracks leave the scene camera position/rotation unchanged.
+        private void ApplyEvaluatedCamera()
+        {
+            if (gameplayCamera == null || _evaluator == null) { return; }
+            if (_chart.camera == null) { return; }
+
+            // Guard: only apply if the chart has explicitly authored camera position.
+            // A chart without camera keyframes should not snap the camera to (0,0,5).
+            bool hasAuthoredPosition = (_chart.camera.posX.keyframes?.Count ?? 0) > 0
+                                    || (_chart.camera.posY.keyframes?.Count ?? 0) > 0
+                                    || (_chart.camera.posZ.keyframes?.Count ?? 0) > 0;
+            if (!hasAuthoredPosition) { return; }
+
+            EvaluatedCamera cam = _evaluator.Camera;
+            if (!cam.EnabledBool) { return; }
+
+            // Apply world-space position and rotation (chart camera tracks are world-space).
+            gameplayCamera.transform.position = new UnityEngine.Vector3(cam.PosX, cam.PosY, cam.PosZ);
+            gameplayCamera.transform.rotation =
+                UnityEngine.Quaternion.Euler(cam.RotPitchDeg, cam.RotYawDeg, cam.RotRollDeg);
+
+            if (cam.FovDeg > 0f) { gameplayCamera.fieldOfView = cam.FovDeg; }
         }
 
         // ===================================================================

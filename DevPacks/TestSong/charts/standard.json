@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "song": {
-    "songId": "test_song",
+    "songId": "test_min_radius_only",
     "difficultyId": "standard",
     "audioFile": "audio/song.ogg",
     "audioOffsetMs": 0
@@ -18,10 +18,18 @@
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "centerX": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
       "centerY": { "keyframes": [ { "timeMs": 0, "value": 0.5, "easing": "hold" } ] },
-      "outerRadius": { "keyframes": [ { "timeMs": 0, "value": 0.45, "easing": "hold" } ] },
+
+      "outerRadius": {
+        "keyframes": [
+          { "timeMs": 0, "value": 0.40, "easing": "hold" },
+          { "timeMs": 4000, "value": 0.50, "easing": "easeInOut" },
+          { "timeMs": 8000, "value": 0.40, "easing": "easeInOut" }
+        ]
+      },
+
       "bandThickness": { "keyframes": [ { "timeMs": 0, "value": 0.12, "easing": "hold" } ] },
       "arcStartDeg": { "keyframes": [ { "timeMs": 0, "value": 190, "easing": "hold" } ] },
-      "arcSweepDeg": { "keyframes": [ { "timeMs": 0, "value": 160, "easing": "hold" } ] }
+      "arcSweepDeg": { "keyframes": [ { "timeMs": 0, "value": 220, "easing": "hold" } ] }
     }
   ],
   "lanes": [
@@ -33,41 +41,10 @@
       "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
       "centerDeg": { "keyframes": [ { "timeMs": 0, "value": 250, "easing": "hold" } ] },
       "widthDeg": { "keyframes": [ { "timeMs": 0, "value": 30, "easing": "hold" } ] }
-    },
-    {
-      "laneId": "lane-2",
-      "arenaId": "arena-a",
-      "priority": 2,
-      "enabled": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
-      "opacity": { "keyframes": [ { "timeMs": 0, "value": 1, "easing": "hold" } ] },
-      "centerDeg": {
-        "keyframes": [
-          { "timeMs": 0, "value": 290, "easing": "hold" },
-          { "timeMs": 15000, "value": 290, "easing": "linear" },
-          { "timeMs": 20000, "value": 330, "easing": "linear" },
-          { "timeMs": 25000, "value": 330, "easing": "hold" }
-        ]
-      },
-      "widthDeg": { "keyframes": [ { "timeMs": 0, "value": 30, "easing": "hold" } ] }
     }
   ],
-  "camera": { },
+  "camera": {},
   "notes": [
-    {
-      "noteId": "h1",
-      "laneId": "lane-1",
-      "type": "hold",
-      "startTimeMs": 5000,
-      "endTimeMs": 10000,
-      "tickTimesMs": [5500,6000,6500,7000,7500,8000,8500,9000,9500,10000]
-    },
-    {
-      "noteId": "h2",
-      "laneId": "lane-2",
-      "type": "hold",
-      "startTimeMs": 15000,
-      "endTimeMs": 20000,
-      "tickTimesMs": [15500,16000,16500,17000,17500,18000,18500,19000,19500,20000]
-    }
+    { "noteId": "t1", "laneId": "lane-1", "type": "tap", "timeMs": 2000 }
   ]
 }

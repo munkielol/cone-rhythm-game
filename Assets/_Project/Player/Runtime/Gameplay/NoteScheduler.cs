@@ -239,6 +239,11 @@ namespace RhythmicFlow.Player
                 bool isPerfect = isTouchInsideLane;
                 onTickResult?.Invoke(tickMs, isPerfect);
                 hold.NextTickIndex++;
+
+                // The callback may have set HoldBind = Finished (first missed tick fails
+                // the hold — spec §7.5).  Stop processing further ticks immediately so we
+                // do not emit multiple miss events for the same hold (spec §4.5 — "no spam").
+                if (hold.HoldBind != HoldBindState.Bound) { break; }
             }
 
             // Check if hold has ended (current time passed endTimeMs).

@@ -82,11 +82,36 @@ Tempo is stored as non-overlapping segments sorted by `startTimeMs`.
 
 ### **3.3 Playfield Preview (spatial truth at playhead)**
 
-* Shows the true arena \+ lane geometry **at the current playhead time**.  
-* Used to:  
-  * confirm overlap/visibility/motion  
-  * click a lane to set “active lane” for placement  
+* Shows the true arena \+ lane geometry **at the current playhead time**.
+* Used to:
+  * confirm overlap/visibility/motion
+  * click a lane to set “active lane” for placement
 * (v0) May be rendered as 2D top-down; a 3D preview is optional and can be added later.
+
+**Shared evaluation utilities (available for Playfield Preview):**
+
+The chart editor Playfield Preview **should** reuse the same Shared evaluation infrastructure as the player:
+
+* `ChartRuntimeEvaluator` (`Assets/_Project/Shared/Runtime/Evaluation/ChartRuntimeEvaluator.cs`) —
+  call `Evaluate(playheadMs)` each update to sample all arena/lane/camera geometry with zero allocations.
+  Returns `EvaluatedArena[]` and `EvaluatedLane[]` (pre-allocated arrays; safe to call every frame).
+* `NoteApproachMath` (`Assets/_Project/Shared/Runtime/Evaluation/NoteApproachMath.cs`) —
+  static helpers for `JudgementRadius`, `ApproachRadius`, `FrustumZAtRadius`, `LaneChordWidthAtRadius`, etc.
+  Use these when rendering note approach previews in the Playfield Preview so the visual matches the player exactly.
+* `EvaluatedArena` / `EvaluatedLane` / `EvaluatedCamera` structs
+  (`Assets/_Project/Shared/Runtime/Evaluation/EvaluatedGeometry.cs`) —
+  fully evaluated per-frame state; no keyframe math required after `Evaluate()`.
+
+Using these Shared utilities ensures the chart editor preview is **pixel-accurate** with the player's
+runtime geometry at all times, with no duplication of keyframe interpolation logic.
+
+**Arena surface mesh in the preview must animate:**
+The arena surface mesh (cone/frustum sector) must be rebuilt whenever evaluated arena parameters
+change — the same change-detection pattern used in `PlayerDebugArenaSurface` (compare outerRadius,
+bandThickness, arcStartDeg, arcSweepDeg, center against watermarks; rebuild vertices in-place on
+change).  A preview that builds the mesh once at `t=0` and never updates it will show lane overlays
+animating while the surface stays frozen — the same bug that existed in the player debug scaffolding
+before it was fixed.
 
 ### **3.4 Inspector / Properties panel**
 
@@ -312,9 +337,13 @@ Holds store explicit tick times in the exported chart.
 
 Hold fields:
 
-* `startTimeMs`  
-* `endTimeMs`  
+* `startTimeMs`
+* `endTimeMs`
 * `tickTimesMs: int[]` (strictly increasing; all within `[start,end]`)
+
+**Runtime scoring note:** `tickTimesMs` are the scoring units in the player app. Each tick
+contributes to combo and score (Perfect-or-Miss, 1000/0 pts — player spec §4.4). The player
+consumes the baked list directly; no runtime tick cadence generation occurs.
 
 chart editor-only metadata allowed:
 
@@ -335,6 +364,10 @@ Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear
 ---
 
 ## **10\) Hold tick generation and editing (v0)**
+
+**Tick density guidance:** Because each tick is a scored event (+1000 pts, combo++), tick
+density directly determines the scoring weight of each hold. Denser grids reward sustained
+holding more heavily. The default 1/8 preset provides a balanced feel for typical BPM ranges.
 
 ### **10.1 Default tick preset**
 

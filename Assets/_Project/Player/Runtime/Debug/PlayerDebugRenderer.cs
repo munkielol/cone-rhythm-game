@@ -273,12 +273,82 @@ namespace RhythmicFlow.Player
                 return; // nothing to draw yet
             }
 
+            UpdateArenaLineRenderers(); // re-position arena arcs/rays/ring from current evaluated geometry
             UpdateHitBandArcs();        // must run every frame — radii depend on runtime settings
             UpdateLaneLineRenderers();  // re-position edge/center lines from current evaluated geometry
             UpdateNoteMarkers();
             UpdateTouchMarker();
             UpdateLaneHighlights();
             UpdateJudgementFlashes();
+        }
+
+        // Repositions arena LineRenderers [0]–[4] from the current evaluated arena geometry
+        // each frame.  Without this, those renderers would be frozen at time-0 values while
+        // lane arcs (updated by UpdateLaneLineRenderers) and production JudgementRingRenderer
+        // correctly follow animated tracks.
+        //
+        // Mirrors UpdateLaneLineRenderers but for the arena-level overlays:
+        //   [0] outer arc at visualOuterLocal
+        //   [1] inner arc at innerLocal
+        //   [2] radial ray at arcStartDeg
+        //   [3] radial ray at arcStartDeg + arcSweepDeg
+        //   [4] judgement ring arc at judgementRadiusLocal (single source of truth via
+        //       ArenaHitTester.ComputeHitBandLocal — same formula as all other ring visuals)
+        //
+        // [5] and [6] (hit-band arcs) are handled separately by UpdateHitBandArcs().
+        private void UpdateArenaLineRenderers()
+        {
+            IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
+            PlayfieldTransform pfT    = playerAppController.DebugPlayfieldTransform;
+            Transform          pfRoot = playerAppController.playfieldRoot;
+            if (arenas == null || pfT == null) { return; }
+
+            foreach (KeyValuePair<string, LineRenderer[]> kvp in _arenaLRs)
+            {
+                if (!arenas.TryGetValue(kvp.Key, out ArenaGeometry geo)) { continue; }
+
+                LineRenderer[] lrs = kvp.Value;
+                if (lrs == null || lrs.Length < 5) { continue; }
+
+                // All radius math in PlayfieldLocal to stay aspect-safe (spec §5.5).
+                float outerLocal = pfT.NormRadiusToLocal(geo.OuterRadiusNorm);
+                float bandLocal  = pfT.NormRadiusToLocal(geo.BandThicknessNorm);
+                float innerLocal = outerLocal - bandLocal;
+
+                // Single source of truth for judgementRadiusLocal and visualOuterLocal —
+                // same helper used by JudgementEngine, UpdateHitBandArcs, and BuildArenaLineRenderers.
+                ArenaHitTester.ComputeHitBandLocal(geo, pfT,
+                    out _, out _, out float judgementRadiusLocal, out float visualOuterLocal);
+
+                // s01: normalised [0=inner, 1=outer] position used for frustum Z only. VISUAL ONLY.
+                float s01Judgement = (outerLocal > innerLocal)
+                    ? Mathf.Clamp01((judgementRadiusLocal - innerLocal) / (outerLocal - innerLocal))
+                    : 0f;
+
+                Vector2 center = pfT.NormalizedToLocal(new Vector2(geo.CenterXNorm, geo.CenterYNorm));
+
+                // [0] outer arc at the visual outer rim.
+                SetArcPositions(lrs[0], center, visualOuterLocal,
+                                geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 1f);
+
+                // [1] inner arc at the chart inner edge.
+                SetArcPositions(lrs[1], center, innerLocal,
+                                geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: 0f);
+
+                // [2] radial boundary ray at arc start angle.
+                SetRadialPositions(lrs[2], center, innerLocal, visualOuterLocal,
+                                   geo.ArcStartDeg, pfRoot);
+
+                // [3] radial boundary ray at arc end angle (start + sweep).
+                SetRadialPositions(lrs[3], center, innerLocal, visualOuterLocal,
+                                   geo.ArcStartDeg + geo.ArcSweepDeg, pfRoot);
+
+                // [4] judgement ring arc — where notes land visually (VISUAL ONLY, spec §5.8).
+                // This is the arena-level ring; lane judgement arcs drawn by UpdateLaneLineRenderers
+                // are exact subsets spanning each lane's wedge at the same radius.
+                SetArcPositions(lrs[4], center, judgementRadiusLocal,
+                                geo.ArcStartDeg, geo.ArcSweepDeg, pfRoot, s01: s01Judgement);
+            }
         }
 
         // Refreshes lrs[5] (hitInner) and lrs[6] (hitOuter) positions each frame.

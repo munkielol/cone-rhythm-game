@@ -149,9 +149,21 @@ Two modes in v0:
 
 ### **4.4 Holds and catches scoring**
 
-* **Hold ticks:** Perfect-or-Miss only (v0)  
-* **Catch notes:** Perfect-or-Miss only (v0)  
-* TickTimes are editor-baked and deterministic.
+* **Hold ticks:** Perfect-or-Miss only (v0); each tick is a scored judgement event.
+* **Catch notes:** Perfect-or-Miss only (v0).
+* `tickTimesMs` are editor-baked and deterministic; runtime consumes the baked list directly.
+
+**Hold tick scoring rules (locked):**
+
+* Tick Perfect (bound touch inside lane at tick time) → combo +1, +1000 pts.
+* Tick Miss (touch outside lane OR early release) → combo reset to 0, +0 pts.
+* **First Miss tick immediately fails the hold** (no further ticks are evaluated for that hold).
+  The visual body remains dim until `endTimeMs` per §5.7.1.
+* Hold-bind events (player pressing the hold START) do **not** affect score or combo.
+* Hold START miss (player never bound the hold): scores as one Miss (combo break, 0 pts).
+* Hold FINAL RESOLVE (completed or early-released): non-scoring — ticks carry all the weight.
+* "No spam" guarantee: exactly one Miss event fires per failed hold regardless of how many
+  ticks remain after the failure point.
 
 ### **4.5 Scoring profile (v0 locked)**
 
@@ -169,16 +181,19 @@ Two modes in v0:
 
 * Perfect or Great → increment combo; update MaxCombo if new high.
 * Miss → reset combo to 0.
-* Holds: scored **once** on final resolve (see below); hold-bind events do not affect combo.
+* Hold ticks follow the same rules (tick Perfect = combo++; tick Miss = combo reset).
+* Hold-bind events (hold START) do not affect combo.
 
-**Hold scoring (locked):**
+**Hold scoring (locked, updated from previous rev):**
 
-* A hold note produces exactly **one** scoring event, on final resolve:
-  * `State = Hit` (player held through `endTimeMs`) → scored as **Perfect**.
-  * `State = Missed` (never bound, or released early) → scored as **Miss**.
-* Individual hold tick results are **not** scored for combo or points in v0.
-* The hold-bind event (fired when the player first presses the hold) is visible on
-  `OnJudgement` but is **ignored** by `ScoreTracker` (hold notes filter in `HandleJudgement`).
+* Hold ticks are the **scoring unit** for holds. Each tick fires one judgement event.
+* Hold-bind (pressing the hold start): non-scoring; filtered in `ScoreTracker`.
+* Hold final resolve (completed or failed): **non-scoring** — ticks already carried the weight.
+  Exception: a hold that was **never started** (never bound) scores as one Miss (§4.4).
+* This replaces the prior "score once on final resolve" rule.
+
+**Accuracy formula** — unchanged; valid because `PerfectCount` and `TotalJudgedCount` now
+include hold ticks, so the ratio remains meaningful as note density increases.
 
 **Implementation:**
 
@@ -186,7 +201,8 @@ Two modes in v0:
 * Wired in `PlayerAppController.Start()` — no prefab edit required.
 * Events:
   * `PlayerAppController.OnJudgement` → tap, catch, flick hits + sweep-misses of non-hold notes.
-  * `PlayerAppController.OnHoldResolved` → hold final resolve (Hit or Missed).
+  * `PlayerAppController.OnHoldTick` → each baked tick result (Perfect or Miss); drives hold scoring.
+  * `PlayerAppController.OnHoldResolved` → hold lifecycle (non-scoring except Unbound start miss).
 * `PointsPerfect = 1000`, `PointsGreat = 700`, `PointsMiss = 0` are `public const int` on `ScoreTracker`.
 
 **Accuracy display formula (v0):**
@@ -420,6 +436,33 @@ See §8.3.1 for the default values of all hit-band and visual parameters.
 * Notes visually occupy the **entire lane width** at that time (expands/contracts with lane width).
 * Applies to tap/flick/catch/hold heads (and holds stretch along approach direction).
 
+**Tap / Flick / Catch note heads — production renderer:**
+
+Implemented by `NoteApproachRenderer` (`Assets/_Project/Player/Runtime/Visuals/NoteApproachRenderer.cs`).
+Draws a trapezoid mesh per visible note using the same canonical approach formula as hold ribbons (§5.7.1 / §6.1).
+Delegates all geometry to `NoteApproachMath` (Shared).
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `noteLeadTimeMs` | 2000 ms | Must match HoldBodyRenderer; notes appear this far before hit time |
+| `noteHalfThicknessLocal` | 0.022 | Radial half-thickness of the head quad in PlayfieldLocal units |
+| `noteWidthRatio` | 0.85 | Width as fraction of `LaneChordWidthAtRadius(r, halfWidthDeg)` |
+
+**Colors (inspector-configurable defaults):**
+
+| Note type | Default color |
+|---|---|
+| Tap | White `(1, 1, 1, 0.95)` |
+| Flick | Amber `(1, 0.65, 0.1, 0.95)` |
+| Catch | Green `(0.3, 1, 0.4, 0.95)` |
+| Missed (tint) | Dim grey `(0.4, 0.4, 0.4, 0.55)` |
+
+**Visibility rules:**
+* Hidden until `timeToHit ≤ noteLeadTimeMs`.
+* Hidden once `State == Hit`.
+* Missed notes remain visible (dimmed by `missedTintColor`) until `timeToHit < −greatWindowMs`.
+* Hold notes are excluded — rendered by `HoldBodyRenderer`.
+
 ### **5.7.1 Hold body rendering — scroll / long-note style (v0)**
 
 A hold note is rendered as a **ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note.
@@ -505,6 +548,7 @@ Judging eligibility and visual lifetime are **decoupled**:
 | `Hit` | `Finished` | (not rendered — successfully completed) |
 
 **Implementation:** `HoldBodyRenderer` (`Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs`).
+Approach radius, frustum Z, and lane chord width computations delegate to `NoteApproachMath` (Shared).
 
 ### **5.8) Judgement line / hit indicator (v0)**
 
@@ -529,7 +573,74 @@ The judgement ring sits **inside** the chart outer radius.  The outer rim remain
 * The Judgement Arc is always visible during gameplay (unless the arena is disabled).
 * Debug hit-band arcs (green, drawn by `PlayerDebugRenderer`) show `hitInnerLocal` and `hitOuterLocal` per arena.
 
-### **5.9) Keyframe evaluation rules (deterministic, v0)**
+**Production implementation:** `JudgementRingRenderer` (`Assets/_Project/Player/Runtime/Visuals/JudgementRingRenderer.cs`).
+Draws a thin arc-strip mesh at `judgementR` per enabled arena each `LateUpdate`.
+Reads enabled state and arc span from `ChartRuntimeEvaluator` (via `PlayerAppController.Evaluator`).
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `ringHalfThicknessLocal` | 0.008 | Radial half-thickness in PlayfieldLocal units |
+| `ringSegments` | 32 | Segments per full 360°; partial arcs use proportionally fewer |
+| `ringColor` | `(0.85, 0.75, 1, 0.9)` | Purple-white default |
+
+**Arena surface mesh and debug overlays (debug scaffolding):** `PlayerDebugArenaSurface`
+and `PlayerDebugRenderer` also consume evaluated geometry and animate with tracks:
+
+* `PlayerDebugArenaSurface` rebuilds the grey cone/frustum sector mesh per arena each
+  `LateUpdate` when any geometry parameter (outerRadius, bandThickness, arcStartDeg,
+  arcSweepDeg, center, frustum heights) changes past an epsilon threshold.  Uses
+  `ChartRuntimeEvaluator` (via `playerAppController.Evaluator`) as the data source so
+  all arenas — including disabled ones — can be show/hidden by `EnabledBool` (spec §5.6).
+  Disabling then re-enabling the component mid-song causes meshes to snap to the current
+  evaluated state immediately (watermarks are reset in `OnEnable`).
+
+* `PlayerDebugRenderer.UpdateArenaLineRenderers()` repositions the arena arc outlines
+  [outer arc, inner arc, start/end rays, judgement ring] every frame from the current
+  `DebugArenaGeometries`, exactly as `UpdateLaneLineRenderers()` does for lanes.
+
+**Judgement ring radius — single source of truth:** All of the following compute
+`judgementR = outerLocal − JudgementInsetNorm × minDimLocal` via the same path:
+* `JudgementRingRenderer` → `NoteApproachMath.JudgementRadius()`
+* `PlayerDebugRenderer` arena ring [4] + lane arc [4] → `ArenaHitTester.ComputeHitBandLocal()`
+* `JudgementEngine` hit-band → `ArenaHitTester.ComputeHitBandLocal()`
+
+Lane judgement arcs are exact **subsets** of the arena ring: same radius, narrower arc span
+(each lane's `centerDeg ± widthDeg/2`).  When the arena animates, both the full arena ring
+and all its lane sub-arcs update in sync.
+
+### **5.9) Runtime geometry evaluation pipeline (per-frame)**
+
+Arena, lane, and camera keyframe tracks are sampled **every frame** by `ChartRuntimeEvaluator`
+(`Assets/_Project/Shared/Runtime/Evaluation/ChartRuntimeEvaluator.cs`).
+`PlayerAppController.Update()` calls `_evaluator.Evaluate((int)chartTimeMs)` then
+`SyncGeometryFromEvaluator()` to update `ArenaGeometries` / `LaneGeometries` dictionaries.
+
+**Key design properties:**
+* Zero per-frame allocations — `EvaluatedArena[]` and `EvaluatedLane[]` arrays are pre-allocated once in the constructor.
+* Disabled arenas / lanes (`EnabledBool == false`) are **removed** from the geometry dicts so that
+  JudgementEngine and all renderers skip them automatically (spec §5.6).
+* Debug scaffolding (`PlayerDebugArenaSurface`, `PlayerDebugRenderer`) reads the same evaluated
+  geometry — arena surface meshes and debug arc overlays animate in sync with production visuals.
+* Angle tracks (`arcStartDeg`, `centerDeg`) use `FloatTrack.EvaluateAngleDeg` (shortest-path wrap).
+* `ArcSweepDeg` uses plain `Evaluate` — it is a span, not a cyclic angle.
+* Camera keyframes are only applied to the scene camera when the chart has authored position keyframes
+  (guard against snapping the camera to default on charts without camera animation).
+
+**Shared math utilities — `NoteApproachMath`**
+(`Assets/_Project/Shared/Runtime/Evaluation/NoteApproachMath.cs`)
+
+Static, allocation-free helpers used by all renderers and the evaluator:
+
+| Method | Purpose |
+|---|---|
+| `ApproachAlpha(timeToHitMs, noteLeadTimeMs)` | `1 − Clamp01(t / lead)` — position along approach path |
+| `ApproachRadius(timeToHitMs, noteLeadTimeMs, spawnR, judgementR)` | `Lerp(spawnR, judgementR, alpha)` |
+| `JudgementRadius(outerLocal, minDimLocal, insetNorm)` | `outerLocal − insetNorm × minDimLocal` |
+| `SpawnRadius(innerLocal, judgementR, factor)` | `innerLocal + factor × (judgementR − innerLocal)` |
+| `LaneChordWidthAtRadius(r, halfWidthDeg)` | `2 · r · sin(halfWidthDeg · Deg2Rad)` |
+| `FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter)` | Linear Z ramp lifting XY onto cone surface |
+
+### **5.10) Keyframe evaluation rules (deterministic, v0)**
 
 * For any keyframed track:
   * If a required track has **0 keyframes**: **invalid chart** (editor blocks export; player rejects pack).  
@@ -658,21 +769,26 @@ Match threshold: `dot(normalised_displacement, expected) >= cos(45°) ≈ 0.707`
 
 ### **7.5 Hold (baked ticks, deterministic)**
 
-* Hold start requires TouchBegin inside lane within GreatWindowMs of `startTimeMs`.  
-* Touch becomes **bound** to the hold until release/end.  
-* Each baked tick:  
-  * if bound touch is down and inside lane at tickTimeMs → Perfect tick  
-  * else → Miss tick  
-* Early release misses remaining ticks.
+* Hold start requires TouchBegin inside lane within GreatWindowMs of `startTimeMs`.
+* Touch becomes **bound** to the hold until release/end.
+* Each baked tick (`tickTimesMs[i]`) is a scored judgement event (spec §4.4):
+  * if bound touch is down and inside lane at `tickTimeMs` → **Perfect** tick (combo++, +1000 pts)
+  * else → **Miss** tick (combo reset, +0 pts, hold FAILS — no further ticks evaluated)
+* **First missed tick fails the hold immediately.** The hold body stays visible (dim, `holdColorReleased`)
+  until `endTimeMs` but no further tick judgements are emitted ("no spam" rule).
+* Early release: sets `HoldBind = Finished`; one Miss tick is emitted for the first unprocessed
+  tick so the combo breaks exactly once.
+* Hold start miss (never bound): scores as one Miss at `StartTimeMs + GreatWindowMs` (spec §4.4).
 
 ### **7.5.1) Hold tick processing across frames (must-have)**
 
 **Goal:** Avoid missing ticks on low FPS / hitches.
 
-* Maintain `prevSongTimeMs`.  
-* Each update, process all hold ticks where:  
-  * `prevSongTimeMs < tickTimeMs <= currentSongTimeMs`  
-* Same pattern applies to consuming time-based notes if you implement consumption via a time window.
+* Maintain `prevSongTimeMs`.
+* Each update, process all hold ticks where:
+  * `prevSongTimeMs < tickTimeMs <= currentSongTimeMs`
+* Processing loop breaks immediately after the first Miss tick (hold fails; no spam).
+* Same hitch-safe pattern applies to consuming time-based notes.
 
 ### **7.6 Overlap handling (tie-break order, locked)**
 
@@ -747,11 +863,13 @@ These are not persisted PlayerPrefs settings. They are simple static fields in `
 
 ### **8.5 Results**
 
-* Show:  
-  * total score  
-  * Perfect+/Perfect/Great/Miss counts  
-  * hold tick hit stats  
-  * optional early/late breakdown
+* Show:
+  * total score
+  * MaxCombo
+  * Perfect/Great/Miss counts (includes hold ticks in Perfect and Miss totals)
+  * hold tick sub-counts: `HoldTickPerfectCount` / `HoldTickMissCount`
+  * Accuracy % (weighted: Perfect×1000 + Great×700 / TotalJudged×1000)
+  * optional early/late breakdown (future)
 
 ---
 
