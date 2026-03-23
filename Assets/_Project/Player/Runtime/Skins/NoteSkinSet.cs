@@ -258,11 +258,33 @@ namespace RhythmicFlow.Player
         [Min(0.001f)]
         [SerializeField] public float noteRadialHalfThicknessLocal = 0.022f;
 
-        [Tooltip("Constant arrow overlay size in PlayfieldLocal units.\n" +
+        [Tooltip("(Legacy) Uniform arrow size in PlayfieldLocal units.\n\n" +
+                 "This field is kept for backward-compatibility. When arrowWidthLocal or " +
+                 "arrowHeightLocal are set to a value greater than 0, they take precedence " +
+                 "and this field is ignored for that axis.\n\n" +
+                 "Prefer arrowWidthLocal / arrowHeightLocal for new authoring.\n" +
                  "Arrow size does NOT scale with lane width — arrows are readability elements.\n" +
                  "Default: 0.08")]
         [Min(0.001f)]
         [SerializeField] public float arrowSizeLocal = 0.08f;
+
+        [Tooltip("Arrow overlay width (tangential extent) in PlayfieldLocal units.\n\n" +
+                 "Controls how wide the arrow quad is across the lane (left-right when facing " +
+                 "the arrow). Allows width and height to be tuned independently without editing the PNG.\n\n" +
+                 "Set to 0 to fall back to the legacy arrowSizeLocal value for this axis.\n" +
+                 "Arrow size does NOT scale with lane width — arrows are readability elements.\n" +
+                 "Default: 0 (uses arrowSizeLocal)")]
+        [Min(0f)]
+        [SerializeField] public float arrowWidthLocal = 0f;
+
+        [Tooltip("Arrow overlay height (radial extent) in PlayfieldLocal units.\n\n" +
+                 "Controls how tall the arrow quad is along the gesture direction (tip-to-tail).\n" +
+                 "Allows width and height to be tuned independently without editing the PNG.\n\n" +
+                 "Set to 0 to fall back to the legacy arrowSizeLocal value for this axis.\n" +
+                 "Arrow size does NOT scale with lane width — arrows are readability elements.\n" +
+                 "Default: 0 (uses arrowSizeLocal)")]
+        [Min(0f)]
+        [SerializeField] public float arrowHeightLocal = 0f;
 
         [Tooltip("Local Z offset to lift the arrow quad above the note body surface.\n" +
                  "Prevents Z-fighting between the body mesh and the arrow billboard.\n" +
@@ -450,6 +472,11 @@ namespace RhythmicFlow.Player
             noteRadialHalfThicknessLocal  = Mathf.Max(0.001f, noteRadialHalfThicknessLocal);
             arrowSizeLocal                = Mathf.Max(0.001f, arrowSizeLocal);
             arrowSurfaceOffsetLocal       = Mathf.Max(0f, arrowSurfaceOffsetLocal);
+            // Width/height of 0 means "use arrowSizeLocal as fallback" — that is intentional,
+            // so only prevent negatives here (the Min(0f) attribute already guards it,
+            // but re-clamp defensively in case of programmatic assignment).
+            arrowWidthLocal               = Mathf.Max(0f, arrowWidthLocal);
+            arrowHeightLocal              = Mathf.Max(0f, arrowHeightLocal);
         }
     }
 }

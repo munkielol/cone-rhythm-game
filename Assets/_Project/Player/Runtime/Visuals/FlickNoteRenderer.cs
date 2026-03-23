@@ -57,7 +57,9 @@
 //      (direction-specific; fallback chain mirrors body texture pattern;
 //       assigned per draw call via MaterialPropertyBlock._MainTex on _arrowPropBlock)
 //    • Mesh:       _arrowMesh — single shared unit-square quad; never modified per-frame
-//    • Size:       noteSkinSet.arrowSizeLocal — constant, does NOT scale with lane width
+//    • Size:       arrowWidthLocal × arrowHeightLocal (independent W/H control); each axis
+//      falls back to arrowSizeLocal when its dedicated field is 0. Constant — does NOT scale
+//      with lane width.
 //    • Z offset:   noteSkinSet.arrowSurfaceOffsetLocal — lifts quad above note body
 //    • Placement:  note centre + radialOffsetLocal along (cosθ,sinθ) + tangentialOffsetLocal
 //      along (-sinθ,cosθ), then arrowSurfaceOffsetLocal in Z above the body surface.
@@ -501,6 +503,8 @@ namespace RhythmicFlow.Player
         /// both axis directions without re-authoring.
         /// Arrow position is offset from the note centre by the radial and tangential offset
         /// fields on <see cref="NoteSkinSet"/>, then lifted by <c>arrowSurfaceOffsetLocal</c>.
+        /// Arrow scale uses <c>arrowWidthLocal</c> (quad X) and <c>arrowHeightLocal</c> (quad Y)
+        /// when non-zero; otherwise falls back to <c>arrowSizeLocal</c> for that axis.
         /// Uses the shared <c>flickArrowMaterial</c> template with a per-note arrow texture
         /// assigned via <c>_arrowPropBlock</c> — same MaterialPropertyBlock pattern as body rendering.
         /// Skips (with a one-time warning) if the arrow material template is missing.
@@ -602,12 +606,21 @@ namespace RhythmicFlow.Player
 
             // ── Arrow matrix ───────────────────────────────────────────────────────────
             // Position is in world space (pfRoot.TransformPoint promotes local → world).
-            // Scale is uniform (arrowSizeLocal × arrowSizeLocal) — constant, never lane-dependent.
-            float s = noteSkinSet.arrowSizeLocal;
+            // Scale uses independent width/height when set (> 0); falls back to the legacy
+            // arrowSizeLocal for any axis whose dedicated field is left at 0.
+            // Width = tangential extent (quad X axis after billboard LookRotation).
+            // Height = radial/gesture extent (quad Y axis = arrowUp direction).
+            // Neither axis scales with lane width — arrows are constant-size readability elements.
+            float arrowW = noteSkinSet.arrowWidthLocal  > 0f
+                ? noteSkinSet.arrowWidthLocal
+                : noteSkinSet.arrowSizeLocal;
+            float arrowH = noteSkinSet.arrowHeightLocal > 0f
+                ? noteSkinSet.arrowHeightLocal
+                : noteSkinSet.arrowSizeLocal;
             Matrix4x4 arrowMatrix = Matrix4x4.TRS(
                 pfRoot.TransformPoint(noteCentreLocal),
                 arrowRot,
-                new Vector3(s, s, 1f));
+                new Vector3(arrowW, arrowH, 1f));
 
             // Assign the direction-specific arrow texture to the shared material template via
             // _arrowPropBlock, exactly mirroring the body texture assignment pattern.
