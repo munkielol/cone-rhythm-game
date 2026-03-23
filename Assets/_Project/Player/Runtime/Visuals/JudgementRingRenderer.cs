@@ -75,12 +75,10 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Frustum Surface Alignment")]
-        [Tooltip("Optional: when assigned, frustum heights are read from this component.")]
-        [SerializeField] private PlayerDebugArenaSurface arenaSurface;
-
-        [SerializeField] private bool  useFrustumProfile    = true;
-        [SerializeField] private float frustumHeightInner   = 0.001f;
-        [SerializeField] private float frustumHeightOuter   = 0.15f;
+        [Tooltip("Shared frustum profile. When assigned, frustum heights are read from this component " +
+                 "so the ring sits on the same cone surface as all note renderers. " +
+                 "If null, a flat Z at 0.002 is used.")]
+        [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
         // -------------------------------------------------------------------
         // Internals — mesh pool
@@ -291,20 +289,14 @@ namespace RhythmicFlow.Player
 
         private float ReadFrustumHeightInner()
         {
-            if (arenaSurface != null && arenaSurface.UseFrustumProfile)
-            {
-                return arenaSurface.FrustumHeightInner;
-            }
-            return useFrustumProfile ? frustumHeightInner : 0.002f;
+            if (frustumProfile != null && frustumProfile.UseFrustumProfile) { return frustumProfile.FrustumHeightInner; }
+            return 0.002f;
         }
 
         private float ReadFrustumHeightOuter()
         {
-            if (arenaSurface != null && arenaSurface.UseFrustumProfile)
-            {
-                return arenaSurface.FrustumHeightOuter;
-            }
-            return useFrustumProfile ? frustumHeightOuter : 0.002f;
+            if (frustumProfile != null && frustumProfile.UseFrustumProfile) { return frustumProfile.FrustumHeightOuter; }
+            return 0.002f;
         }
     }
 }

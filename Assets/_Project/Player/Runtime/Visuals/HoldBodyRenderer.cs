@@ -130,27 +130,12 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Frustum Surface Alignment")]
-        [Tooltip("Optional: assign the PlayerDebugArenaSurface in the scene. " +
-                 "When set, frustum height values are read automatically from it (matching " +
-                 "the debug hold-rail exactly). If null, the manual values below are used.")]
-        [SerializeField] private PlayerDebugArenaSurface arenaSurface;
+        [Tooltip("Shared frustum profile. When assigned, frustum heights are read from this component " +
+                 "so the ribbon sits on the same cone surface as all other note types. " +
+                 "If null, a flat Z at surfaceOffsetLocal is used.")]
+        [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
-        [Tooltip("When true and no arenaSurface is assigned, the ribbon endpoints are lifted " +
-                 "onto the frustum cone surface using the manual height values below. " +
-                 "Set to false to use a flat ribbon at surfaceOffsetLocal.")]
-        [SerializeField] private bool useFrustumProfile = true;
-
-        [Tooltip("Local Z at the inner ring edge (matches PlayerDebugArenaSurface.frustumHeightInner). " +
-                 "Only used when arenaSurface is not assigned. Default: 0.001.")]
-        [SerializeField] private float frustumHeightInner = 0.001f;
-
-        [Tooltip("Local Z at the outer ring edge (matches PlayerDebugArenaSurface.frustumHeightOuter). " +
-                 "Only used when arenaSurface is not assigned. Default: 0.15.")]
-        [SerializeField] private float frustumHeightOuter = 0.15f;
-
-        [Tooltip("Additional Z offset added on top of the computed frustum height to prevent " +
-                 "z-fighting when useFrustumProfile is false. Ignored when frustum profile is active " +
-                 "(frustumHeightInner already provides z-fight clearance from z=0).")]
+        [Tooltip("Flat Z offset used when frustumProfile is not assigned. Prevents z-fighting. Default: 0.002.")]
         [SerializeField] private float surfaceOffsetLocal = 0.002f;
 
         // -------------------------------------------------------------------
@@ -708,24 +693,16 @@ namespace RhythmicFlow.Player
         /// Computes the PlayfieldRoot local Z for a ribbon endpoint at radius <paramref name="r"/>.
         /// Delegates to <see cref="NoteApproachMath.FrustumZAtRadius"/> — single source of truth.
         ///
-        /// When <see cref="arenaSurface"/> is assigned its values are used automatically,
-        /// keeping the ribbon in sync with <see cref="PlayerDebugArenaSurface"/> without manual entry.
-        /// Falls back to the inspector <c>useFrustumProfile</c> / <c>frustumHeightInner/Outer</c>
-        /// fields when arenaSurface is null.
-        /// When the frustum profile is disabled, returns <c>surfaceOffsetLocal</c>.
+        /// When <see cref="frustumProfile"/> is assigned its values are used automatically,
+        /// keeping the ribbon in sync with all other production renderers.
+        /// When the frustum profile is null or disabled, returns <c>surfaceOffsetLocal</c>.
         /// </summary>
         private float ComputeEndpointLocalZ(float r, float innerLocal, float outerLocal)
         {
-            bool useProfile = (arenaSurface != null)
-                ? arenaSurface.UseFrustumProfile
-                : useFrustumProfile;
+            if (frustumProfile == null || !frustumProfile.UseFrustumProfile) { return surfaceOffsetLocal; }
 
-            if (!useProfile) { return surfaceOffsetLocal; }
-
-            float hInner = (arenaSurface != null) ? arenaSurface.FrustumHeightInner : frustumHeightInner;
-            float hOuter = (arenaSurface != null) ? arenaSurface.FrustumHeightOuter : frustumHeightOuter;
-
-            return NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter);
+            return NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal,
+                frustumProfile.FrustumHeightInner, frustumProfile.FrustumHeightOuter);
         }
 
         // -------------------------------------------------------------------

@@ -124,22 +124,12 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         [Header("Frustum Surface Alignment")]
-        [Tooltip("Optional: when assigned, frustum heights are read from this component " +
-                 "so flick heads match the hold ribbon depth profile exactly. " +
-                 "If null, the manual values below are used.")]
-        [SerializeField] private PlayerDebugArenaSurface arenaSurface;
+        [Tooltip("Shared frustum profile. When assigned, frustum heights are read from this component " +
+                 "so all note types share the same cone surface shape. " +
+                 "If null, a flat Z at surfaceOffsetLocal is used.")]
+        [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
-        [Tooltip("When true (and no arenaSurface assigned), flick heads are lifted onto " +
-                 "the frustum cone surface. False = flat Z at surfaceOffsetLocal.")]
-        [SerializeField] private bool useFrustumProfile = true;
-
-        [Tooltip("Local Z at inner ring edge. Only used when arenaSurface is null. Default: 0.001.")]
-        [SerializeField] private float frustumHeightInner = 0.001f;
-
-        [Tooltip("Local Z at outer ring edge. Only used when arenaSurface is null. Default: 0.15.")]
-        [SerializeField] private float frustumHeightOuter = 0.15f;
-
-        [Tooltip("Flat Z offset (no frustum profile). Prevents z-fighting. Default: 0.002.")]
+        [Tooltip("Flat Z offset used when frustumProfile is not assigned. Prevents z-fighting. Default: 0.002.")]
         [SerializeField] private float surfaceOffsetLocal = 0.002f;
 
         // -------------------------------------------------------------------
@@ -847,14 +837,14 @@ namespace RhythmicFlow.Player
 
         private float ReadFrustumHeightInner()
         {
-            if (arenaSurface != null && arenaSurface.UseFrustumProfile) { return arenaSurface.FrustumHeightInner; }
-            return useFrustumProfile ? frustumHeightInner : surfaceOffsetLocal;
+            if (frustumProfile != null && frustumProfile.UseFrustumProfile) { return frustumProfile.FrustumHeightInner; }
+            return surfaceOffsetLocal;
         }
 
         private float ReadFrustumHeightOuter()
         {
-            if (arenaSurface != null && arenaSurface.UseFrustumProfile) { return arenaSurface.FrustumHeightOuter; }
-            return useFrustumProfile ? frustumHeightOuter : surfaceOffsetLocal;
+            if (frustumProfile != null && frustumProfile.UseFrustumProfile) { return frustumProfile.FrustumHeightOuter; }
+            return surfaceOffsetLocal;
         }
     }
 }

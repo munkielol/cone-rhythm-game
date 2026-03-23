@@ -98,15 +98,22 @@ namespace RhythmicFlow.Player
 
         [Header("Frustum Profile (DEBUG)")]
 
-        [Tooltip("If true, inner/outer vertices are offset in PlayfieldRoot local Z to create a " +
-                 "3D cone/frustum shape. The z=0 interaction plane is never modified.")]
+        [Tooltip("Optional: when assigned, frustum heights are read from this shared profile " +
+                 "so the debug surface stays visually aligned with the production renderers. " +
+                 "If null, the manual values below are used.")]
+        [SerializeField] private PlayfieldFrustumProfile frustumProfile;
+
+        [Tooltip("If true (and no frustumProfile assigned), inner/outer vertices are offset in " +
+                 "PlayfieldRoot local Z to create a 3D cone/frustum shape. " +
+                 "The z=0 interaction plane is never modified.")]
         [SerializeField] private bool useFrustumProfile = true;
 
         [Tooltip("Local Z offset for inner-arc vertices. A small positive value avoids " +
-                 "z-fighting with the z=0 interaction plane.")]
+                 "z-fighting with the z=0 interaction plane. Only used when frustumProfile is null.")]
         [SerializeField] private float frustumHeightInner = 0.001f;
 
-        [Tooltip("Local Z offset for outer-arc vertices. Larger values create a steeper cone tilt.")]
+        [Tooltip("Local Z offset for outer-arc vertices. Larger values create a steeper cone tilt. " +
+                 "Only used when frustumProfile is null.")]
         [SerializeField] private float frustumHeightOuter = 0.15f;
 
         [Header("Material")]
@@ -196,13 +203,13 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         /// <summary>DEBUG: Whether the frustum vertical profile is currently active.</summary>
-        public bool  UseFrustumProfile  => useFrustumProfile;
+        public bool  UseFrustumProfile  => frustumProfile != null ? frustumProfile.UseFrustumProfile  : useFrustumProfile;
 
         /// <summary>DEBUG: PlayfieldRoot local Z at the inner arc edge.</summary>
-        public float FrustumHeightInner => frustumHeightInner;
+        public float FrustumHeightInner => frustumProfile != null ? frustumProfile.FrustumHeightInner : frustumHeightInner;
 
         /// <summary>DEBUG: PlayfieldRoot local Z at the outer arc edge.</summary>
-        public float FrustumHeightOuter => frustumHeightOuter;
+        public float FrustumHeightOuter => frustumProfile != null ? frustumProfile.FrustumHeightOuter : frustumHeightOuter;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -334,10 +341,10 @@ namespace RhythmicFlow.Player
                 // Arena center in PlayfieldRoot local XY (spec §5.5).
                 Vector2 center = pfT.NormalizedToLocal(new Vector2(ea.CenterXNorm, ea.CenterYNorm));
 
-                // Effective Z heights — account for the useFrustumProfile toggle so that
-                // toggling the bool mid-song triggers a mesh rebuild.
-                float effectiveZInner = useFrustumProfile ? frustumHeightInner : 0.001f;
-                float effectiveZOuter = useFrustumProfile ? frustumHeightOuter : 0.001f;
+                // Effective Z heights — use the public getters so that a frustumProfile
+                // assignment is respected, and toggling the bool mid-song triggers a rebuild.
+                float effectiveZInner = UseFrustumProfile ? FrustumHeightInner : 0.001f;
+                float effectiveZOuter = UseFrustumProfile ? FrustumHeightOuter : 0.001f;
 
                 // ── Change detection ────────────────────────────────────────────────────────
                 // Compare all nine derived vertex parameters against their watermarks.
