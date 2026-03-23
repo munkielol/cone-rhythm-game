@@ -44,16 +44,13 @@
 //  regions exactly (fixed left border / tiled center / fixed right border),
 //  using the same EdgeAwareChordAtColumn helper as FillCapUVs.  Geometry and
 //  UV column boundaries are guaranteed to agree — no asymmetry artefacts.
-//
-//  The original FillCapVertices (uniform angular steps) remains in the builder
-//  for CatchNoteRenderer and FlickNoteRenderer until they are migrated.
+//  CatchNoteRenderer and FlickNoteRenderer use the same edge-aware path.
 //
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
-//  Step 3b (Catch/Flick): identical integration pattern on CatchNoteRenderer
-//                          and FlickNoteRenderer.
-//  Step 3c (Flick arrow): billboard overlay pass on FlickNoteRenderer.
-//  Step 4  (Hold):        hold ribbon skin migration to same philosophy.
+//  Step 4  (Hold):        hold ribbon skin migration — Hold will get its own
+//                         sizing parameters in NoteSkinSet (holdLaneWidthRatio,
+//                         etc.) rather than reusing the single-interaction family.
 //  Step 5  (Shader tile): optional shader-side tiling optimisation.
 //
 // Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin) / step 3a (edge-aware geometry).
@@ -267,9 +264,9 @@ namespace RhythmicFlow.Player
                     "Tap notes will render in color-only mode until a texture is assigned.", this);
             }
 
-            // ── Read sizing from NoteSkinSet (single source of truth) ─────────────────
-            // These values were previously per-renderer Inspector fields; they now live
-            // on NoteSkinSet so that Tap/Catch/Flick/Hold all share one authoritative asset.
+            // ── Read sizing from NoteSkinSet (single-interaction family source of truth) ─
+            // noteLaneWidthRatio and noteRadialHalfThicknessLocal are shared by the
+            // Tap/Catch/Flick family. Hold uses its own separate sizing parameters.
             float noteLaneWidthRatio    = noteSkinSet.noteLaneWidthRatio;
             float noteHalfThicknessLocal = noteSkinSet.noteRadialHalfThicknessLocal;
 

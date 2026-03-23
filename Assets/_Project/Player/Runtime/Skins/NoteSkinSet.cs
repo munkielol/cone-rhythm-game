@@ -1,5 +1,24 @@
 // NoteSkinSet.cs
-// ScriptableObject data container for Tap / Catch / Flick note body skins.
+// ScriptableObject data container for Tap / Catch / Flick note skins and flick arrow overlays.
+//
+// ── Single-interaction note body family ──────────────────────────────────────
+//
+//  Tap, Catch, and Flick are collectively the "single-interaction note body
+//  family": they share one material template, one set of body-sizing parameters,
+//  one skin layout contract (fixed-edge + tiled-center UV), and one missed-tint.
+//
+//    shared parameters:  noteBodyMaterial, noteLaneWidthRatio,
+//                        noteRadialHalfThicknessLocal, bodyLeft/RightEdge*,
+//                        bodyCenterTileRatePerUnit, missedTintColor
+//
+//  Flick differs from Tap/Catch only in:
+//    - direction-specific body texture selection  (GetFlickBodyTexture)
+//    - arrow overlay material, textures, and placement  (flickArrow* fields)
+//
+//  Hold is NOT part of this family (v0). The hold ribbon uses different geometry
+//  (trapezoid ribbon vs curved cap) and will get its own sizing/skin parameters
+//  when migrated. Do NOT reuse noteLaneWidthRatio or noteRadialHalfThicknessLocal
+//  for hold rendering — those fields are single-interaction-family-only.
 //
 // ── Authoring workflow ────────────────────────────────────────────────────────
 //
@@ -60,11 +79,16 @@ namespace RhythmicFlow.Player
     }
 
     /// <summary>
-    /// Data container for Tap / Catch / Flick note body skins.
+    /// Data container for Tap / Catch / Flick note skins and flick arrow overlays.
     ///
-    /// <para>Authoring workflow: import PNGs → assign to this asset → result appears
-    /// in-game. One material template is shared; per-type textures are the primary
-    /// authoring artifacts.</para>
+    /// <para>Tap, Catch, and Flick form the <b>single-interaction note body family</b>:
+    /// they share one material template, one body-sizing set, one skin layout contract,
+    /// and one missed-tint color. Flick adds direction-specific body texture overrides
+    /// and an arrow overlay on top of the same shared family base.</para>
+    ///
+    /// <para><b>Hold is not part of this family.</b> Hold ribbon sizing and skin parameters
+    /// are kept separate and will be migrated to their own NoteSkinSet fields in a later step.
+    /// Do not reuse the single-interaction sizing fields for Hold rendering.</para>
     ///
     /// <para>Create via <b>Assets → Create → RhythmicFlow → Note Skin Set</b>.
     /// Assign to the <c>noteSkinSet</c> field on each production note renderer.</para>
@@ -76,10 +100,11 @@ namespace RhythmicFlow.Player
     public sealed class NoteSkinSet : ScriptableObject
     {
         // -------------------------------------------------------------------
-        // Body rendering — shared material template + per-type textures
+        // Single-interaction note body family — material template
+        // Used by: Tap, Catch, Flick.  Not used by: Hold (Hold has its own).
         // -------------------------------------------------------------------
 
-        [Header("Body Material Template")]
+        [Header("Single-Interaction Body — Material Template")]
         [Tooltip("Shared shader template for all Tap / Catch / Flick note bodies.\n\n" +
                  "Requirements:\n" +
                  "  • Must support _MainTex (the body texture) via MaterialPropertyBlock.\n" +
@@ -87,10 +112,15 @@ namespace RhythmicFlow.Player
                  "  • A simple Unlit/Transparent shader is sufficient for v0.\n\n" +
                  "Do NOT bake a texture into this material — textures are assigned at draw time " +
                  "per note type via MaterialPropertyBlock._MainTex. One material asset is shared " +
-                 "across all three types.")]
+                 "across Tap, Catch, and Flick.\n\n" +
+                 "Hold uses its own material and will be migrated separately.")]
         [SerializeField] public Material noteBodyMaterial;
 
-        [Header("Per-Type Body Textures")]
+        // -------------------------------------------------------------------
+        // Single-interaction note body family — per-type body textures
+        // -------------------------------------------------------------------
+
+        [Header("Single-Interaction Body — Per-Type Textures")]
         [Tooltip("Body texture for Tap notes.\n" +
                  "Assigned to _MainTex at draw time via MaterialPropertyBlock.\n" +
                  "Texture should use the fixed-edge + tiled-center layout (see bodyLeftEdgeU / bodyRightEdgeU).")]
@@ -99,7 +129,8 @@ namespace RhythmicFlow.Player
         [Tooltip("Body texture for Catch notes.")]
         [SerializeField] public Texture2D catchBodyTexture;
 
-        [Tooltip("Body texture for Flick notes (base body only; arrow overlay is separate).")]
+        [Tooltip("Body texture for Flick notes (base body only; arrow overlay is separate).\n" +
+                 "Direction-specific overrides in the section below take precedence when set.")]
         [SerializeField] public Texture2D flickBodyTexture;
 
         [Tooltip("(Optional) Fallback body texture used when a type-specific texture is null.\n" +
@@ -108,7 +139,7 @@ namespace RhythmicFlow.Player
         [SerializeField] public Texture2D fallbackBodyTexture;
 
         // -------------------------------------------------------------------
-        // Per-direction Flick body textures  (Flick only — overrides flickBodyTexture)
+        // Per-direction Flick body textures (Flick only — overrides flickBodyTexture)
         // -------------------------------------------------------------------
 
         [Header("Per-Direction Flick Body Textures (Optional Overrides)")]
@@ -133,10 +164,10 @@ namespace RhythmicFlow.Player
         [SerializeField] public Texture2D flickBodyTextureRight;
 
         // -------------------------------------------------------------------
-        // Body orientation — per-type vertical flip
+        // Single-interaction note body family — texture orientation
         // -------------------------------------------------------------------
 
-        [Header("Body Orientation — Vertical Flip")]
+        [Header("Single-Interaction Body — Orientation")]
         [Tooltip("Controls the V direction of the Tap body texture on the note mesh.\n\n" +
                  "false (default) — normal orientation: V=0 on the inner (tail) edge, " +
                  "V=1 on the outer (head/front) edge.\n\n" +
@@ -153,15 +184,14 @@ namespace RhythmicFlow.Player
         [Tooltip("Controls the V direction of the Flick body texture on the note mesh.\n\n" +
                  "false (default) — normal orientation.\n" +
                  "true — flip V: V=1 on inner edge, V=0 on outer edge.\n\n" +
-                 "Same convention as flipTapBodyVertical, applied to Flick only.\n" +
-                 "(Flick renderer skin integration is not yet active — field is reserved.)")]
+                 "Same convention as flipTapBodyVertical, applied to Flick only.")]
         [SerializeField] public bool flipFlickBodyVertical = false;
 
         // -------------------------------------------------------------------
-        // Skin layout — fixed decorative edges + tiled center
+        // Single-interaction note body family — skin layout (fixed-edge + tiled-center)
         // -------------------------------------------------------------------
 
-        [Header("Skin Layout — Fixed Edges + Tiled Center")]
+        [Header("Single-Interaction Body — Skin Layout")]
         [Tooltip("Left decorative border width as a normalized fraction of texture width [0..0.5].\n\n" +
                  "The leftmost (bodyLeftEdgeU × texture width) pixels are the fixed decorative border.\n" +
                  "These pixels are always mapped to the physical left edge of the note body " +
@@ -203,6 +233,42 @@ namespace RhythmicFlow.Player
         [SerializeField] public float bodyCenterTileRatePerUnit = 1.0f;
 
         // -------------------------------------------------------------------
+        // Single-interaction note body family — sizing & state
+        // Used by: Tap, Catch, Flick.
+        //
+        // Hold is intentionally excluded. The hold ribbon's angular width is
+        // controlled by HoldBodyRenderer.holdLaneWidthRatio and will be
+        // migrated to its own NoteSkinSet field when Hold skin is implemented.
+        // The hold ribbon has no "radial half-thickness" concept — its radial
+        // extent is determined by hold duration and approach speed.
+        // -------------------------------------------------------------------
+
+        [Header("Single-Interaction Body — Sizing & State")]
+        [Tooltip("Note head width as a fraction of the lane angular span at the note's radius.\n" +
+                 "1.0 = fills the full lane; 0.9 = 90% of the lane (default).\n" +
+                 "Applied as noteHalfAngleDeg = laneHalfWidthDeg × noteLaneWidthRatio.\n\n" +
+                 "Shared by Tap, Catch, and Flick (the single-interaction note body family).\n\n" +
+                 "Hold ribbon width is separate: see HoldBodyRenderer.holdLaneWidthRatio.\n" +
+                 "It will be migrated to a NoteSkinSet field when Hold skin is implemented.")]
+        [Range(0.1f, 1f)]
+        [SerializeField] public float noteLaneWidthRatio = 0.9f;
+
+        [Tooltip("Radial half-thickness of the note head in PlayfieldLocal units.\n" +
+                 "The note band spans [approachRadius − half, approachRadius + half].\n\n" +
+                 "Shared by Tap, Catch, and Flick (the single-interaction note body family).\n\n" +
+                 "Hold has no equivalent — its radial extent is determined by hold duration\n" +
+                 "and approach speed, not a fixed half-thickness.\n" +
+                 "Default: 0.022")]
+        [Min(0.001f)]
+        [SerializeField] public float noteRadialHalfThicknessLocal = 0.022f;
+
+        [Tooltip("_Color tint applied via MaterialPropertyBlock to missed notes " +
+                 "(State == Missed, visible until timeToHit < −greatWindowMs).\n\n" +
+                 "Shared by Tap, Catch, and Flick (the single-interaction note body family).\n" +
+                 "Default: (0.4, 0.4, 0.4, 0.55) — dim translucent grey.")]
+        [SerializeField] public Color missedTintColor = new Color(0.4f, 0.4f, 0.4f, 0.55f);
+
+        // -------------------------------------------------------------------
         // Flick arrow overlay — shared material template + per-direction textures
         // (Flick only — separate pass from the body)
         // -------------------------------------------------------------------
@@ -242,22 +308,11 @@ namespace RhythmicFlow.Player
         [SerializeField] public Texture2D flickArrowTextureRight;
 
         // -------------------------------------------------------------------
-        // Geometry and state parameters
+        // Flick arrow overlay — size & placement
+        // (Flick only — does not affect Tap/Catch body rendering)
         // -------------------------------------------------------------------
 
-        [Header("Geometry Parameters")]
-        [Tooltip("Note head width as a fraction of the lane angular span at the note's radius.\n" +
-                 "1.0 = fills the full lane; 0.9 = 90% of the lane (default).\n" +
-                 "Applied as noteHalfAngleDeg = laneHalfWidthDeg × noteLaneWidthRatio.")]
-        [Range(0.1f, 1f)]
-        [SerializeField] public float noteLaneWidthRatio = 0.9f;
-
-        [Tooltip("Radial half-thickness of the note head in PlayfieldLocal units.\n" +
-                 "The note band spans [approachRadius − half, approachRadius + half].\n" +
-                 "Default: 0.022")]
-        [Min(0.001f)]
-        [SerializeField] public float noteRadialHalfThicknessLocal = 0.022f;
-
+        [Header("Flick Arrow — Size & Placement")]
         [Tooltip("(Legacy) Uniform arrow size in PlayfieldLocal units.\n\n" +
                  "This field is kept for backward-compatibility. When arrowWidthLocal or " +
                  "arrowHeightLocal are set to a value greater than 0, they take precedence " +
@@ -308,14 +363,9 @@ namespace RhythmicFlow.Player
                  "Default: 0 (centred on note).")]
         [SerializeField] public float arrowTangentialOffsetLocal = 0f;
 
-        [Header("State Colors")]
-        [Tooltip("_Color tint applied via MaterialPropertyBlock to missed notes " +
-                 "(State == Missed, visible until timeToHit < −greatWindowMs).\n" +
-                 "Default: (0.4, 0.4, 0.4, 0.55) — dim translucent grey.")]
-        [SerializeField] public Color missedTintColor = new Color(0.4f, 0.4f, 0.4f, 0.55f);
-
         // -------------------------------------------------------------------
-        // Runtime helpers  (read-only convenience; no allocation)
+        // Runtime helpers — single-interaction body family (Tap/Catch/Flick)
+        // Allocation-free; read-only convenience; called per draw call.
         // -------------------------------------------------------------------
 
         /// <summary>
@@ -424,6 +474,11 @@ namespace RhythmicFlow.Player
             };
         }
 
+        // -------------------------------------------------------------------
+        // Runtime helpers — skin layout computed properties
+        // Used by NoteCapGeometryBuilder.FillCapUVs and the edge-aware vertex builder.
+        // -------------------------------------------------------------------
+
         /// <summary>
         /// Returns the UV start of the center region: <c>bodyLeftEdgeU</c>.
         /// The center UV range is [CenterUStart .. CenterUEnd].
@@ -467,16 +522,17 @@ namespace RhythmicFlow.Player
             // Tile rate must be positive to avoid division-by-zero in UV builders.
             bodyCenterTileRatePerUnit = Mathf.Max(0.01f, bodyCenterTileRatePerUnit);
 
-            // Geometry params must be positive.
-            noteLaneWidthRatio            = Mathf.Clamp(noteLaneWidthRatio, 0.1f, 1f);
-            noteRadialHalfThicknessLocal  = Mathf.Max(0.001f, noteRadialHalfThicknessLocal);
-            arrowSizeLocal                = Mathf.Max(0.001f, arrowSizeLocal);
-            arrowSurfaceOffsetLocal       = Mathf.Max(0f, arrowSurfaceOffsetLocal);
-            // Width/height of 0 means "use arrowSizeLocal as fallback" — that is intentional,
-            // so only prevent negatives here (the Min(0f) attribute already guards it,
-            // but re-clamp defensively in case of programmatic assignment).
-            arrowWidthLocal               = Mathf.Max(0f, arrowWidthLocal);
-            arrowHeightLocal              = Mathf.Max(0f, arrowHeightLocal);
+            // Single-interaction body sizing — must be positive.
+            noteLaneWidthRatio           = Mathf.Clamp(noteLaneWidthRatio, 0.1f, 1f);
+            noteRadialHalfThicknessLocal = Mathf.Max(0.001f, noteRadialHalfThicknessLocal);
+
+            // Arrow sizing — arrowSizeLocal must be positive (legacy fallback base).
+            // arrowWidthLocal / arrowHeightLocal of 0 means "use arrowSizeLocal as fallback" —
+            // that is intentional, so only prevent negatives here.
+            arrowSizeLocal        = Mathf.Max(0.001f, arrowSizeLocal);
+            arrowWidthLocal       = Mathf.Max(0f, arrowWidthLocal);
+            arrowHeightLocal      = Mathf.Max(0f, arrowHeightLocal);
+            arrowSurfaceOffsetLocal = Mathf.Max(0f, arrowSurfaceOffsetLocal);
         }
     }
 }
