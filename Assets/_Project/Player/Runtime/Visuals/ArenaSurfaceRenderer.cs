@@ -10,12 +10,13 @@
 //     • Reads evaluated geometry from ChartRuntimeEvaluator.
 //     • Builds a filled sector mesh spanning [innerLocal .. visualOuterLocal].
 //     • Places vertices on the frustum cone surface using PlayfieldFrustumProfile.
-//     • Draws using the base layer of ArenaSurfaceSkinSet (material, texture, tint,
-//       opacity, UV tiling, UV scroll).
+//     • Base layer pass: draws using ArenaSurfaceSkinSet.baseLayer.
+//     • Detail layer pass: draws using ArenaSurfaceSkinSet.detailLayer on top
+//       of the base pass, reusing the same mesh (no second vertex fill).
 //
 // ── What this renderer does NOT do ───────────────────────────────────────────
 //
-//   • Detail and accent layers are reserved for a later step.
+//   • Accent layer is reserved for a later step.
 //   • Does NOT own MeshColliders or affect input/hit-testing.
 //     (That is ArenaColliderProvider's responsibility.)
 //   • Does NOT depend on PlayerDebugArenaSurface or PlayerDebugRenderer.
@@ -25,10 +26,11 @@
 //
 //   Identical to JudgementRingRenderer and ArenaBandRenderer:
 //     – pre-allocated Mesh pool (MaxArenaPool slots), vertices written in-place
-//       each LateUpdate — zero per-frame GC allocation after Awake.
+//       once per arena per LateUpdate — zero per-frame GC allocation after Awake.
 //     – Graphics.DrawMesh — works in Game view without Gizmos; no child GOs.
-//     – Single MaterialPropertyBlock; updated each LateUpdate with current
-//       tint, texture, UV scale, and UV scroll offset.
+//     – Two MaterialPropertyBlocks (_propBlock / _detailPropBlock), each
+//       configured once before the arena loop and reused for all arenas.
+//     – Detail layer reuses the same mesh slot as base (no second vertex fill).
 //
 // ── Vertex layout ─────────────────────────────────────────────────────────────
 //
@@ -69,7 +71,7 @@ namespace RhythmicFlow.Player
 {
     /// <summary>
     /// Production arena surface renderer.  Draws the filled annular sector for each
-    /// active arena using the base layer of <see cref="ArenaSurfaceSkinSet"/>.
+    /// active arena using the base and detail layers of <see cref="ArenaSurfaceSkinSet"/>.
     ///
     /// <para>Attach to any GO in the Player scene.  Assign
     /// <see cref="playerAppController"/>, <see cref="frustumProfile"/>, and
@@ -95,7 +97,7 @@ namespace RhythmicFlow.Player
         [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
         [Tooltip("Arena surface skin.  Controls the visual appearance of the filled arena sector.\n\n" +
-                 "Only the base layer is rendered in this step.  Detail and accent layers are reserved.")]
+                 "Base and detail layers are rendered.  Accent layer is reserved for a later step.")]
         [SerializeField] private ArenaSurfaceSkinSet skinSet;
 
         [Header("Geometry")]
@@ -124,16 +126,22 @@ namespace RhythmicFlow.Player
         // Length = (arcSegments + 1) * 2.
         private Vector3[] _vertScratch;
 
-        // MaterialPropertyBlock — reused across all draw calls; updated per LateUpdate.
+        // Base layer: MaterialPropertyBlock and accumulated UV scroll offset.
+        // Configured once before the arena loop; reused for every arena draw call.
         private MaterialPropertyBlock _propBlock;
+        private Vector2               _uvScrollOffset;
 
-        // Accumulated UV scroll offset (wraps to [0, 1) each frame to preserve precision).
-        private Vector2 _uvScrollOffset;
+        // Detail layer: separate MaterialPropertyBlock and scroll offset.
+        // Configured once before the arena loop when the detail layer will render.
+        // Uses the same mesh slot as base (no second vertex fill needed).
+        private MaterialPropertyBlock _detailPropBlock;
+        private Vector2               _detailUvScrollOffset;
 
         // Per-warning guards — prevent per-frame console spam on misconfiguration.
         private bool _hasWarnedMissingController;
         private bool _hasWarnedMissingSkinSet;
         private bool _hasWarnedMissingMaterial;
+        private bool _hasWarnedDetailMissingMaterial;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -201,6 +209,9 @@ namespace RhythmicFlow.Player
 
             _propBlock      = new MaterialPropertyBlock();
             _uvScrollOffset = Vector2.zero;
+
+            _detailPropBlock      = new MaterialPropertyBlock();
+            _detailUvScrollOffset = Vector2.zero;
         }
 
         private void OnDestroy()
@@ -258,6 +269,31 @@ namespace RhythmicFlow.Player
                 return;
             }
 
+            // ── Detail layer state ────────────────────────────────────────────────────
+            // Resolved once here so the arena loop can branch cheaply without re-reading
+            // the struct or re-checking the warning guard on every iteration.
+            ArenaSurfaceLayer detailLayer      = skinSet.detailLayer;
+            bool              detailWillRender = false;
+
+            if (detailLayer.enabled)
+            {
+                if (detailLayer.material != null)
+                {
+                    detailWillRender = true;
+                }
+                else
+                {
+                    // Detail is enabled but has no material — warn once and skip.
+                    if (!_hasWarnedDetailMissingMaterial)
+                    {
+                        _hasWarnedDetailMissingMaterial = true;
+                        Debug.LogWarning("[ArenaSurfaceRenderer] skinSet.detailLayer is enabled but " +
+                                         "detailLayer.material is not assigned.  " +
+                                         "Assign a material to the detail layer or disable it.");
+                    }
+                }
+            }
+
             // ── Evaluator access ──────────────────────────────────────────────────────
             ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
             PlayfieldTransform    pfT       = playerAppController.PlayfieldTf;
@@ -273,31 +309,54 @@ namespace RhythmicFlow.Player
             float zInner     = useProfile ? frustumProfile.FrustumHeightInner : 0.001f;
             float zOuter     = useProfile ? frustumProfile.FrustumHeightOuter : 0.001f;
 
-            // ── UV scroll ─────────────────────────────────────────────────────────────
+            // ── UV scroll — base layer ────────────────────────────────────────────────
             // Accumulate scroll and wrap to [0, 1) to prevent float precision drift
             // over long sessions.
             _uvScrollOffset += baseLayer.uvScrollSpeed * Time.deltaTime;
             _uvScrollOffset.x -= Mathf.Floor(_uvScrollOffset.x);
             _uvScrollOffset.y -= Mathf.Floor(_uvScrollOffset.y);
 
-            // ── MaterialPropertyBlock ─────────────────────────────────────────────────
-            // Update once for this LateUpdate pass; the same block is reused for every
-            // arena draw call this frame.
-            _propBlock.SetColor("_Color", skinSet.GetEffectiveTint(baseLayer));
+            // ── UV scroll — detail layer ──────────────────────────────────────────────
+            // Independent accumulator — detail can scroll at a different rate/direction.
+            // Only update when detail will actually render (no-op otherwise).
+            if (detailWillRender)
+            {
+                _detailUvScrollOffset += detailLayer.uvScrollSpeed * Time.deltaTime;
+                _detailUvScrollOffset.x -= Mathf.Floor(_detailUvScrollOffset.x);
+                _detailUvScrollOffset.y -= Mathf.Floor(_detailUvScrollOffset.y);
+            }
 
+            // ── MaterialPropertyBlock — base layer ────────────────────────────────────
+            // Configured once; reused for every arena base draw call this frame.
+            // _MainTex_ST convention: xy = tiling scale, zw = scroll offset.
+            // Standard Unity Unlit/Transparent and Sprites/Default shaders support this.
+            _propBlock.SetColor("_Color", skinSet.GetEffectiveTint(baseLayer));
             if (baseLayer.texture != null)
             {
                 _propBlock.SetTexture("_MainTex", baseLayer.texture);
             }
-
-            // _MainTex_ST convention: xy = tiling scale, zw = scroll offset.
-            // The shader must expose _MainTex_ST for tiling/scroll to take effect.
-            // Standard Unity Unlit/Transparent and Sprites/Default shaders support this.
             _propBlock.SetVector("_MainTex_ST", new Vector4(
                 baseLayer.uvScale.x,
                 baseLayer.uvScale.y,
                 _uvScrollOffset.x,
                 _uvScrollOffset.y));
+
+            // ── MaterialPropertyBlock — detail layer ──────────────────────────────────
+            // Configured once; reused for every arena detail draw call this frame.
+            // Same _MainTex_ST convention as base.
+            if (detailWillRender)
+            {
+                _detailPropBlock.SetColor("_Color", skinSet.GetEffectiveTint(detailLayer));
+                if (detailLayer.texture != null)
+                {
+                    _detailPropBlock.SetTexture("_MainTex", detailLayer.texture);
+                }
+                _detailPropBlock.SetVector("_MainTex_ST", new Vector4(
+                    detailLayer.uvScale.x,
+                    detailLayer.uvScale.y,
+                    _detailUvScrollOffset.x,
+                    _detailUvScrollOffset.y));
+            }
 
             // ── Per-arena draw ────────────────────────────────────────────────────────
             _poolUsed = 0;
@@ -328,7 +387,7 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(ea.CenterXNorm, ea.CenterYNorm));
 
-                // ── Fill vertex scratch ────────────────────────────────────────────────
+                // ── Fill vertex scratch (once per arena; shared by base + detail) ───────
                 FillSectorVerts(_vertScratch, arcSegments,
                     ea.ArcStartDeg, arcSweep,
                     center, innerLocal, visualOuterLocal,
@@ -337,8 +396,19 @@ namespace RhythmicFlow.Player
                 int slot = _poolUsed++;
                 _meshPool[slot].vertices = _vertScratch;
                 _meshPool[slot].RecalculateBounds();
+
+                // ── Base layer draw ────────────────────────────────────────────────────
                 Graphics.DrawMesh(_meshPool[slot], localToWorld, baseLayer.material,
                     gameObject.layer, null, 0, _propBlock);
+
+                // ── Detail layer draw (same mesh, different material/propblock) ─────────
+                // Rendered after base so it composites on top.  No second vertex fill
+                // is needed — the mesh data written above is still valid.
+                if (detailWillRender)
+                {
+                    Graphics.DrawMesh(_meshPool[slot], localToWorld, detailLayer.material,
+                        gameObject.layer, null, 0, _detailPropBlock);
+                }
             }
         }
 
