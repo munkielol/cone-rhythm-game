@@ -172,6 +172,8 @@ MonoBehaviour:
   useEditorProjectRootPacks: 1
   editorPacksFolderName: DevPacks
   gameplayMode: 0
+  noteLeadTimeMs: 2000
+  spawnRadiusFactor: 0
   useVisualSurfaceRaycast: 1
   visualSurfaceLayerMask:
     serializedVersion: 2
@@ -229,8 +231,6 @@ MonoBehaviour:
   frustumHeightInner: 0.001
   frustumHeightOuter: 0.15
   surfaceOffsetLocal: 0.002
-  noteLeadTimeMs: 2000
-  spawnRadiusFactor: 0
   debugDrawNoteOutline: 0
   debugDrawLaneBoundary: 0
 --- !u!1 &58450156
@@ -781,8 +781,6 @@ MonoBehaviour:
   frustumHeightInner: 0.001
   frustumHeightOuter: 0.15
   surfaceOffsetLocal: 0.002
-  noteLeadTimeMs: 2000
-  spawnRadiusFactor: 0
   debugDrawNoteOutline: 0
   debugDrawLaneBoundary: 0
 --- !u!1 &692284757
@@ -851,8 +849,6 @@ MonoBehaviour:
   lineWidth: 0.01
   markerHalfSize: 0.04
   maxNoteMarkers: 32
-  noteLeadTimeMs: 2000
-  spawnRadiusFactor: 0.25
   showNotesOutsideWindow: 1
   showFlickDirectionArrows: 1
   flickArrowLengthNorm: 0.08
@@ -930,22 +926,19 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.HoldBodyRenderer
   playerAppController: {fileID: 4343613}
-  holdMaterial: {fileID: 2100000, guid: a38017da047f723419b9baf25f20f25d, type: 2}
+  noteSkinSet: {fileID: 11400000, guid: 819a3a86b9915f947805ac9482b8d9c6, type: 2}
   arenaSurface: {fileID: 412451162}
   useFrustumProfile: 1
   frustumHeightInner: 0.001
   frustumHeightOuter: 0.15
   surfaceOffsetLocal: 0.002
-  holdColorApproaching: {r: 0.3, g: 0.6, b: 1, a: 0.75}
-  holdColorActive: {r: 0.5, g: 0.85, b: 1, a: 1}
-  holdColorReleased: {r: 0.8, g: 0.2, b: 0.2, a: 0.55}
-  noteLeadTimeMs: 2000
-  spawnRadiusFactor: 0
-  holdLaneWidthRatio: 0.8
-  debugDrawEndpoints: 1
-  debugDrawMeshOutline: 1
-  debugLogSpawnOncePerSecond: 1
-  debugDrawSpawnArcs: 1
+  holdColorApproaching: {r: 1, g: 1, b: 1, a: 1}
+  holdColorActive: {r: 1, g: 1, b: 1, a: 1}
+  holdColorReleased: {r: 0.8, g: 0.2, b: 0.2, a: 1}
+  debugDrawEndpoints: 0
+  debugDrawMeshOutline: 0
+  debugLogSpawnOncePerSecond: 0
+  debugDrawSpawnArcs: 0
 --- !u!4 &780337768
 Transform:
   m_ObjectHideFlags: 0
@@ -1048,8 +1041,6 @@ MonoBehaviour:
   frustumHeightInner: 0.001
   frustumHeightOuter: 0.15
   surfaceOffsetLocal: 0.002
-  noteLeadTimeMs: 2000
-  spawnRadiusFactor: 0
   debugDrawNoteOutline: 0
   debugDrawLaneBoundary: 0
 --- !u!1660057539 &9223372036854775807

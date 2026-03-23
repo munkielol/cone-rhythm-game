@@ -72,14 +72,17 @@
 //   UV is computed per-column per-frame using ComputeHoldWidthU.
 //
 // ══════════════════════════════════════════════════════════════════════
-//  SKIN SYSTEM INTEGRATION (width-side only)
+//  SKIN SYSTEM INTEGRATION (both axes)
 //
 //   Material:  NoteSkinSet.noteBodyMaterial (shared template).
 //   Texture:   NoteSkinSet.GetHoldBodyTexture() → set via _MainTex MPB.
 //   Width UV:  fixed left edge + tiled center + fixed right edge,
 //              using NoteCapGeometryBuilder.ComputeHoldWidthU per column.
-//   Length UV: simple 0→1 mapping across ribbon length (V axis).
-//              Length tiling (holdLengthTileRatePerUnit) is DEFERRED.
+//   Length UV: head-anchored tiling along ribbon length (V axis).
+//              V at the head/judgement end is always 0 (or 1 when flipped),
+//              and V at the tail end extends by segmentLength × holdLengthTileRatePerUnit.
+//              As the hold shrinks, tiles disappear toward the tail while the
+//              visual pattern at the head stays stable.
 //   Phase tint: holdColorApproaching / holdColorActive / holdColorReleased
 //              are applied as _Color tint multipliers on top of the texture.
 //
@@ -117,10 +120,9 @@ namespace RhythmicFlow.Player
                  "  • noteBodyMaterial — shared shader template (must support _MainTex, _Color via MPB)\n" +
                  "  • holdLaneWidthRatio — ribbon angular width fraction\n" +
                  "  • holdLeft/RightEdgeU, holdLeft/RightEdgeLocalWidth — border UV fractions\n" +
-                 "  • holdCenterTileRatePerUnit — tiling across ribbon width\n" +
-                 "  • holdFlipVertical — V-axis orientation\n\n" +
-                 "Hold length tiling (holdLengthTileRatePerUnit) is read from the asset " +
-                 "but NOT yet applied — V maps 0→1 for now (deferred for a later step).")]
+                 "  • holdCenterTileRatePerUnit — tiling across ribbon width (U axis)\n" +
+                 "  • holdLengthTileRatePerUnit — tiling along ribbon length (V axis)\n" +
+                 "  • holdFlipVertical — V-axis orientation")]
         [SerializeField] private NoteSkinSet noteSkinSet;
 
         // -------------------------------------------------------------------
@@ -328,11 +330,13 @@ namespace RhythmicFlow.Player
             }
 
             // ── Skin settings read once per frame ────────────────────────────────────
-            // holdLaneWidthRatio: migrated from the old HoldBodyRenderer Inspector field.
-            // holdFlipVertical:   controls V axis orientation across ribbon length.
+            // holdLaneWidthRatio:     migrated from the old HoldBodyRenderer Inspector field.
+            // holdFlipVertical:       controls V axis orientation along ribbon length.
+            // holdLengthTileRatePerUnit: how many times the texture repeats per local unit of
+            //                         hold length. Read once; applied per-note in the loop below.
             float skinLaneWidthRatio = noteSkinSet.holdLaneWidthRatio;
-            float vTail = noteSkinSet.holdFlipVertical ? 1f : 0f;  // V at inner/younger ribbon end
-            float vHead = noteSkinSet.holdFlipVertical ? 0f : 1f;  // V at outer/older ribbon end
+            bool  flipVertical       = noteSkinSet.holdFlipVertical;
+            float lengthTileRate     = Mathf.Max(0.01f, noteSkinSet.holdLengthTileRatePerUnit);
 
             double chartTimeMs   = playerAppController.EffectiveChartTimeMs;
             double greatWindowMs = playerAppController.GreatWindowMs;
@@ -437,6 +441,34 @@ namespace RhythmicFlow.Player
                 // Degenerate: skip to avoid divide-by-zero or zero-area mesh.
                 if (headR - tailR < 0.0001f) { continue; }
 
+                // ── Length-direction V tiling (head-anchored) ─────────────────────────────
+                //
+                // V is tiled along the hold length rather than stretched 0→1.
+                // The tiling phase is anchored at the head/judgement end so the visual
+                // pattern near the hit line stays stable as the hold is consumed.
+                //
+                // segmentLength: current rendered distance between head and tail endpoints.
+                //   During approach (Phase A):  head and tail both move, ribbon shrinks from
+                //                               the outer side.
+                //   During hold     (Phase B):  headR pins at judgementR; tailR advances
+                //                               inward — ribbon shrinks from the tail end.
+                //   In both phases headV stays fixed at the anchor (0 or 1), so tiles
+                //   appear/disappear only at the tail end, never at the judgement end.
+                //
+                // vSpan = segmentLength × holdLengthTileRatePerUnit
+                //   A vSpan of 2.5 means the texture repeats 2.5× across the ribbon.
+                //   Because the material uses a tiling/repeat sampler, UV values outside
+                //   [0,1] wrap correctly — no special clamping is needed.
+                //
+                // holdFlipVertical = false:  headV = 0,  tailV = +vSpan
+                //   (V increases from head toward tail; tile "rows" flow outward)
+                // holdFlipVertical = true:   headV = 1,  tailV = 1 − vSpan
+                //   (V decreases from head toward tail; texture is mirrored vertically)
+                float segmentLength = headR - tailR;  // > 0.0001 (degenerate check above)
+                float vSpan         = segmentLength * lengthTileRate;
+                float vHead         = flipVertical ? 1f : 0f;
+                float vTail         = flipVertical ? (1f - vSpan) : vSpan;
+
                 // ── Step 3: Phase-based tint ──────────────────────────────────────────────
                 //
                 // Applied as _Color multiplier on top of the hold body texture.
@@ -517,9 +549,10 @@ namespace RhythmicFlow.Player
                 //   U: computed per-column via ComputeHoldWidthU — fixed-edge + tiled-center.
                 //      Each row uses its own totalChord (widthTail or widthHead) because head
                 //      and tail have different chord widths at different radii.
-                //   V: simple 0→1 mapping (tail=vTail, head=vHead).
-                //      HOLD LENGTH TILING IS DEFERRED — holdLengthTileRatePerUnit is not yet
-                //      applied here. V is a fixed 0→1 gradient until that step is integrated.
+                //   V: head-anchored tiling along ribbon length.
+                //      vHead and vTail were computed above from segmentLength × lengthTileRate,
+                //      anchored at the head end so the pattern stays stable near judgement.
+                //      All columns in a row share the same V (V does not vary across width).
                 //
                 // Mesh vertex indices:
                 //   Tail row: [HoldTailRow .. HoldTailRow + HoldColumnCount] = [0..5]
