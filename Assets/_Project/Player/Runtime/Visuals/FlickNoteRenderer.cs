@@ -51,8 +51,11 @@
 //  A second Graphics.DrawMesh call per visible flick note draws a camera-facing
 //  direction arrow on top of the body, implemented per spec §5.7.2:
 //
-//    • Material:   noteSkinSet.GetFlickArrowMaterial(note.FlickDirection)
-//      (U/D fallback chain: Down→Up; L/R fallback chain: Right→Left)
+//    • Material template: noteSkinSet.flickArrowMaterial
+//      (shared across all four directions; do NOT bake a texture into it)
+//    • Arrow texture:     noteSkinSet.GetFlickArrowTexture(note.FlickDirection)
+//      (direction-specific; fallback chain mirrors body texture pattern;
+//       assigned per draw call via MaterialPropertyBlock._MainTex on _arrowPropBlock)
 //    • Mesh:       _arrowMesh — single shared unit-square quad; never modified per-frame
 //    • Size:       noteSkinSet.arrowSizeLocal — constant, does NOT scale with lane width
 //    • Z offset:   noteSkinSet.arrowSurfaceOffsetLocal — lifts quad above note body
@@ -63,8 +66,8 @@
 //      where θ = laneCenterDeg in radians (PlayfieldRoot XY).
 //    • Billboard matrix: LookRotation(forward=arrowNorm, up=arrowUp) where arrowNorm
 //      is derived from Cross(arrowRight, arrowUp) with arrowRight = Cross(arrowUp, -camForward)
-//    • No MaterialPropertyBlock override: arrow materials carry their own texture.
-//    • If no arrow material is resolved (all slots null): arrow is silently skipped.
+//    • If flickArrowMaterial is null: arrows skipped, one-time warning logged.
+//    • If arrow texture resolves to null: arrow skipped silently for that note.
 //
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
@@ -97,12 +100,12 @@ namespace RhythmicFlow.Player
         [Tooltip("The PlayerAppController this renderer reads notes and geometry from.")]
         [SerializeField] private PlayerAppController playerAppController;
 
-        [Tooltip("NoteSkinSet asset driving the body material, body texture, arrow materials, " +
-                 "lane width ratio, radial half-thickness, arrow size, missed tint, and vertical " +
-                 "flip for Flick notes.\n\n" +
+        [Tooltip("NoteSkinSet asset driving the body material, body texture, arrow material template, " +
+                 "arrow textures, lane width ratio, radial half-thickness, arrow size, missed tint, " +
+                 "and vertical flip for Flick notes.\n\n" +
                  "Create via Assets → Create → RhythmicFlow → Note Skin Set.\n" +
-                 "Assign flickBodyTexture, noteBodyMaterial, and flickArrowMaterial* on the asset, " +
-                 "then drag it here.")]
+                 "Assign noteBodyMaterial, flickBodyTexture, flickArrowMaterial, and " +
+                 "flickArrowTexture* on the asset, then drag it here.")]
         [SerializeField] private NoteSkinSet noteSkinSet;
 
         // -------------------------------------------------------------------
@@ -183,6 +186,10 @@ namespace RhythmicFlow.Player
         // Pre-allocated property block — reused for every body DrawMesh call (no per-frame allocation).
         private MaterialPropertyBlock _propBlock;
 
+        // Separate property block for arrow overlay draws. Kept distinct from _propBlock so
+        // that _MainTex set for the body texture never leaks into the arrow draw call and vice versa.
+        private MaterialPropertyBlock _arrowPropBlock;
+
         // -------------------------------------------------------------------
         // Internals — arrow overlay
         // -------------------------------------------------------------------
@@ -210,6 +217,10 @@ namespace RhythmicFlow.Player
         // Rendering continues in color-only mode for that note.
         private bool _hasWarnedMissingTexture;
 
+        // Missing flickArrowMaterial on the assigned NoteSkinSet — warn once.
+        // Arrow overlays are skipped entirely when the template material is absent.
+        private bool _hasWarnedMissingArrowMaterial;
+
         // -------------------------------------------------------------------
         // Unity lifecycle
         // -------------------------------------------------------------------
@@ -224,7 +235,8 @@ namespace RhythmicFlow.Player
             {
                 _meshPool[i] = NoteCapGeometryBuilder.BuildCapMesh("FlickNoteCurvedCap");
             }
-            _propBlock = new MaterialPropertyBlock();
+            _propBlock      = new MaterialPropertyBlock();
+            _arrowPropBlock = new MaterialPropertyBlock();
 
             // Build the shared arrow overlay quad. This mesh is the same unit-square for every
             // note and every frame — per-note orientation is driven entirely by the DrawMesh
@@ -458,7 +470,7 @@ namespace RhythmicFlow.Player
                 // The arrow is a camera-facing billboard: its local +Y axis points in the
                 // flick gesture direction; its local +Z faces the camera.
                 // Arrow size is constant — does NOT scale with lane width (readability rule).
-                // Arrow materials use their own baked texture; no MaterialPropertyBlock needed.
+                // Uses flickArrowMaterial template + per-direction texture via _arrowPropBlock.
                 DrawArrowOverlay(note.FlickDirection, laneCenterDeg,
                     ctr, r, innerLocal, outerLocal, hInner, hOuter,
                     pfRoot, camForward);
@@ -482,7 +494,10 @@ namespace RhythmicFlow.Player
         /// Draws the flick arrow overlay quad for one note.
         /// Camera-facing billboard (spec §5.7.2): the quad's local +Y axis aligns with the
         /// flick gesture direction in world space; local +Z faces the camera.
-        /// Silently skips if no arrow material is assigned for this direction.
+        /// Uses the shared <c>flickArrowMaterial</c> template with a per-note arrow texture
+        /// assigned via <c>_arrowPropBlock</c> — same MaterialPropertyBlock pattern as body rendering.
+        /// Skips (with a one-time warning) if the arrow material template is missing.
+        /// Skips silently if the resolved arrow texture is null.
         /// </summary>
         private void DrawArrowOverlay(
             string    flickDirection,
@@ -496,10 +511,27 @@ namespace RhythmicFlow.Player
             Transform pfRoot,
             Vector3   camForward)
         {
-            // Arrow material — selected by direction with NoteSkinSet fallback chain.
-            // (U/D share family; R/L share family. Null means this direction is unassigned.)
-            Material arrowMaterial = noteSkinSet.GetFlickArrowMaterial(flickDirection);
-            if (arrowMaterial == null || _arrowMesh == null) { return; }
+            // Arrow material template — shared across all directions. Without it we cannot draw.
+            Material arrowMaterial = noteSkinSet.flickArrowMaterial;
+            if (arrowMaterial == null)
+            {
+                if (!_hasWarnedMissingArrowMaterial)
+                {
+                    _hasWarnedMissingArrowMaterial = true;
+                    Debug.LogWarning(
+                        "[FlickNoteRenderer] NoteSkinSet.flickArrowMaterial is not assigned. " +
+                        "Assign a material that supports _MainTex via MaterialPropertyBlock " +
+                        "(e.g. Unlit/Transparent). Arrow overlays will be skipped until assigned.", this);
+                }
+                return;
+            }
+            if (_arrowMesh == null) { return; }
+
+            // Arrow texture — resolved per note via direction-specific fallback chain.
+            // GetFlickArrowTexture: direction slot → generic flickArrowTexture → null.
+            // Returns null when all slots are unassigned — skip this arrow silently.
+            Texture2D arrowTexture = noteSkinSet.GetFlickArrowTexture(flickDirection);
+            if (arrowTexture == null) { return; }
 
             // ── Note centre in PlayfieldRoot local space ───────────────────────────────
             // The arrow is centred on the note body at the approach radius, with a small
@@ -551,8 +583,13 @@ namespace RhythmicFlow.Player
                 arrowRot,
                 new Vector3(s, s, 1f));
 
-            // Draw with no property block override — the arrow material carries its own texture.
-            Graphics.DrawMesh(_arrowMesh, arrowMatrix, arrowMaterial, gameObject.layer);
+            // Assign the direction-specific arrow texture to the shared material template via
+            // _arrowPropBlock, exactly mirroring the body texture assignment pattern.
+            // _arrowPropBlock is kept separate from _propBlock so body _MainTex never leaks in.
+            _arrowPropBlock.SetTexture("_MainTex", arrowTexture);
+
+            Graphics.DrawMesh(_arrowMesh, arrowMatrix, arrowMaterial,
+                gameObject.layer, null, 0, _arrowPropBlock);
         }
 
         // -------------------------------------------------------------------

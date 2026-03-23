@@ -7,11 +7,14 @@
 //  2. Create a NoteSkinSet via  Assets → Create → RhythmicFlow → Note Skin Set.
 //  3. Assign textures to tapBodyTexture, catchBodyTexture, flickBodyTexture.
 //  4. Assign noteBodyMaterial (a simple Unlit/Transparent material template).
-//  5. Assign this asset to the NoteSkinSet field on each renderer in the Inspector.
+//  5. For flick arrows: import arrow PNG textures; assign to flickArrowTexture*
+//     fields. Assign flickArrowMaterial (a shared Unlit/Transparent template).
+//  6. Assign this asset to the NoteSkinSet field on each renderer in the Inspector.
 //
-//  Do NOT bake textures into the material asset. The material is a shared shader
-//  template; the runtime assigns the type-specific texture via MaterialPropertyBlock
-//  (_MainTex) per draw call. This keeps one material asset shared across all types.
+//  Do NOT bake textures into material assets. Materials are shared shader
+//  templates; the runtime assigns per-type / per-direction textures via
+//  MaterialPropertyBlock (_MainTex) per draw call. One material asset can be
+//  shared across all note types and all arrow directions.
 //
 // ── Skin layout contract ─────────────────────────────────────────────────────
 //
@@ -200,27 +203,43 @@ namespace RhythmicFlow.Player
         [SerializeField] public float bodyCenterTileRatePerUnit = 1.0f;
 
         // -------------------------------------------------------------------
-        // Flick arrow overlays  (Flick only — separate pass from the body)
+        // Flick arrow overlay — shared material template + per-direction textures
+        // (Flick only — separate pass from the body)
         // -------------------------------------------------------------------
 
-        [Header("Flick Arrow Materials (Flick only)")]
-        [Tooltip("Material for the arrow overlay quad — Up direction (toward arena center).\n" +
-                 "Used when FlickDirection == \"U\".")]
-        [SerializeField] public Material flickArrowMaterialUp;
+        [Header("Flick Arrow Overlay (Flick only)")]
+        [Tooltip("Shared shader template for all flick arrow overlays.\n\n" +
+                 "Requirements:\n" +
+                 "  • Must support _MainTex (the arrow texture) via MaterialPropertyBlock.\n" +
+                 "  • A simple Unlit/Transparent shader is sufficient.\n\n" +
+                 "Do NOT bake a texture into this material — textures are assigned at draw time " +
+                 "per note direction via MaterialPropertyBlock._MainTex. One material asset is shared " +
+                 "across all four arrow directions.\n\n" +
+                 "Leave null to disable all arrow overlays.")]
+        [SerializeField] public Material flickArrowMaterial;
 
-        [Tooltip("(Optional) Material for the arrow overlay quad — Down direction (away from arena center).\n" +
-                 "Falls back to flickArrowMaterialUp rotated 180° when null.\n" +
-                 "Used when FlickDirection == \"D\".")]
-        [SerializeField] public Material flickArrowMaterialDown;
+        [Tooltip("(Optional) Generic fallback arrow texture used when no direction-specific slot is set.\n" +
+                 "All four directions fall back to this if their own slot is null.\n" +
+                 "Leave null if you are using direction-specific textures exclusively.")]
+        [SerializeField] public Texture2D flickArrowTexture;
 
-        [Tooltip("Material for the arrow overlay quad — Left direction (clockwise tangential).\n" +
-                 "Used when FlickDirection == \"L\".")]
-        [SerializeField] public Material flickArrowMaterialLeft;
+        [Tooltip("Arrow texture for Up-direction flicks (radially inward, toward arena center).\n" +
+                 "Assigned to _MainTex via MaterialPropertyBlock at draw time.\n" +
+                 "Fallback chain: flickArrowTextureUp → flickArrowTexture.\n" +
+                 "Arrow texture should be authored with the arrow graphic pointing toward V=1 (+Y in UV).")]
+        [SerializeField] public Texture2D flickArrowTextureUp;
 
-        [Tooltip("(Optional) Material for the arrow overlay quad — Right direction (CCW tangential).\n" +
-                 "Falls back to flickArrowMaterialLeft rotated 180° when null.\n" +
-                 "Used when FlickDirection == \"R\".")]
-        [SerializeField] public Material flickArrowMaterialRight;
+        [Tooltip("(Optional) Arrow texture for Down-direction flicks (radially outward).\n" +
+                 "Fallback chain: flickArrowTextureDown → flickArrowTextureUp → flickArrowTexture.")]
+        [SerializeField] public Texture2D flickArrowTextureDown;
+
+        [Tooltip("Arrow texture for Left-direction flicks (clockwise tangential).\n" +
+                 "Fallback chain: flickArrowTextureLeft → flickArrowTexture.")]
+        [SerializeField] public Texture2D flickArrowTextureLeft;
+
+        [Tooltip("(Optional) Arrow texture for Right-direction flicks (CCW tangential).\n" +
+                 "Fallback chain: flickArrowTextureRight → flickArrowTextureLeft → flickArrowTexture.")]
+        [SerializeField] public Texture2D flickArrowTextureRight;
 
         // -------------------------------------------------------------------
         // Geometry and state parameters
@@ -311,20 +330,36 @@ namespace RhythmicFlow.Player
         }
 
         /// <summary>
-        /// Returns the flick arrow material for the given direction string ("U"/"D"/"L"/"R"),
-        /// falling back gracefully when optional slots are null.
-        /// Returns null if no arrow material is configured for this direction.
+        /// Returns the arrow texture for a Flick note with the given direction string
+        /// ("U"/"D"/"L"/"R"), applying direction-specific overrides before falling back
+        /// to <see cref="flickArrowTexture"/> (the generic fallback slot).
+        ///
+        /// <para>Fallback chains:</para>
+        /// <list type="bullet">
+        ///   <item><b>"U"</b> — flickArrowTextureUp → flickArrowTexture</item>
+        ///   <item><b>"D"</b> — flickArrowTextureDown → flickArrowTextureUp → flickArrowTexture</item>
+        ///   <item><b>"L"</b> — flickArrowTextureLeft → flickArrowTexture</item>
+        ///   <item><b>"R"</b> — flickArrowTextureRight → flickArrowTextureLeft → flickArrowTexture</item>
+        ///   <item>Unknown / undirected — flickArrowTexture</item>
+        /// </list>
+        ///
+        /// Returns null when all slots (including <see cref="flickArrowTexture"/>) are unassigned.
+        /// The renderer will silently skip the arrow overlay in that case.
         /// </summary>
-        public Material GetFlickArrowMaterial(string flickDirection)
+        public Texture2D GetFlickArrowTexture(string flickDirection)
         {
-            return flickDirection switch
+            // Resolve the direction-specific candidate (with one-hop family fallback for D and R).
+            Texture2D candidate = flickDirection switch
             {
-                "U" => flickArrowMaterialUp,
-                "D" => flickArrowMaterialDown != null ? flickArrowMaterialDown : flickArrowMaterialUp,
-                "L" => flickArrowMaterialLeft,
-                "R" => flickArrowMaterialRight != null ? flickArrowMaterialRight : flickArrowMaterialLeft,
+                "U" => flickArrowTextureUp,
+                "D" => flickArrowTextureDown != null ? flickArrowTextureDown : flickArrowTextureUp,
+                "L" => flickArrowTextureLeft,
+                "R" => flickArrowTextureRight != null ? flickArrowTextureRight : flickArrowTextureLeft,
                 _   => null,
             };
+
+            // Walk to generic fallback: direction candidate → generic arrow texture.
+            return candidate != null ? candidate : flickArrowTexture;
         }
 
         /// <summary>

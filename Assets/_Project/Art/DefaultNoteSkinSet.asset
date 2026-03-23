@@ -29,10 +29,12 @@ MonoBehaviour:
   bodyLeftEdgeLocalWidth: 0.01
   bodyRightEdgeLocalWidth: 0.01
   bodyCenterTileRatePerUnit: 20
-  flickArrowMaterialUp: {fileID: 0}
-  flickArrowMaterialDown: {fileID: 0}
-  flickArrowMaterialLeft: {fileID: 0}
-  flickArrowMaterialRight: {fileID: 0}
+  flickArrowMaterial: {fileID: 2100000, guid: 3a43b3ff18ac33348b86ae969e480695, type: 2}
+  flickArrowTexture: {fileID: 0}
+  flickArrowTextureUp: {fileID: 2800000, guid: 9279dad21f3ff5f498da025df47df475, type: 3}
+  flickArrowTextureDown: {fileID: 2800000, guid: 2e45358f490ab454c86b5a2c764a2561, type: 3}
+  flickArrowTextureLeft: {fileID: 2800000, guid: f8d24aa4dbcb5cb459c8f517a3ae1ddb, type: 3}
+  flickArrowTextureRight: {fileID: 2800000, guid: 1ebe37b47572ca042b8be716d85cb865, type: 3}
   noteLaneWidthRatio: 1
   noteRadialHalfThicknessLocal: 0.002
   arrowSizeLocal: 0.08

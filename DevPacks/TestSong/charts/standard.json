@@ -94,8 +94,8 @@
       "tickTimesMs": [4600, 5000, 5400, 5800, 6200, 6600, 7000, 7200]
     },
 
-    { "noteId": "t2", "laneId": "lane-1", "type": "tap", "timeMs": 5200 },
-    { "noteId": "f2", "laneId": "lane-1", "type": "flick", "timeMs": 6400, "direction": "R" },
-    { "noteId": "c2", "laneId": "lane-1", "type": "catch", "timeMs": 7600 }
+    { "noteId": "f2", "laneId": "lane-1", "type": "flick", "timeMs": 7600, "direction": "D"  },
+    { "noteId": "f3", "laneId": "lane-1", "type": "flick", "timeMs": 8000, "direction": "L" },
+    { "noteId": "f4", "laneId": "lane-1", "type": "flick", "timeMs": 8400, "direction": "R"  }
   ]
 }
