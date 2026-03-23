@@ -469,6 +469,14 @@ namespace RhythmicFlow.Player
         /// column boundary.  This guarantees that UV region transitions land exactly on the
         /// same column boundaries as the mesh vertices — geometry and UV cannot disagree.
         /// </para>
+        ///
+        /// <para><b>Center-anchored tiling:</b>
+        /// Center region tiling phase is measured from the midpoint of the center region
+        /// (chord = leftW + centerW × 0.5), not from its left edge.  This keeps the
+        /// visual pattern stable at the note's midpoint as <c>centerW</c> grows and
+        /// shrinks during approach — tiles expand/contract symmetrically outward from
+        /// the center rather than sliding from one side.
+        /// </para>
         /// </summary>
         /// <param name="uvs">Pre-allocated scratch, length ≥ <see cref="VertexCount"/> (12).</param>
         /// <param name="noteRadiusLocal">Note approach radius in PlayfieldLocal units.
@@ -563,15 +571,26 @@ namespace RhythmicFlow.Player
                 }
                 else
                 {
-                    // ── Tiled center region ───────────────────────────────────────
-                    // Position within the center in PlayfieldLocal units.
-                    float posInCenter = chordToI - leftW;
-
-                    // Tile the center UV region horizontally.
-                    // One tile = (1 / tileRate) PlayfieldLocal units.
+                    // ── Tiled center region (center-anchored) ─────────────────────
+                    //
+                    // Phase is measured from the midpoint of the center region, not
+                    // from its left edge.  The center midpoint sits at chord position:
+                    //
+                    //   centerMidChord = leftW + centerW × 0.5
+                    //
+                    // Using a signed distance from this midpoint means the tiling
+                    // phase at the visual centre of the note is always the same —
+                    // the pattern feels attached to the note body while it travels.
+                    // As centerW grows/shrinks, tiles expand/contract symmetrically
+                    // outward from the middle rather than sliding from the left edge.
+                    //
+                    // Phase offset +0.5 maps the exact note midpoint to the middle
+                    // of a tile (tileFrac = 0.5 → UV = centerUStart + 0.5×centerUWidth),
+                    // giving a visually balanced starting appearance.
+                    //
                     // Mathf.Repeat(x, 1f) = fractional part of x — allocation-free.
-                    // The result maps into [CenterUStart .. CenterUStart + CenterUWidth].
-                    float tileFrac = Mathf.Repeat(posInCenter * tileRate, 1f);
+                    float signedDistFromCenter = chordToI - (leftW + centerW * 0.5f);
+                    float tileFrac = Mathf.Repeat(signedDistFromCenter * tileRate + 0.5f, 1f);
                     u = centerUStart + tileFrac * centerUWidth;
                 }
 
