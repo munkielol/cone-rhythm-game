@@ -105,6 +105,31 @@ namespace RhythmicFlow.Player
         [SerializeField] public Texture2D fallbackBodyTexture;
 
         // -------------------------------------------------------------------
+        // Per-direction Flick body textures  (Flick only — overrides flickBodyTexture)
+        // -------------------------------------------------------------------
+
+        [Header("Per-Direction Flick Body Textures (Optional Overrides)")]
+        [Tooltip("(Optional) Body texture for Flick notes with direction Up (radially inward).\n" +
+                 "When set, overrides flickBodyTexture for Up-flicks.\n" +
+                 "Fallback chain: flickBodyTextureUp → flickBodyTexture → fallbackBodyTexture.")]
+        [SerializeField] public Texture2D flickBodyTextureUp;
+
+        [Tooltip("(Optional) Body texture for Flick notes with direction Down (radially outward).\n" +
+                 "When set, overrides flickBodyTexture for Down-flicks.\n" +
+                 "Fallback chain: flickBodyTextureDown → flickBodyTextureUp → flickBodyTexture → fallbackBodyTexture.")]
+        [SerializeField] public Texture2D flickBodyTextureDown;
+
+        [Tooltip("(Optional) Body texture for Flick notes with direction Left (clockwise tangential).\n" +
+                 "When set, overrides flickBodyTexture for Left-flicks.\n" +
+                 "Fallback chain: flickBodyTextureLeft → flickBodyTexture → fallbackBodyTexture.")]
+        [SerializeField] public Texture2D flickBodyTextureLeft;
+
+        [Tooltip("(Optional) Body texture for Flick notes with direction Right (counter-clockwise tangential).\n" +
+                 "When set, overrides flickBodyTexture for Right-flicks.\n" +
+                 "Fallback chain: flickBodyTextureRight → flickBodyTextureLeft → flickBodyTexture → fallbackBodyTexture.")]
+        [SerializeField] public Texture2D flickBodyTextureRight;
+
+        // -------------------------------------------------------------------
         // Body orientation — per-type vertical flip
         // -------------------------------------------------------------------
 
@@ -251,6 +276,38 @@ namespace RhythmicFlow.Player
                 _                      => null,
             };
             return tex != null ? tex : fallbackBodyTexture;
+        }
+
+        /// <summary>
+        /// Returns the body texture for a Flick note with the given direction string ("U"/"D"/"L"/"R"),
+        /// applying direction-specific overrides before falling back to the generic flick texture
+        /// and then to <see cref="fallbackBodyTexture"/>.
+        ///
+        /// <para>Fallback chains:</para>
+        /// <list type="bullet">
+        ///   <item><b>"U"</b> — flickBodyTextureUp → flickBodyTexture → fallbackBodyTexture</item>
+        ///   <item><b>"D"</b> — flickBodyTextureDown → flickBodyTextureUp → flickBodyTexture → fallbackBodyTexture</item>
+        ///   <item><b>"L"</b> — flickBodyTextureLeft → flickBodyTexture → fallbackBodyTexture</item>
+        ///   <item><b>"R"</b> — flickBodyTextureRight → flickBodyTextureLeft → flickBodyTexture → fallbackBodyTexture</item>
+        ///   <item>Unknown direction — flickBodyTexture → fallbackBodyTexture</item>
+        /// </list>
+        /// </summary>
+        public Texture2D GetFlickBodyTexture(string flickDirection)
+        {
+            // Resolve direction-specific first candidate(s), then fall through to generic slots.
+            Texture2D candidate = flickDirection switch
+            {
+                "U" => flickBodyTextureUp,
+                "D" => flickBodyTextureDown != null ? flickBodyTextureDown : flickBodyTextureUp,
+                "L" => flickBodyTextureLeft,
+                "R" => flickBodyTextureRight != null ? flickBodyTextureRight : flickBodyTextureLeft,
+                _   => null,
+            };
+
+            // Walk fallback chain: direction candidate → generic flick → fallback.
+            if (candidate != null) return candidate;
+            if (flickBodyTexture != null) return flickBodyTexture;
+            return fallbackBodyTexture;
         }
 
         /// <summary>
