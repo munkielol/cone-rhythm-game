@@ -1,5 +1,5 @@
 // FlickNoteRenderer.cs
-// Production renderer for Flick note heads.
+// Production renderer for Flick note heads (body only — arrow overlay is a future step).
 //
 // ── Architecture ─────────────────────────────────────────────────────────────
 //
@@ -9,41 +9,57 @@
 //
 // ── Geometry (v0 step 2: segmented curved-cap) ───────────────────────────────
 //
-//  Replaces the single-segment trapezoid (step 1) with a curved cap that
-//  arc-samples across the note's angular span using NoteCapGeometryBuilder.
-//
-//  ColumnCount = 5 columns → 6 column boundaries → 10 triangles per note.
-//  The note body visibly follows the lane arc rather than using a straight
-//  chord approximation.
-//
-//  Key invariants (unchanged from step 1):
+//  5-column segmented curved-cap from NoteCapGeometryBuilder.
+//  Key invariants:
 //    - Lane-width-aware: noteHalfAngleDeg = laneHalfWidthDeg × noteLaneWidthRatio
 //    - Frustum-conforming: Z per row = NoteApproachMath.FrustumZAtRadius(r, …)
 //    - Centered on the lane at approach radius r
 //    - Stable under lane centerDeg / widthDeg / arenaRadius animation
 //    - Wrap-safe: cos/sin handle angles outside [0, 360) naturally
 //
+// ── Skin rendering (v0 step 3: texture-driven, CPU UV — body only) ────────────
+//
+//  Replaces the placeholder _Color-only path with the texture-driven body path
+//  described in spec §5.7.3 (identical pattern to TapNoteRenderer / CatchNoteRenderer):
+//
+//    • Material template: noteSkinSet.noteBodyMaterial
+//      (shared across all note types; do NOT bake a texture into it)
+//    • Body texture:      noteSkinSet.GetBodyTexture(NoteBodySkinType.Flick)
+//      (assigned per draw call via MaterialPropertyBlock._MainTex)
+//    • UV layout:         NoteCapGeometryBuilder.FillCapUVs(…)
+//      (fixed-edge + center-anchored tiled-center written into _uvScratch each frame)
+//    • Vertical flip:     noteSkinSet.flipFlickBodyVertical
+//    • Lane width ratio:  noteSkinSet.noteLaneWidthRatio
+//    • Radial thickness:  noteSkinSet.noteRadialHalfThicknessLocal
+//    • Missed tint:       noteSkinSet.missedTintColor (via _Color)
+//    • Normal tint:       Color.white (texture drives the look; no extra tint)
+//
+//  All sizing and color parameters are now authoritative on NoteSkinSet.
+//  The old per-renderer flickMaterial / noteLaneWidthRatio / noteHalfThicknessLocal
+//  / flickColor / missedTintColor fields have been removed.
+//
+// ── Geometry (v0 step 3a: edge-aware column placement) ───────────────────────
+//
+//  FillCapVerticesEdgeAware replaces the old uniform FillCapVertices call.
+//  Column boundaries are placed at chord positions that match the three skin
+//  regions exactly (fixed left border / tiled center / fixed right border),
+//  using the same EdgeAwareChordAtColumn helper as FillCapUVs.
+//
 // ── Flick arrow overlay ───────────────────────────────────────────────────────
 //
 //  NOT included in this step. Arrow direction billboard (spec §5.7.2) will be
-//  added in a future step as a separate overlay pass once the base curved-cap
-//  geometry is verified. Arrow directions follow spec §5.7.2 / §7.3.1:
+//  added in a future step as a separate overlay pass. Arrow directions follow
+//  spec §5.7.2 / §7.3.1:
 //    U = radialIn (−cosθ, −sinθ)   D = radialOut (+cosθ, +sinθ)
 //    L = CW tangent (+sinθ, −cosθ) R = CCW tangent (−sinθ, +cosθ)
 //
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
-//  Step 3: Add flick arrow overlay billboard per spec §5.7.2.
-//          Assign UV regions on the cap mesh for fixed-edge + tiled-center
-//          texture mapping (spec §5.7.3). Replace placeholder color with
-//          NoteSkinSet — geometry pipeline stays the same.
+//  Step 3d (Flick arrow): billboard overlay pass using NoteSkinSet flick arrow materials.
+//  Step 4  (Hold):        hold ribbon skin migration to same philosophy.
+//  Step 5  (Shader tile): optional shader-side tiling optimisation.
 //
-// ── This step ────────────────────────────────────────────────────────────────
-//
-//  Geometry only. Placeholder color applied via MaterialPropertyBlock._Color.
-//  No arrow overlay, no NoteSkinSet, no PNG skin, no UV region assignment.
-//
-// Spec §5.7.a / §5.7.0 step 2.
+// Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin) / step 3a (edge-aware geometry).
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -51,11 +67,11 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Production Flick note head renderer. Geometry step 2:
-    /// lane-width-aware, frustum-conforming segmented curved-cap
-    /// (NoteCapGeometryBuilder, ColumnCount = 5).
-    /// Flick arrow overlay is NOT included in this step (see file header).
-    /// Assign a simple unlit material with <c>_Color</c> property support.
+    /// Production Flick note head renderer — body only (step 3, no arrow overlay yet).
+    /// Texture-driven skin via <see cref="NoteSkinSet"/>; CPU-driven per-frame UV
+    /// assignment for fixed-edge + center-anchored tiled-center body layout (spec §5.7.3).
+    /// Geometry: 5-column edge-aware segmented curved-cap from <see cref="NoteCapGeometryBuilder"/>.
+    /// Arrow overlay is deferred to a future step.
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Visuals/FlickNoteRenderer")]
     public class FlickNoteRenderer : MonoBehaviour
@@ -68,12 +84,14 @@ namespace RhythmicFlow.Player
         [Tooltip("The PlayerAppController this renderer reads notes and geometry from.")]
         [SerializeField] private PlayerAppController playerAppController;
 
-        [Tooltip("Unlit material with _Color property support. " +
-                 "Replace with texture-driven flick skin material in a later step.")]
-        [SerializeField] private Material flickMaterial;
+        [Tooltip("NoteSkinSet asset driving the body material, body texture, lane width ratio, " +
+                 "radial half-thickness, missed tint, and vertical flip for Flick notes.\n\n" +
+                 "Create via Assets → Create → RhythmicFlow → Note Skin Set.\n" +
+                 "Assign flickBodyTexture and noteBodyMaterial on the asset, then drag it here.")]
+        [SerializeField] private NoteSkinSet noteSkinSet;
 
         // -------------------------------------------------------------------
-        // Inspector — Frustum surface alignment (mirrors HoldBodyRenderer)
+        // Inspector — Frustum surface alignment (mirrors TapNoteRenderer)
         // -------------------------------------------------------------------
 
         [Header("Frustum Surface Alignment")]
@@ -110,32 +128,6 @@ namespace RhythmicFlow.Player
         [SerializeField] private float spawnRadiusFactor = 0f;
 
         // -------------------------------------------------------------------
-        // Inspector — Note head sizing
-        // -------------------------------------------------------------------
-
-        [Header("Note Head Sizing")]
-        [Tooltip("Radial half-thickness of the flick head band in PlayfieldLocal units. " +
-                 "The head spans [r − half, r + half] radially. Default: 0.022.")]
-        [SerializeField] private float noteHalfThicknessLocal = 0.022f;
-
-        [Tooltip("Note head width as a fraction of the lane angular span at the note's radius. " +
-                 "1.0 = full lane width. Default: 0.9.")]
-        [Range(0.1f, 1f)]
-        [SerializeField] private float noteLaneWidthRatio = 0.9f;
-
-        // -------------------------------------------------------------------
-        // Inspector — Placeholder color
-        // -------------------------------------------------------------------
-
-        [Header("Placeholder Color")]
-        [Tooltip("Base color applied via MaterialPropertyBlock._Color for active flick notes. " +
-                 "Replace with texture-driven NoteSkinSet in a later step.")]
-        [SerializeField] private Color flickColor = new Color(1f, 0.65f, 0.1f, 0.95f);
-
-        [Tooltip("Color applied to Missed flick notes (dim ghost visible until past miss window).")]
-        [SerializeField] private Color missedTintColor = new Color(0.4f, 0.4f, 0.4f, 0.55f);
-
-        // -------------------------------------------------------------------
         // Inspector — Debug geometry verification
         // -------------------------------------------------------------------
 
@@ -157,23 +149,41 @@ namespace RhythmicFlow.Player
         // Internals — mesh pool
         // -------------------------------------------------------------------
 
-        // One mesh per simultaneously visible Flick note. Vertices overwritten
+        // One mesh per simultaneously visible Flick note. Vertices and UVs overwritten
         // in-place each LateUpdate — zero per-frame GC allocation.
         private const int MaxNotePool = 128;
 
         private Mesh[] _meshPool;
         private int    _poolUsed;
 
-        // Vertex scratch — length NoteCapGeometryBuilder.VertexCount (12).
-        // Written by NoteCapGeometryBuilder.FillCapVertices then copied to
-        // the pooled mesh via mesh.vertices = _vertScratch.
+        // Vertex scratch — filled by NoteCapGeometryBuilder.FillCapVerticesEdgeAware each frame.
+        // Length = NoteCapGeometryBuilder.VertexCount (12).
         private readonly Vector3[] _vertScratch = new Vector3[NoteCapGeometryBuilder.VertexCount];
 
-        // Pre-allocated property block — reused every DrawMesh call.
+        // UV scratch — filled by NoteCapGeometryBuilder.FillCapUVs each frame.
+        // Assigned to the pooled mesh alongside _vertScratch.
+        // Length = NoteCapGeometryBuilder.VertexCount (12), matching mesh topology.
+        private readonly Vector2[] _uvScratch = new Vector2[NoteCapGeometryBuilder.VertexCount];
+
+        // Pre-allocated property block — reused every DrawMesh call (no per-frame allocation).
         private MaterialPropertyBlock _propBlock;
 
-        // Guard: log a warning at most once if the Inspector reference is missing.
+        // -------------------------------------------------------------------
+        // Internals — one-time warning guards (warn once, not every frame)
+        // -------------------------------------------------------------------
+
+        // Missing PlayerAppController — always warn; without it nothing can render.
         private bool _hasWarnedMissingController;
+
+        // Missing NoteSkinSet — warn once; without it material/texture/sizing are unknown.
+        private bool _hasWarnedMissingSkinSet;
+
+        // Missing noteBodyMaterial on the assigned NoteSkinSet — warn once.
+        private bool _hasWarnedMissingMaterial;
+
+        // Missing flick texture (flickBodyTexture and fallbackBodyTexture both null) — warn once.
+        // Rendering continues in color-only mode; the texture warning fires just once.
+        private bool _hasWarnedMissingTexture;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -181,6 +191,9 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
+            // Pre-allocate the mesh pool. Each mesh has the curved-cap topology set up
+            // once in BuildCapMesh (triangles + placeholder UVs). Vertices and UVs are
+            // overwritten in-place every frame — no per-frame GC allocation.
             _meshPool = new Mesh[MaxNotePool];
             for (int i = 0; i < MaxNotePool; i++)
             {
@@ -200,8 +213,7 @@ namespace RhythmicFlow.Player
 
         private void LateUpdate()
         {
-            // Require wiring. Missing controller = warn once; missing material = skip
-            // silently (material may not be assigned yet in a fresh scene setup).
+            // ── Guard: PlayerAppController ─────────────────────────────────────────────
             if (playerAppController == null)
             {
                 if (!_hasWarnedMissingController)
@@ -209,13 +221,63 @@ namespace RhythmicFlow.Player
                     _hasWarnedMissingController = true;
                     Debug.LogWarning(
                         "[FlickNoteRenderer] PlayerAppController is not assigned. " +
-                        "Add this component to a scene GameObject and assign the " +
-                        "PlayerAppController reference in the Inspector.", this);
+                        "Assign the PlayerAppController reference in the Inspector.", this);
                 }
                 return;
             }
-            if (flickMaterial == null || _meshPool == null) { return; }
 
+            // ── Guard: NoteSkinSet ─────────────────────────────────────────────────────
+            // All sizing, texture, and tint parameters come from the skin — skip rendering
+            // entirely when the asset is not wired so we don't produce inconsistent output.
+            if (noteSkinSet == null)
+            {
+                if (!_hasWarnedMissingSkinSet)
+                {
+                    _hasWarnedMissingSkinSet = true;
+                    Debug.LogWarning(
+                        "[FlickNoteRenderer] NoteSkinSet is not assigned. " +
+                        "Create a NoteSkinSet asset and assign it in the Inspector.", this);
+                }
+                return;
+            }
+
+            // ── Guard: body material ───────────────────────────────────────────────────
+            // The material provides the shader template. Without it Graphics.DrawMesh
+            // would use the error pink material, so skip and warn once.
+            Material bodyMaterial = noteSkinSet.noteBodyMaterial;
+            if (bodyMaterial == null || _meshPool == null)
+            {
+                if (bodyMaterial == null && !_hasWarnedMissingMaterial)
+                {
+                    _hasWarnedMissingMaterial = true;
+                    Debug.LogWarning(
+                        "[FlickNoteRenderer] NoteSkinSet.noteBodyMaterial is not assigned. " +
+                        "Assign a material that supports _MainTex and _Color via " +
+                        "MaterialPropertyBlock (e.g. Unlit/Transparent).", this);
+                }
+                return;
+            }
+
+            // ── Resolve flick body texture (warn once if missing; render color-only) ───
+            // GetBodyTexture returns flickBodyTexture, falling back to fallbackBodyTexture.
+            // If both are null it returns null — we warn once and continue in color-only mode
+            // (the material's base color shows through without _MainTex being overridden).
+            Texture2D bodyTexture = noteSkinSet.GetBodyTexture(NoteBodySkinType.Flick);
+            if (bodyTexture == null && !_hasWarnedMissingTexture)
+            {
+                _hasWarnedMissingTexture = true;
+                Debug.LogWarning(
+                    "[FlickNoteRenderer] NoteSkinSet has no flickBodyTexture or fallbackBodyTexture. " +
+                    "Flick notes will render in color-only mode until a texture is assigned.", this);
+            }
+
+            // ── Read sizing from NoteSkinSet (single source of truth) ─────────────────
+            // These values were previously per-renderer Inspector fields; they now live
+            // on NoteSkinSet so that Tap/Catch/Flick/Hold all share one authoritative asset.
+            float noteLaneWidthRatio     = noteSkinSet.noteLaneWidthRatio;
+            float noteHalfThicknessLocal = noteSkinSet.noteRadialHalfThicknessLocal;
+
+            // ── Geometry / playfield data ──────────────────────────────────────────────
             var allNotes = playerAppController.NotesAll;
             if (allNotes == null) { return; }
 
@@ -245,7 +307,7 @@ namespace RhythmicFlow.Player
             {
                 // ── Type and state filter ──────────────────────────────────────────────
                 if (note.Type != NoteType.Flick) { continue; }
-                if (note.State == NoteState.Hit) { continue; }  // successfully judged
+                if (note.State == NoteState.Hit) { continue; }  // successfully judged — no visual
 
                 if (_poolUsed >= MaxNotePool) { break; } // pool exhausted
 
@@ -279,40 +341,73 @@ namespace RhythmicFlow.Player
                 float tailR = Mathf.Max(r - noteHalfThicknessLocal, spawnR);
                 if (headR - tailR < 0.0001f) { continue; } // degenerate — skip
 
-                // ── Color (placeholder — replaced with NoteSkinSet in a later step) ────
-                Color noteColor = (note.State == NoteState.Missed) ? missedTintColor : flickColor;
-                _propBlock.SetColor("_Color", noteColor);
-
                 // ── Arena centre in local XY ───────────────────────────────────────────
                 Vector2 ctr = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // ── Curved-cap vertex fill ─────────────────────────────────────────────
-                // NoteCapGeometryBuilder.FillCapVertices arc-samples across the lane's
-                // angular span, placing ColumnCount+1 column boundaries on the actual
-                // arc (not a single chord). Each column boundary has a tail vertex and a
-                // head vertex — the note body visibly follows the lane curve.
+                // ── Angular occupancy ──────────────────────────────────────────────────
                 float laneCenterDeg    = AngleUtil.Normalize360(lane.CenterDeg);
                 float halfWidthDeg     = lane.WidthDeg * 0.5f;
                 float noteHalfAngleDeg = NoteCapGeometryBuilder.NoteHalfAngleDeg(
                     halfWidthDeg, noteLaneWidthRatio);
 
-                NoteCapGeometryBuilder.FillCapVertices(
+                // ── Curved-cap vertex fill (edge-aware) ───────────────────────────────
+                // Places the ColumnCount+1 column boundaries at chord positions that
+                // match the three skin regions: fixed left border / tiled center /
+                // fixed right border.  Uses the same EdgeAwareChordAtColumn helper as
+                // FillCapUVs so geometry and UV columns are guaranteed to align.
+                NoteCapGeometryBuilder.FillCapVerticesEdgeAware(
                     _vertScratch,
                     ctr,
                     tailR,
                     headR,
                     laneCenterDeg,
                     noteHalfAngleDeg,
+                    r,                                      // approach radius (for chord → angle)
+                    noteSkinSet.bodyLeftEdgeLocalWidth,
+                    noteSkinSet.bodyRightEdgeLocalWidth,
                     innerLocal,
                     outerLocal,
                     hInner,
                     hOuter);
 
+                // ── Per-frame UV fill (fixed-edge + center-anchored tiled-center) ──────
+                // Uses the approach radius r (centre of the note band) so that edge/center
+                // proportions stay stable as the note travels toward the judgement ring.
+                // flipFlickBodyVertical swaps V so artists can orient art without re-exporting.
+                // Writes into _uvScratch; assigned to the mesh below alongside vertices.
+                NoteCapGeometryBuilder.FillCapUVs(
+                    _uvScratch,
+                    r,                  // approach radius — see FillCapUVs for why we use r
+                    noteHalfAngleDeg,
+                    noteSkinSet,
+                    noteSkinSet.flipFlickBodyVertical);
+
+                // ── MaterialPropertyBlock: texture + tint ─────────────────────────────
+                //
+                // _MainTex: the flick body texture. Assigned here per draw call so the shared
+                //           material asset stays clean (no texture baked into it).
+                //           Skipped when bodyTexture is null — falls back to color-only.
+                //
+                // _Color:   for normal notes: Color.white (texture drives the look).
+                //           for missed notes: noteSkinSet.missedTintColor (dim grey tint).
+                //           The tint multiplies with _MainTex so missed notes appear dim.
+                if (bodyTexture != null)
+                {
+                    _propBlock.SetTexture("_MainTex", bodyTexture);
+                }
+
+                Color tint = (note.State == NoteState.Missed)
+                    ? noteSkinSet.missedTintColor
+                    : Color.white;
+                _propBlock.SetColor("_Color", tint);
+
+                // ── Upload mesh data and draw ──────────────────────────────────────────
                 Mesh mesh = _meshPool[_poolUsed++];
                 mesh.vertices = _vertScratch;
+                mesh.uv       = _uvScratch;       // per-frame UV: fixed-edge + center-anchored tiled-center
                 mesh.RecalculateBounds();
 
-                Graphics.DrawMesh(mesh, localToWorld, flickMaterial,
+                Graphics.DrawMesh(mesh, localToWorld, bodyMaterial,
                     gameObject.layer, null, 0, _propBlock);
 
                 // ── Debug geometry verification (no GC — only Debug.DrawLine) ──────────
@@ -402,6 +497,8 @@ namespace RhythmicFlow.Player
             if (debugDrawLaneBoundary)
             {
                 // ── Lane boundary ticks (yellow): full lane left/right ─────────────────
+                // These show the complete lane angular span. Compare against green note
+                // ticks to verify noteLaneWidthRatio occupancy is applied correctly.
                 float leftLaneDeg  = AngleUtil.Normalize360(laneCenterDeg - halfWidthDeg);
                 float rightLaneDeg = AngleUtil.Normalize360(laneCenterDeg + halfWidthDeg);
                 DrawArcTick(pfRoot, ctr, centerR, leftLaneDeg,
@@ -410,6 +507,8 @@ namespace RhythmicFlow.Player
                     innerLocal, outerLocal, hInner, hOuter, Color.yellow);
 
                 // ── Note boundary ticks (green): actual note left/right edges ──────────
+                // These show where the curved-cap vertices land. Should sit inset from
+                // the yellow lane ticks by (1 − noteLaneWidthRatio)/2 on each side.
                 float leftNoteDeg  = AngleUtil.Normalize360(laneCenterDeg - noteHalfAngleDeg);
                 float rightNoteDeg = AngleUtil.Normalize360(laneCenterDeg + noteHalfAngleDeg);
                 DrawArcTick(pfRoot, ctr, centerR, leftNoteDeg,
@@ -441,6 +540,7 @@ namespace RhythmicFlow.Player
         {
             const float HalfTickDeg = 2f;
 
+            // Use the actual frustum Z so ticks sit on the cone surface.
             float localZ = NoteApproachMath.FrustumZAtRadius(
                 radius, innerLocal, outerLocal, hInner, hOuter);
 

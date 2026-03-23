@@ -775,7 +775,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.FlickNoteRenderer
   playerAppController: {fileID: 4343613}
-  flickMaterial: {fileID: 2100000, guid: 92aeac852adb356498cbbfea3fe6945f, type: 2}
+  noteSkinSet: {fileID: 11400000, guid: 819a3a86b9915f947805ac9482b8d9c6, type: 2}
   arenaSurface: {fileID: 412451162}
   useFrustumProfile: 1
   frustumHeightInner: 0.001
@@ -783,10 +783,6 @@ MonoBehaviour:
   surfaceOffsetLocal: 0.002
   noteLeadTimeMs: 2000
   spawnRadiusFactor: 0
-  noteHalfThicknessLocal: 0.002
-  noteLaneWidthRatio: 0.8
-  flickColor: {r: 1, g: 0.65, b: 0.1, a: 0.95}
-  missedTintColor: {r: 0.4, g: 0.4, b: 0.4, a: 0.55}
   debugDrawNoteOutline: 0
   debugDrawLaneBoundary: 0
 --- !u!1 &692284757
