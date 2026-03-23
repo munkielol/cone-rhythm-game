@@ -1,6 +1,6 @@
 # **Rhythm Game Chart Editor v0 Specification**
 
-**Document version:** 0.4 (v0 Claude-ready)
+**Document version:** 0.5 (v0 Claude-ready)
 **Primary goal:** Provide a Windows Unity editor to author charts and export playable `.rpk` song packs for the mobile player app.  
 **Core principle:** Everything is authored in **timeMs** (integer milliseconds). Beat/grid tooling is **derived** from the tempo map and used only for editor UX.
 
@@ -122,6 +122,26 @@ The Playfield Preview must render note bodies using the same geometry rules as t
 * **Hold bodies** — use the ribbon geometry rules from player spec §5.7.1 (approach formula, trapezoid shape, three-phase visibility, color/state mapping).
 
 **Implementation approach:** The chart editor playfield preview can directly reference and instantiate `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer`, and `NoteSkinSet` from the Player assembly (or Shared equivalents when factored out). This eliminates code duplication and ensures automatic parity. This reuse remains valid regardless of whether the runtime skin implementation is currently CPU-driven UV assignment or later becomes shader-optimized — the `NoteSkinSet` authoring data contract does not change between those two implementations.
+
+**Shared production source-of-truth contract (must not diverge between gameplay and editor preview):**
+
+The following systems and data contracts must be shared — not reimplemented — between gameplay and Playfield Preview:
+
+| System | Owner | Parity requirement |
+|---|---|---|
+| `ChartRuntimeEvaluator` | `Assets/_Project/Shared/` | Same evaluation path, same evaluated struct types |
+| `NoteApproachMath` | `Assets/_Project/Shared/` | Same formula for every helper; any change takes effect in both apps |
+| `EvaluatedArena` / `EvaluatedLane` / `EvaluatedCamera` | `Assets/_Project/Shared/` | Same struct layout; no parallel structs in editor code |
+| `NoteSkinSet` | `Assets/_Project/Player/Runtime/Skins/` | Same texture/material contracts; preview renders from the same asset |
+| `PlayfieldFrustumProfile` | `Assets/_Project/Player/Runtime/Visuals/` | Same frustum heights used for note Z placement in both preview and gameplay |
+| Note renderer geometry (fixed-edge + tiled-center, curved-cap) | `NoteCapGeometryBuilder` | Preview must use the same geometry rules; full-stretch UV is transitional only |
+
+**Production feedback preview direction:**
+The Playfield Preview should eventually preview the same `GameplayFeedbackSkinSet` (player spec §5.12) assets used in gameplay:
+* Lane touch indicator preview — show which lane is "active" when a charter clicks/drags in the preview.
+* Judgement feedback preview — show a sample Perfect/Great/Miss effect at the judgement ring so charters can preview timing feel and visual clarity.
+
+These feedback previews are not required for v0 charting functionality. An abstract placeholder (no feedback shown) is acceptable as a transitional state. When implemented, they must read from the same `GameplayFeedbackSkinSet` contract as gameplay — no editor-only reimplementation.
 
 **Note skin preview:**
 The Playfield Preview must reflect the full production `NoteSkinSet` appearance. An abstract color-only or full-stretch-UV fallback is acceptable only as a transitional interim step — it is not the intended final preview path:
@@ -453,6 +473,8 @@ You already say tickTimes are `int` ms, but you haven’t specified rounding beh
 The chart editor playtest should expose the same v0 debug toggles as the player (see player spec §8.3.1). These do not affect the exported chart.
 
 The **visual surface raycast** toggle (`useVisualSurfaceRaycast`) from player spec §5.2.1 also applies to playtest: if the editor scene has a `MeshCollider` on the arena surface GO (same layer setup as the player), the playtest controller should use the same parallax-correct projection. This is optional for v0 — the flat-plane fallback is acceptable for authoring.
+
+**Playtest production parity:** The chart editor playtest must not depend on `PlayerDebugArenaSurface` or `PlayerDebugRenderer` for correct rendering or input. The same production components (`ArenaColliderProvider`, `PlayfieldFrustumProfile`, `ArenaBandRenderer`, `LaneGuideRenderer`, `JudgementRingRenderer`, note renderers) must be usable in the editor playtest context as they are in gameplay. Debug overlays are additive and optional.
 
 Flick playtest uses the same **event-based** model as the player: each qualifying gesture emits a `FlickEvent` that is matched to a note. Rapid flick sequences can be authored and tested within a single continuous mouse-down.
 

@@ -1,6 +1,6 @@
 # **Rhythm Game Player App v0 Specification** 
 
-**Document version:** 0.4 (v0 Claude-ready)
+**Document version:** 0.5 (v0 Claude-ready)
 **Primary goal:** Play `.rpk` song packs end-to-end on mobile to validate feel, timing, input, and visuals.  
 **v0 scope:** Core gameplay only. No meta systems (accounts/story/events/currency).
 
@@ -232,6 +232,23 @@ Display requirements (spec §8.5):
 
 ## **5\) Playfield \+ 3D rendering model**
 
+### **5.0 System responsibilities and production layering**
+
+The player scene is organized into four tiers with strict ownership rules:
+
+| Tier | Systems | Rule |
+|---|---|---|
+| **Gameplay-critical** | `ChartRuntimeEvaluator`, `JudgementEngine`, `ArenaHitTester`, `ScoreTracker`, `PlayfieldTransform` | Must function correctly with all debug components disabled or absent. No dependency on debug scaffolding. |
+| **Production visuals** | `PlayfieldFrustumProfile`, `ArenaColliderProvider`, `ArenaBandRenderer`, `LaneGuideRenderer`, `JudgementRingRenderer`, `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer` | Must be fully usable without `PlayerDebugRenderer` or `PlayerDebugArenaSurface`. Driven by `ChartRuntimeEvaluator` via `PlayerAppController`. |
+| **Production feedback** | `TouchFeedbackRenderer` *(planned)*, `JudgementFeedbackRenderer` *(planned)* | Separate from note renderers. Receive touch/judgement events from gameplay systems. Skinnable via `GameplayFeedbackSkinSet` (§5.12). |
+| **Debug scaffolding** | `PlayerDebugArenaSurface`, `PlayerDebugRenderer` | **Additive only.** Add overlays and diagnostic readouts on top of production systems. Must not own any behavior required for correct gameplay, input, or visuals. |
+
+**Non-negotiable ownership rules:**
+* `PlayfieldFrustumProfile` is the single production source of truth for frustum Z heights (`FrustumHeightInner` / `FrustumHeightOuter`). All production renderers read it directly. `PlayerDebugArenaSurface` may optionally delegate to it but does not own it.
+* `ArenaColliderProvider` is the production owner of arena `MeshCollider`s for parallax-correct input (§5.2.1). `PlayerDebugArenaSurface` may provide colliders for debug-mode testing but must not be the only source in a production configuration.
+* No production gameplay, visual, or feedback system may have a required Inspector reference to `PlayerDebugArenaSurface` or `PlayerDebugRenderer`.
+* Debug is purely additive: removing all debug components must leave gameplay, input, and production visuals fully functional.
+
 ### **5.1 True 3D scene**
 
 * Gameplay is rendered in a **true 3D scene**.  
@@ -271,12 +288,16 @@ the 3D hit in PlayfieldRoot local space.
    * Sets `_debugUsedVisualSurface = true`.
 3. If physics ray misses (or feature disabled), fall back to flat-plane result.
 
-**Setup (Unity Editor):**
+**Setup (production path — `ArenaColliderProvider`):**
 
-1. Add a `MeshCollider` to the `ArenaSurface` GameObject (or any GO whose mesh closely follows the visible ring surface).
-2. Assign it a dedicated physics layer (e.g. `ArenaSurface`).
-3. Set `visualSurfaceLayerMask` on `PlayerAppController` to include that layer.
-4. Ensure the collider is enabled during play mode.
+1. Add `ArenaColliderProvider` to a scene GameObject (e.g. `GameplayInput`).
+2. Assign `playerAppController` and `frustumProfile` in the Inspector.
+3. Set the `ArenaColliderProvider` GameObject's layer to a dedicated physics layer (e.g. `ArenaSurface`) — collider child GOs inherit this layer automatically.
+4. Set `visualSurfaceLayerMask` on `PlayerAppController` to include that layer.
+5. `ArenaColliderProvider` creates and updates one `MeshCollider` per active arena each frame, matching the frustum geometry used by the production visual renderers. No further setup is required.
+
+**Setup (debug path — `PlayerDebugArenaSurface`):**
+`PlayerDebugArenaSurface` also creates `MeshCollider`s on its arena child GOs and can provide arena surface raycasts during development. Assign it to the same physics layer. This is debug scaffolding only — it must not be the sole source of arena colliders in a production build.
 
 **Debug (§8.3.1):**
 
@@ -512,11 +533,10 @@ The intended authoring workflow is: **import PNG → assign to NoteSkinSet → r
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `noteLeadTimeMs` | 2000 ms | Must match HoldBodyRenderer and PlayerDebugRenderer |
+| `noteLeadTimeMs` | 2000 ms | Must match `HoldBodyRenderer` |
 | `spawnRadiusFactor` | 0 | Spawn at inner arc edge (v0 default) |
-| `useFrustumProfile` | true | Lift note heads onto frustum cone surface via `FrustumZAtRadius` |
-| `frustumHeightInner` | 0.001 | Local Z at inner ring edge (used when `arenaSurface` is not wired) |
-| `frustumHeightOuter` | 0.15 | Local Z at outer ring edge (used when `arenaSurface` is not wired) |
+| `frustumProfile` | *(assign in Inspector)* | `PlayfieldFrustumProfile` — shared production source for frustum Z heights. When assigned and `UseFrustumProfile` is true, note heads are lifted onto the cone surface via `FrustumZAtRadius`. When null, falls back to `surfaceOffsetLocal`. |
+| `surfaceOffsetLocal` | 0.002 | Flat Z offset (local units) used as fallback when `frustumProfile` is not assigned or is disabled. |
 
 **Scene wiring (manual):** Add `TapNoteRenderer`, `CatchNoteRenderer`, and `FlickNoteRenderer` as components to a suitable scene GameObject (e.g. `GameplayRenderers`). Assign the `PlayerAppController` reference and a `NoteSkinSet` in the Inspector for each. There is no runtime auto-creation; a missing `PlayerAppController` or `NoteSkinSet` logs a one-time warning and skips rendering for that renderer.
 
@@ -745,14 +765,36 @@ Reads enabled state and arc span from `ChartRuntimeEvaluator` (via `PlayerAppCon
 | `ringSegments` | 32 | Segments per full 360°; partial arcs use proportionally fewer |
 | `ringColor` | `(0.85, 0.75, 1, 0.9)` | Purple-white default |
 
-**Arena surface mesh and debug overlays (debug scaffolding):** `PlayerDebugArenaSurface`
-and `PlayerDebugRenderer` also consume evaluated geometry and animate with tracks:
+**Production playfield visual components (complete list):**
+
+All of the following work without `PlayerDebugRenderer` or `PlayerDebugArenaSurface` and must be usable in a production build:
+
+| Component | Script | Responsibility |
+|---|---|---|
+| `JudgementRingRenderer` | `Assets/_Project/Player/Runtime/Visuals/JudgementRingRenderer.cs` | Arc strip at `judgementR` per arena |
+| `ArenaBandRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaBandRenderer.cs` | Outer + inner arc strip outlines per arena |
+| `LaneGuideRenderer` | `Assets/_Project/Player/Runtime/Visuals/LaneGuideRenderer.cs` | Left/center/right radial guide lines per lane |
+| `TapNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/TapNoteRenderer.cs` | Tap note bodies |
+| `CatchNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/CatchNoteRenderer.cs` | Catch note bodies |
+| `FlickNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/FlickNoteRenderer.cs` | Flick note bodies + arrow overlays |
+| `HoldBodyRenderer` | `Assets/_Project/Player/Runtime/Visuals/HoldBodyRenderer.cs` | Hold ribbon bodies |
+
+**Production frustum and collider components:**
+
+| Component | Script | Responsibility |
+|---|---|---|
+| `PlayfieldFrustumProfile` | `Assets/_Project/Player/Runtime/Visuals/PlayfieldFrustumProfile.cs` | Single production source of truth for `FrustumHeightInner` / `FrustumHeightOuter`. All production renderers read this directly. |
+| `ArenaColliderProvider` | `Assets/_Project/Player/Runtime/Playfield/ArenaColliderProvider.cs` | Production owner of arena `MeshCollider`s for parallax-correct visual-surface raycasts (§5.2.1). Matches the frustum geometry of the visual renderers. |
+
+**Debug scaffolding (additive only — `PlayerDebugArenaSurface` and `PlayerDebugRenderer`):**
+
+`PlayerDebugArenaSurface` and `PlayerDebugRenderer` consume the same evaluated geometry as production systems and add overlays on top. They must not be required for any production behavior.
 
 * `PlayerDebugArenaSurface` rebuilds the grey cone/frustum sector mesh per arena each
   `LateUpdate` when any geometry parameter (outerRadius, bandThickness, arcStartDeg,
   arcSweepDeg, center, frustum heights) changes past an epsilon threshold.  Uses
   `ChartRuntimeEvaluator` (via `playerAppController.Evaluator`) as the data source so
-  all arenas — including disabled ones — can be show/hidden by `EnabledBool` (spec §5.6).
+  all arenas — including disabled ones — can be shown/hidden by `EnabledBool` (spec §5.6).
   Disabling then re-enabling the component mid-song causes meshes to snap to the current
   evaluated state immediately (watermarks are reset in `OnEnable`).
 
@@ -767,6 +809,8 @@ and `PlayerDebugRenderer` also consume evaluated geometry and animate with track
   Child GOs are **never** disabled via `SetActive` — that would conflict with per-frame evaluation.
   `MeshCollider.sharedMesh` is only assigned after the first valid mesh build (`HasValidGeometry = true`);
   assigning a zero-vertex placeholder to PhysX causes "cleaning the mesh failed" warnings.
+
+  `PlayerDebugArenaSurface` may optionally read from a `PlayfieldFrustumProfile` when one is assigned in the Inspector. When assigned, its public `UseFrustumProfile` / `FrustumHeightInner` / `FrustumHeightOuter` getters delegate to the profile. This keeps the debug surface in sync with the production frustum without owning it.
 
 * `PlayerDebugRenderer.UpdateArenaLineRenderers()` repositions the arena arc outlines
   [outer arc, inner arc, start/end rays, judgement ring] every frame from the current
@@ -788,14 +832,14 @@ Snapshot content (one rebuild per interval; cached `string` read every `OnGUI` f
 ```
 --- EvalSnapshot @ 1234ms ---
 Arena[arena-a]:  arcStart=350.12°  sweep=60.00°  |  outer=0.412L  inner=0.212L  jdg=0.402L
-Frustum:  zInner=0.001  zOuter=0.150          ← only when arenaSurface is assigned
+Frustum:  zInner=0.001  zOuter=0.150          ← only when PlayfieldFrustumProfile is assigned
 Lane[lane-1]:  center=359.50°  width=20.00°  |  left=349.50°  right=9.50°
 ```
 
 Data sources — all values come from the same single-source-of-truth path as gameplay:
 * **Arena fields**: `ChartRuntimeEvaluator.GetArena(0)` + `PlayfieldTransform.NormRadiusToLocal`.
 * **`jdg` (judgementRadiusLocal)**: `ArenaHitTester.ComputeHitBandLocal` — identical formula to `JudgementRingRenderer`, `UpdateHitBandArcs`, and `JudgementEngine`.
-* **Frustum Z**: `PlayerDebugArenaSurface.FrustumHeightInner/Outer` (visual only; hidden when `arenaSurface` is not wired in the Inspector).
+* **Frustum Z**: `PlayfieldFrustumProfile.FrustumHeightInner/Outer` (visual only; hidden when `frustumProfile` is not wired in the Inspector).
 * **Lane fields**: `ChartRuntimeEvaluator.TryGetLane("lane-1", ...)`, falling back to index 0.
 
 Allocation policy: `_snapshotSb` (`StringBuilder`, capacity 512) is pre-allocated in `Awake`
@@ -869,6 +913,90 @@ Static, allocation-free helpers used by all renderers, the evaluator, and the ch
   * Runtime evaluates enabled as boolean with: `enabledBool = (value >= 0.5)`.
 * Angle tracks (`arcStartDeg`, `centerDeg`, etc.):  
   * Interpolate using **shortest-path wrap** (e.g., 350→10 goes \+20, not \-340).
+
+### **5.11 Production feedback subsystems**
+
+Gameplay feedback is divided into two independent production subsystems, separate from note renderers and debug overlays. Both systems must be usable without `PlayerDebugRenderer` or any debug component, and are skinnable via `GameplayFeedbackSkinSet` (§5.12).
+
+**Architecture note (layered design, ArcCreate-inspired):**
+This project follows a service/layered separation for feedback, inspired by how ArcCreate decouples input parsing, touch feedback, judgement, and judgement effects into independent systems. The layering principle:
+
+| Layer | Responsibility | Does not |
+|---|---|---|
+| Input parsing | `PlayerAppController` projects touch to playfield XY; delivers events to `JudgementEngine` | Render anything |
+| Touch feedback | Reads projected touch/lane state; renders active-lane indicators | Perform judgement |
+| Judgement | `JudgementEngine` + `ScoreTracker` evaluate timing and scoring | Render feedback effects |
+| Judgement effects | Listens to `OnJudgement` / `OnHoldTick` / `OnHoldResolved`; renders Perfect/Great/Miss visuals | Affect scoring |
+
+This separation is not a copy of ArcCreate's implementation — only the layering principle is adopted.
+
+#### **5.11.1 Input / touch feedback (planned)**
+
+**Purpose:** Render lane touch indicators and active-lane highlights in response to current touch state.
+
+**Design rules (locked for v0):**
+* Separate `MonoBehaviour` from all note renderers and from `JudgementEngine`.
+* Reads projected touch/lane membership state from `PlayerAppController` — no direct `UnityEngine.Input` polling.
+* Does not perform any hit-testing or judgement evaluation.
+* Reads lane geometry from `ChartRuntimeEvaluator` via `PlayerAppController.Evaluator` — same source as note renderers.
+* Skinnable via `GameplayFeedbackSkinSet.touchFeedback` (§5.12).
+* Uses `Graphics.DrawMesh` / `MaterialPropertyBlock` pattern — no child GameObjects per active touch.
+
+**v0 scope:** Implementation is planned; this section defines the contract and ownership rules. A placeholder with no feedback rendered is acceptable as a transitional state.
+
+#### **5.11.2 Judgement feedback (planned)**
+
+**Purpose:** Render Perfect / Great / Miss effect labels or particles at the judgement ring when notes are judged.
+
+**Design rules (locked for v0):**
+* Separate `MonoBehaviour` from all note renderers.
+* Subscribes to `PlayerAppController.OnJudgement`, `PlayerAppController.OnHoldTick`, and `PlayerAppController.OnHoldResolved`.
+* Does not modify score, combo, or any gameplay state.
+* Effect position: centred at `judgementR` along the judged lane's center angle at the event time.
+* Skinnable via `GameplayFeedbackSkinSet.judgementFeedback` (§5.12).
+* Hold-specific feedback variants (e.g. a distinct per-tick flash) are reserved as a later step. v0 may treat hold tick feedback identically to single-note feedback.
+
+**v0 scope:** Implementation is planned; this section defines the contract and ownership rules. A placeholder with no feedback rendered is acceptable as a transitional state.
+
+---
+
+### **5.12 GameplayFeedbackSkinSet (feedback skin asset)**
+
+`GameplayFeedbackSkinSet` is a `ScriptableObject` that holds all authoring data for production gameplay feedback visuals. It is **separate from `NoteSkinSet`**:
+* `NoteSkinSet` — note/hold/arrow body visuals (permanent identity of note types).
+* `GameplayFeedbackSkinSet` — transient feedback effect visuals (touch indicators, judgement labels/particles).
+
+**Separation rationale:** Feedback effects have fundamentally different authoring parameters from note bodies (timing, fade curves, label sizing) and must not pollute `NoteSkinSet`. Keeping them separate means either asset can be replaced independently.
+
+Create via: **Assets → Create → RhythmicFlow → Gameplay Feedback Skin Set** *(planned)*.
+
+**`GameplayFeedbackSkinSet` fields (v0 planned contract):**
+
+*Touch feedback block:*
+
+| Field | Type | Description |
+|---|---|---|
+| `touchFeedbackMaterial` | `Material` | Shader template for the active-lane touch indicator. Must support `_Color` and `_MainTex` via `MaterialPropertyBlock`. |
+| `touchFeedbackTexture` | `Texture2D` | Texture for the active-lane highlight arc or quad. |
+| `touchFeedbackColor` | `Color` | Base color tint applied via `MaterialPropertyBlock`. |
+| `touchFeedbackRadialHalfThickness` | `float` | Radial half-thickness of the touch indicator in PlayfieldLocal units. |
+
+*Judgement feedback block:*
+
+| Field | Type | Description |
+|---|---|---|
+| `judgementFeedbackMaterial` | `Material` | Shader template for Perfect/Great/Miss labels. Must support `_MainTex` and `_Color` via `MaterialPropertyBlock`. |
+| `perfectTexture` | `Texture2D` | Label texture displayed on Perfect judgement. |
+| `greatTexture` | `Texture2D` | Label texture displayed on Great judgement. |
+| `missTexture` | `Texture2D` | Label texture displayed on Miss judgement. |
+| `feedbackSizeLocal` | `float` | Size of the feedback label in PlayfieldLocal units. |
+| `feedbackLifetimeMs` | `float` | Duration the feedback effect is visible, in milliseconds. |
+| `feedbackFadeStartFraction` | `float` [0..1] | Fraction of `feedbackLifetimeMs` at which fade-out begins. |
+
+*Hold-specific feedback (reserved for later):*
+Hold tick feedback variants (e.g. a distinct flash per Perfect/Miss tick) are explicitly reserved. v0 may render hold tick feedback identically to single-note feedback. The hold-specific field block will be added when hold feedback migration is implemented.
+
+**Data contract:** `GameplayFeedbackSkinSet` authoring fields must not be combined with `NoteSkinSet` and must not depend on any debug component.
 
 ---
 
