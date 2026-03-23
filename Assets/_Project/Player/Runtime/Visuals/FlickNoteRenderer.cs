@@ -59,13 +59,16 @@
 //    • Mesh:       _arrowMesh — single shared unit-square quad; never modified per-frame
 //    • Size:       noteSkinSet.arrowSizeLocal — constant, does NOT scale with lane width
 //    • Z offset:   noteSkinSet.arrowSurfaceOffsetLocal — lifts quad above note body
-//    • Orientation: camera-facing billboard, up-axis = flick gesture direction in world space
-//      The quad's local +Y axis points in the flick direction (spec §5.7.2 table):
-//        U  = radial inward  (-cosθ, -sinθ)   D = radial outward (+cosθ, +sinθ)
-//        L  = CW tangent     (+sinθ, -cosθ)   R = CCW tangent   (-sinθ, +cosθ)
-//      where θ = laneCenterDeg in radians (PlayfieldRoot XY).
+//    • Placement:  note centre + radialOffsetLocal along (cosθ,sinθ) + tangentialOffsetLocal
+//      along (-sinθ,cosθ), then arrowSurfaceOffsetLocal in Z above the body surface.
+//    • Orientation: camera-facing billboard, baseline up-axis = U direction (radial inward)
+//      in world space — same for every direction.  Per-direction art is handled by:
+//        exact textures (dedicated slot assigned): used as-is, authored for that direction.
+//        fallback textures (D/R resolve to U/L family): rotated 180° around arrowNorm so a
+//        single up-pointing arrow art asset works for the opposite-axis direction.
+//      "U" and "L" are always exact (they are family roots and carry no rotation).
 //    • Billboard matrix: LookRotation(forward=arrowNorm, up=arrowUp) where arrowNorm
-//      is derived from Cross(arrowRight, arrowUp) with arrowRight = Cross(arrowUp, -camForward)
+//      is derived from Cross(arrowRight, arrowUp) with arrowRight = Cross(arrowUp, -camForward).
 //    • If flickArrowMaterial is null: arrows skipped, one-time warning logged.
 //    • If arrow texture resolves to null: arrow skipped silently for that note.
 //
@@ -492,8 +495,12 @@ namespace RhythmicFlow.Player
 
         /// <summary>
         /// Draws the flick arrow overlay quad for one note.
-        /// Camera-facing billboard (spec §5.7.2): the quad's local +Y axis aligns with the
-        /// flick gesture direction in world space; local +Z faces the camera.
+        /// Camera-facing billboard: baseline up-axis is always the "U" (radial inward) direction;
+        /// exact per-direction textures are used as-is; fallback textures (D/R resolving to the
+        /// U/L family root) receive a 180° rotation around arrowNorm so a single art asset covers
+        /// both axis directions without re-authoring.
+        /// Arrow position is offset from the note centre by the radial and tangential offset
+        /// fields on <see cref="NoteSkinSet"/>, then lifted by <c>arrowSurfaceOffsetLocal</c>.
         /// Uses the shared <c>flickArrowMaterial</c> template with a per-note arrow texture
         /// assigned via <c>_arrowPropBlock</c> — same MaterialPropertyBlock pattern as body rendering.
         /// Skips (with a one-time warning) if the arrow material template is missing.
@@ -534,45 +541,64 @@ namespace RhythmicFlow.Player
             if (arrowTexture == null) { return; }
 
             // ── Note centre in PlayfieldRoot local space ───────────────────────────────
-            // The arrow is centred on the note body at the approach radius, with a small
-            // Z offset (arrowSurfaceOffsetLocal) to lift it above the body surface.
-            float centreRad = laneCenterDeg * Mathf.Deg2Rad;
-            float bodyZ     = NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter);
+            // Base position: note body centre at approach radius.
+            // Radial offset:     along (cosθ, sinθ)   — outward from arena centre.
+            // Tangential offset: along (-sinθ, cosθ)  — CCW perpendicular (positive = "R" direction).
+            // Surface Z offset:  arrowSurfaceOffsetLocal lifts the quad above the body surface.
+            float centreRad  = laneCenterDeg * Mathf.Deg2Rad;
+            float cosA       = Mathf.Cos(centreRad);
+            float sinA       = Mathf.Sin(centreRad);
+            float radialOff  = noteSkinSet.arrowRadialOffsetLocal;
+            float tangOff    = noteSkinSet.arrowTangentialOffsetLocal;
+            float bodyZ      = NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter);
             Vector3 noteCentreLocal = new Vector3(
-                ctr.x + r * Mathf.Cos(centreRad),
-                ctr.y + r * Mathf.Sin(centreRad),
+                ctr.x + r * cosA + radialOff * cosA + tangOff * (-sinA),
+                ctr.y + r * sinA + radialOff * sinA + tangOff * (  cosA),
                 bodyZ + noteSkinSet.arrowSurfaceOffsetLocal);
 
-            // ── Billboard orientation (spec §5.7.2) ───────────────────────────────────
+            // ── Billboard orientation ──────────────────────────────────────────────────
             //
-            // dir2DLocal: the gesture direction as a unit vector in PlayfieldRoot XY.
-            //   U (radialIn)    = (-cosθ, -sinθ)  where θ = laneCenterDeg in radians
-            //   D (radialOut)   = (+cosθ, +sinθ)
-            //   L (CW tangent)  = (+sinθ, -cosθ)
-            //   R (CCW tangent) = (-sinθ, +cosθ)
+            // Baseline arrowUp is always the "U" (radial inward) direction, regardless of
+            // flickDirection. This means:
             //
-            // arrowUp    = pfRoot.TransformDirection(dir2DLocal)   — gesture direction in world
-            // arrowRight = Cross(arrowUp, -camForward).normalized   — quad right edge in world
-            // arrowNorm  = Cross(arrowRight, arrowUp)               — faces the camera
+            //   • "U" textures are authored pointing toward V=1 (top of texture) and are
+            //     used as-is — no rotation needed.
+            //   • "D" textures authored pointing toward V=1 are used as-is when a dedicated
+            //     flickArrowTextureDown is assigned (exact). When falling back to the "U"
+            //     texture family (no dedicated D texture), a 180° rotation around arrowNorm
+            //     flips the arrow to point radially outward — so a single "U" art asset
+            //     works for both directions without re-authoring.
+            //   • Same rule for "L" / "R": "L" is always exact (it is the family root);
+            //     "R" gets 180° when it falls back to the "L" texture.
             //
-            // This keeps the arrow correctly oriented relative to the playfield arc even
-            // as the arena rotates or the camera angle changes.
-            Vector3 dir2DLocal = FlickDirToLocal(flickDirection, laneCenterDeg);
-            Vector3 arrowUp    = pfRoot.TransformDirection(dir2DLocal);  // world space
+            // isFallback: true when the direction is "D" or "R" AND no exact texture is
+            //   assigned for that direction (i.e. the resolved texture comes from the
+            //   "U"/"L" family root via the fallback chain).
+            //
+            // Exact textures: authored to face the correct direction already → no rotation.
+            // Fallback textures: face the opposite axis → 180° AngleAxis(arrowNorm) corrects.
+            Vector3 baseDir2DLocal = FlickDirToLocal("U", laneCenterDeg);  // radial inward baseline
+            Vector3 arrowUp        = pfRoot.TransformDirection(baseDir2DLocal);  // world space
 
-            // arrowRight lies in the plane perpendicular to camForward that also contains arrowUp.
-            // Using Cross(arrowUp, -camForward): if arrowUp is in the XY plane of the playfield
-            // and camForward is mostly -Z, this gives a stable horizontal-ish right axis.
+            // arrowRight: stable horizontal-ish axis in the plane perpendicular to camForward.
+            // Cross(arrowUp, -camForward) gives a vector perpendicular to both.
             Vector3 arrowRight = Vector3.Cross(arrowUp, -camForward);
-            // Guard: if arrowUp happens to be parallel to camForward (degenerate), skip.
+            // Guard: degenerate case — arrowUp parallel to camForward (camera looking straight
+            // along the radial direction).  Extremely unlikely in normal play; skip the arrow.
             if (arrowRight.sqrMagnitude < 1e-6f) { return; }
             arrowRight.Normalize();
 
-            Vector3 arrowNorm = Vector3.Cross(arrowRight, arrowUp); // faces camera
+            Vector3    arrowNorm = Vector3.Cross(arrowRight, arrowUp);  // faces camera
+            Quaternion baseRot   = Quaternion.LookRotation(arrowNorm, arrowUp);
 
-            // LookRotation: forward = arrowNorm (faces camera), up = arrowUp (gesture direction).
-            // The quad's local +Y axis will point in the flick gesture direction after rotation.
-            Quaternion arrowRot = Quaternion.LookRotation(arrowNorm, arrowUp);
+            // Apply 180° flip for D/R directions when the resolved texture is from the
+            // opposite-axis family root (fallback). Exact per-direction textures are assumed
+            // to be authored already facing the correct direction, so no rotation is applied.
+            bool isFallback = (flickDirection == "D" || flickDirection == "R")
+                && !noteSkinSet.IsFlickArrowTextureExact(flickDirection);
+            Quaternion arrowRot = isFallback
+                ? Quaternion.AngleAxis(180f, arrowNorm) * baseRot
+                : baseRot;
 
             // ── Arrow matrix ───────────────────────────────────────────────────────────
             // Position is in world space (pfRoot.TransformPoint promotes local → world).

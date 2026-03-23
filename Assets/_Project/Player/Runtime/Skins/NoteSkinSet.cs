@@ -270,6 +270,22 @@ namespace RhythmicFlow.Player
         [Min(0f)]
         [SerializeField] public float arrowSurfaceOffsetLocal = 0.003f;
 
+        [Tooltip("Arrow placement offset along the lane's radial direction, in PlayfieldLocal units.\n\n" +
+                 "Radial = toward or away from the arena centre (the approach/judgement axis).\n" +
+                 "  Positive → outward (toward judgement ring, same direction as the note approaches).\n" +
+                 "  Negative → inward (toward arena centre).\n\n" +
+                 "Applied after the note centre position, before surface Z offset.\n" +
+                 "Default: 0 (centred on note).")]
+        [SerializeField] public float arrowRadialOffsetLocal = 0f;
+
+        [Tooltip("Arrow placement offset along the lane's tangential direction, in PlayfieldLocal units.\n\n" +
+                 "Tangential = across the lane width, perpendicular to the radial direction.\n" +
+                 "  Positive → counter-clockwise (same direction as the 'R' flick gesture).\n" +
+                 "  Negative → clockwise (same direction as the 'L' flick gesture).\n\n" +
+                 "Applied after the note centre position, before surface Z offset.\n" +
+                 "Default: 0 (centred on note).")]
+        [SerializeField] public float arrowTangentialOffsetLocal = 0f;
+
         [Header("State Colors")]
         [Tooltip("_Color tint applied via MaterialPropertyBlock to missed notes " +
                  "(State == Missed, visible until timeToHit < −greatWindowMs).\n" +
@@ -360,6 +376,30 @@ namespace RhythmicFlow.Player
 
             // Walk to generic fallback: direction candidate → generic arrow texture.
             return candidate != null ? candidate : flickArrowTexture;
+        }
+
+        /// <summary>
+        /// Returns true when a direction-specific arrow texture is explicitly assigned for the
+        /// given direction (i.e., the slot is non-null and will be used directly, not resolved
+        /// through the family fallback chain).
+        ///
+        /// <para>Used by the renderer to decide whether to treat the resolved texture as
+        /// authored for that exact direction (no rotation needed) or as a re-used texture
+        /// that should be rotated 180° to point the arrow in the correct direction.</para>
+        ///
+        /// <para>Only "D" and "R" can be in fallback-derived orientation; "U" and "L" are
+        /// always baseline (they are the family roots for their respective axis pairs).</para>
+        /// </summary>
+        public bool IsFlickArrowTextureExact(string flickDirection)
+        {
+            return flickDirection switch
+            {
+                "U" => flickArrowTextureUp    != null,
+                "D" => flickArrowTextureDown  != null,
+                "L" => flickArrowTextureLeft  != null,
+                "R" => flickArrowTextureRight != null,
+                _   => false,
+            };
         }
 
         /// <summary>
