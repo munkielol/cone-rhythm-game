@@ -10,13 +10,14 @@
 //     • Reads evaluated geometry from ChartRuntimeEvaluator.
 //     • Builds a filled sector mesh spanning [innerLocal .. visualOuterLocal].
 //     • Places vertices on the frustum cone surface using PlayfieldFrustumProfile.
-//     • Base layer pass: draws using ArenaSurfaceSkinSet.baseLayer.
+//     • Base layer pass:   draws using ArenaSurfaceSkinSet.baseLayer.
 //     • Detail layer pass: draws using ArenaSurfaceSkinSet.detailLayer on top
 //       of the base pass, reusing the same mesh (no second vertex fill).
+//     • Accent layer pass: draws using ArenaSurfaceSkinSet.accentLayer on top
+//       of the detail pass, reusing the same mesh (no third vertex fill).
 //
 // ── What this renderer does NOT do ───────────────────────────────────────────
 //
-//   • Accent layer is reserved for a later step.
 //   • Does NOT own MeshColliders or affect input/hit-testing.
 //     (That is ArenaColliderProvider's responsibility.)
 //   • Does NOT depend on PlayerDebugArenaSurface or PlayerDebugRenderer.
@@ -28,9 +29,10 @@
 //     – pre-allocated Mesh pool (MaxArenaPool slots), vertices written in-place
 //       once per arena per LateUpdate — zero per-frame GC allocation after Awake.
 //     – Graphics.DrawMesh — works in Game view without Gizmos; no child GOs.
-//     – Two MaterialPropertyBlocks (_propBlock / _detailPropBlock), each
-//       configured once before the arena loop and reused for all arenas.
-//     – Detail layer reuses the same mesh slot as base (no second vertex fill).
+//     – Three MaterialPropertyBlocks (_propBlock / _detailPropBlock / _accentPropBlock),
+//       each configured once before the arena loop and reused for all arenas.
+//     – Detail and accent layers reuse the same mesh slot as base (no second
+//       or third vertex fill).
 //
 // ── Vertex layout ─────────────────────────────────────────────────────────────
 //
@@ -71,7 +73,7 @@ namespace RhythmicFlow.Player
 {
     /// <summary>
     /// Production arena surface renderer.  Draws the filled annular sector for each
-    /// active arena using the base and detail layers of <see cref="ArenaSurfaceSkinSet"/>.
+    /// active arena using the base, detail, and accent layers of <see cref="ArenaSurfaceSkinSet"/>.
     ///
     /// <para>Attach to any GO in the Player scene.  Assign
     /// <see cref="playerAppController"/>, <see cref="frustumProfile"/>, and
@@ -97,7 +99,7 @@ namespace RhythmicFlow.Player
         [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
         [Tooltip("Arena surface skin.  Controls the visual appearance of the filled arena sector.\n\n" +
-                 "Base and detail layers are rendered.  Accent layer is reserved for a later step.")]
+                 "Base, detail, and accent layers are all rendered when enabled and assigned a material.")]
         [SerializeField] private ArenaSurfaceSkinSet skinSet;
 
         [Header("Geometry")]
@@ -137,11 +139,18 @@ namespace RhythmicFlow.Player
         private MaterialPropertyBlock _detailPropBlock;
         private Vector2               _detailUvScrollOffset;
 
+        // Accent layer: separate MaterialPropertyBlock and scroll offset.
+        // Configured once before the arena loop when the accent layer will render.
+        // Uses the same mesh slot as base (no third vertex fill needed).
+        private MaterialPropertyBlock _accentPropBlock;
+        private Vector2               _accentUvScrollOffset;
+
         // Per-warning guards — prevent per-frame console spam on misconfiguration.
         private bool _hasWarnedMissingController;
         private bool _hasWarnedMissingSkinSet;
         private bool _hasWarnedMissingMaterial;
         private bool _hasWarnedDetailMissingMaterial;
+        private bool _hasWarnedAccentMissingMaterial;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -212,6 +221,9 @@ namespace RhythmicFlow.Player
 
             _detailPropBlock      = new MaterialPropertyBlock();
             _detailUvScrollOffset = Vector2.zero;
+
+            _accentPropBlock      = new MaterialPropertyBlock();
+            _accentUvScrollOffset = Vector2.zero;
         }
 
         private void OnDestroy()
@@ -294,6 +306,30 @@ namespace RhythmicFlow.Player
                 }
             }
 
+            // ── Accent layer state ────────────────────────────────────────────────────
+            // Same pattern as detail: resolved once before the arena loop.
+            ArenaSurfaceLayer accentLayer      = skinSet.accentLayer;
+            bool              accentWillRender = false;
+
+            if (accentLayer.enabled)
+            {
+                if (accentLayer.material != null)
+                {
+                    accentWillRender = true;
+                }
+                else
+                {
+                    // Accent is enabled but has no material — warn once and skip.
+                    if (!_hasWarnedAccentMissingMaterial)
+                    {
+                        _hasWarnedAccentMissingMaterial = true;
+                        Debug.LogWarning("[ArenaSurfaceRenderer] skinSet.accentLayer is enabled but " +
+                                         "accentLayer.material is not assigned.  " +
+                                         "Assign a material to the accent layer or disable it.");
+                    }
+                }
+            }
+
             // ── Evaluator access ──────────────────────────────────────────────────────
             ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
             PlayfieldTransform    pfT       = playerAppController.PlayfieldTf;
@@ -324,6 +360,16 @@ namespace RhythmicFlow.Player
                 _detailUvScrollOffset += detailLayer.uvScrollSpeed * Time.deltaTime;
                 _detailUvScrollOffset.x -= Mathf.Floor(_detailUvScrollOffset.x);
                 _detailUvScrollOffset.y -= Mathf.Floor(_detailUvScrollOffset.y);
+            }
+
+            // ── UV scroll — accent layer ──────────────────────────────────────────────
+            // Independent accumulator — accent can scroll at a different rate/direction.
+            // Only update when accent will actually render (no-op otherwise).
+            if (accentWillRender)
+            {
+                _accentUvScrollOffset += accentLayer.uvScrollSpeed * Time.deltaTime;
+                _accentUvScrollOffset.x -= Mathf.Floor(_accentUvScrollOffset.x);
+                _accentUvScrollOffset.y -= Mathf.Floor(_accentUvScrollOffset.y);
             }
 
             // ── MaterialPropertyBlock — base layer ────────────────────────────────────
@@ -358,6 +404,23 @@ namespace RhythmicFlow.Player
                     _detailUvScrollOffset.y));
             }
 
+            // ── MaterialPropertyBlock — accent layer ──────────────────────────────────
+            // Configured once; reused for every arena accent draw call this frame.
+            // Same _MainTex_ST convention as base and detail.
+            if (accentWillRender)
+            {
+                _accentPropBlock.SetColor("_Color", skinSet.GetEffectiveTint(accentLayer));
+                if (accentLayer.texture != null)
+                {
+                    _accentPropBlock.SetTexture("_MainTex", accentLayer.texture);
+                }
+                _accentPropBlock.SetVector("_MainTex_ST", new Vector4(
+                    accentLayer.uvScale.x,
+                    accentLayer.uvScale.y,
+                    _accentUvScrollOffset.x,
+                    _accentUvScrollOffset.y));
+            }
+
             // ── Per-arena draw ────────────────────────────────────────────────────────
             _poolUsed = 0;
 
@@ -387,7 +450,7 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(ea.CenterXNorm, ea.CenterYNorm));
 
-                // ── Fill vertex scratch (once per arena; shared by base + detail) ───────
+                // ── Fill vertex scratch (once per arena; shared by base + detail + accent) ──
                 FillSectorVerts(_vertScratch, arcSegments,
                     ea.ArcStartDeg, arcSweep,
                     center, innerLocal, visualOuterLocal,
@@ -408,6 +471,14 @@ namespace RhythmicFlow.Player
                 {
                     Graphics.DrawMesh(_meshPool[slot], localToWorld, detailLayer.material,
                         gameObject.layer, null, 0, _detailPropBlock);
+                }
+
+                // ── Accent layer draw (same mesh, different material/propblock) ─────────
+                // Rendered after detail — top-most layer.  No third vertex fill needed.
+                if (accentWillRender)
+                {
+                    Graphics.DrawMesh(_meshPool[slot], localToWorld, accentLayer.material,
+                        gameObject.layer, null, 0, _accentPropBlock);
                 }
             }
         }

@@ -17,23 +17,23 @@ MonoBehaviour:
     enabled: 1
     material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
-    tint: {r: 0.3, g: 0.35, b: 0.45, a: 0.7}
-    opacity: 0.35
+    tint: {r: 0.13333334, g: 0.13333334, b: 0.13333334, a: 0.7}
+    opacity: 1
     uvScale: {x: 1, y: 1}
     uvScrollSpeed: {x: 0, y: 0}
   detailLayer:
-    enabled: 0
-    material: {fileID: 0}
+    enabled: 1
+    material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
-    tint: {r: 1, g: 1, b: 1, a: 1}
-    opacity: 0.4
+    tint: {r: 0.13812746, g: 0.15830073, b: 0.3018868, a: 1}
+    opacity: 0.087
     uvScale: {x: 4, y: 4}
-    uvScrollSpeed: {x: 0, y: 0}
+    uvScrollSpeed: {x: 0.5, y: 0.5}
   accentLayer:
     enabled: 0
-    material: {fileID: 0}
+    material: {fileID: 10301, guid: 0000000000000000f000000000000000, type: 0}
     texture: {fileID: 0}
-    tint: {r: 0.5, g: 0.7, b: 1, a: 0.3}
-    opacity: 1
-    uvScale: {x: 1, y: 1}
-    uvScrollSpeed: {x: 0, y: 0.05}
+    tint: {r: 0.64705884, g: 0.2511125, b: 0.9339623, a: 0.44705883}
+    opacity: 0
+    uvScale: {x: 83.1, y: 8.1}
+    uvScrollSpeed: {x: 1.44, y: -0.59}
