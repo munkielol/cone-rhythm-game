@@ -771,6 +771,7 @@ All of the following work without `PlayerDebugRenderer` or `PlayerDebugArenaSurf
 
 | Component | Script | Responsibility |
 |---|---|---|
+| `ArenaSurfaceRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaSurfaceRenderer.cs` | Filled annular sector per arena — base, detail, and accent layer passes. Skinned via `ArenaSurfaceSkinSet` (§5.8.1). |
 | `JudgementRingRenderer` | `Assets/_Project/Player/Runtime/Visuals/JudgementRingRenderer.cs` | Arc strip at `judgementR` per arena |
 | `ArenaBandRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaBandRenderer.cs` | Outer + inner arc strip outlines per arena |
 | `LaneGuideRenderer` | `Assets/_Project/Player/Runtime/Visuals/LaneGuideRenderer.cs` | Left/center/right radial guide lines per lane |
@@ -860,6 +861,151 @@ Use this overlay to verify:
 Lane judgement arcs are exact **subsets** of the arena ring: same radius, narrower arc span
 (each lane's `centerDeg ± widthDeg/2`).  When the arena animates, both the full arena ring
 and all its lane sub-arcs update in sync.
+
+---
+
+### **5.8.1 Arena surface authoring (ArenaSurfaceSkinSet)**
+
+`ArenaSurfaceSkinSet` controls **appearance only**: materials, textures, colors, opacity, UV tiling, and UV scroll animation.  It does **not** own geometry, colliders, or frustum shape — those remain with `PlayfieldFrustumProfile`, `ArenaColliderProvider`, and `PlayerDebugArenaSurface` respectively.
+
+`ArenaSurfaceRenderer` consumes the skin and renders the filled annular sector for each active arena as three independent draw passes per frame: **base → detail → accent**.  Each layer is completely optional except base (a missing or disabled base layer silently skips all rendering for that frame).
+
+---
+
+#### Layer purposes (artist-facing)
+
+| Layer | Role | Required? | Typical opacity |
+|---|---|---|---|
+| **Base** | Primary fill of the arena sector — the main surface colour or texture. The visual foundation that all other layers composite on top of. | Yes (surface won't render without it) | 0.5 – 1.0 |
+| **Detail** | Secondary fine-pattern layer on top of base — grids, scanlines, subtle noise, hex tiles. Adds surface texture without changing the fundamental colour read. | No | 0.15 – 0.45 |
+| **Accent** | Top-most highlight, glow, or animated energy layer. Rim light effects, flowing energy, edge shimmer. Usually the most transparent layer and the one most likely to use `uvScrollSpeed`. | No | 0.05 – 0.35 |
+
+---
+
+#### Texture conventions per layer
+
+**Base layer**
+
+* **Typical content:** Solid colour (no texture), dark panel fill, subtle radial gradient, or low-contrast noise.
+* **Aspect ratio:** Square (1:1) preferred for tileable content; any aspect works for solid-colour-only (texture = null).
+* **Alpha usage:** Use the alpha channel for soft edge fades or translucent looks.  Combine with `tint.a × opacity` for full control.
+* **Pattern types:** Solid colour, subtle gradient, dark ambient noise.
+* **Solid-colour-only look:** Leave `texture = null` and set `tint` to the desired colour.  No texture required.
+
+**Detail layer**
+
+* **Typical content:** Seamlessly tileable fine patterns — grid lines, hex tiles, scanlines, soft noise.
+* **Aspect ratio:** Square (1:1) strongly recommended so the pattern tiles evenly in both U and V.
+* **Alpha usage:** Design the texture with a black-or-transparent background so it composites additively over the base.  Use low `opacity` (0.15–0.45) to keep detail subtle.
+* **Pattern types:** Grid/line textures, hex patterns, soft Perlin noise, subtle film grain.
+* **Solid-colour-only look:** Not typical for the detail layer — if no fine pattern is needed, leave the layer disabled.
+
+**Accent layer**
+
+* **Typical content:** Glows, rim highlights, flowing energy streaks, or animated shimmer.
+* **Aspect ratio:** Wide (2:1 or 4:1) works well for horizontal scroll effects; square for omnidirectional glow/noise.
+* **Alpha usage:** High transparency — alpha channel drives the glow shape.  Set `opacity` low (0.1–0.35) and use additive or transparent blending in the material.
+* **Pattern types:** Radial glow rings, horizontal/vertical streak textures, animated noise.
+* **Solid-colour-only look:** Set `texture = null` and use `tint` with low alpha for a tinted glow band.
+
+**General texture rules (all layers)**
+
+* All textures must be authored as seamlessly tileable when `uvScale` is set above (1, 1) or `uvScrollSpeed != (0, 0)`.
+* Keep texture resolution modest — arena surfaces are semi-transparent fills, not hero art.  256×256 or 512×512 is usually sufficient.
+* Do **not** bake the tint colour into the texture.  Keep textures greyscale or neutral-tinted so the artist can re-tint freely via `tint` in the Inspector without re-exporting the texture.
+
+---
+
+#### Repeat vs Clamp rules
+
+These rules are mechanically tied to how `uvScale` and `uvScrollSpeed` interact with the shader's `_MainTex_ST` tiling.
+
+| Condition | Required wrap mode | Reason |
+|---|---|---|
+| `uvScale.x > 1` or `uvScale.y > 1` | **Repeat** | The texture tiles multiple times across the surface.  Clamp would leave most of the surface showing only the border texel. |
+| `uvScrollSpeed != (0, 0)` | **Repeat** | The UV offset increases each frame.  Without Repeat, the texture stops at the edge and the majority of the surface shows the clamped edge colour. |
+| `uvScale == (1, 1)` **and** `uvScrollSpeed == (0, 0)` | Either; prefer **Clamp** for non-tileable art | The texture maps once with no scrolling.  Clamp prevents artefacts at seams if the texture is not seamless. |
+| `uvScale < (1, 1)` (zoom-in / texture fills less than the surface) | **Clamp** | Tiles would appear at the edges if Repeat is used.  Clamp fills the remainder with the border colour. |
+
+**Practical default:** set the texture wrap mode to **Repeat** for any layer whose `uvScale` will be tuned above 1 in a skin set, or whose `uvScrollSpeed` is non-zero.  It is safe to always use Repeat on detail and accent textures since they are almost always tiled.
+
+---
+
+#### Material template conventions
+
+* One `Unlit/Transparent` material is sufficient for all three layers if they share the same shader.  Sharing a single material across layers is allowed — `ArenaSurfaceRenderer` assigns colour and texture per draw call via `MaterialPropertyBlock`, so the material itself remains unmodified at runtime.
+* Do **not** bake a texture into the material's Inspector slots.  The renderer sets `_MainTex` via `MaterialPropertyBlock` at draw time.  Baking a texture into the material will be overridden at runtime when a layer texture is assigned.
+* If a layer has **no texture** (`texture = null`), the renderer does not set `_MainTex` — the material's default white texture is used and the final colour is `tint × opacity × surfaceOpacityMultiplier`.
+* The shader must declare `_MainTex_ST` to receive UV tiling and scroll (`xy = scale, zw = offset`).  Standard Unity built-in shaders (`Unlit/Transparent`, `Sprites/Default`) support this automatically.
+* For additive accent blending, use a separate `Unlit/Additive` or `Particles/Additive` material on the accent layer while keeping base and detail on `Unlit/Transparent`.
+
+---
+
+#### Artist workflow
+
+1. **Create the skin asset**
+   `Assets → Create → RhythmicFlow → Arena Surface Skin Set`
+   Name it descriptively (e.g. `DefaultArenaSurface`, `NeonArenaSurface`).
+
+2. **Create material template(s)**
+   In the Project window: `Right-click → Create → Material`.
+   Assign `Unlit/Transparent` (or equivalent semi-transparent shader) as the shader.
+   Do not assign a texture in the material Inspector — textures are assigned in the skin set.
+
+3. **Configure the base layer (required)**
+   In the skin asset Inspector:
+   * Set `baseLayer.enabled = true`.
+   * Assign the material to `baseLayer.material`.
+   * Set `baseLayer.tint` to the desired surface colour (alpha sets translucency).
+   * Optionally assign a texture to `baseLayer.texture`.
+   * Set `baseLayer.uvScale` to `(1, 1)` initially; increase to tile.
+   * Leave `baseLayer.uvScrollSpeed` at `(0, 0)` for a static surface.
+
+4. **Optionally configure detail and accent layers**
+   * Enable the layer (`enabled = true`).
+   * Assign a material.
+   * Assign a tileable texture.
+   * Set `uvScale` to tile finely (e.g. `(4, 4)` for detail) or scroll slowly (e.g. `uvScrollSpeed = (0, 0.05)` for accent).
+   * Keep `opacity` low (0.2–0.4 for detail, 0.1–0.3 for accent).
+
+5. **Assign the skin set to the renderer**
+   Select the `ArenaSurfaceRenderer` component in the scene and drag the skin asset into the `Skin Set` field.
+
+6. **Test in Play Mode with debug off**
+   * Disable `PlayerDebugArenaSurface` (or set `forceHideArenaSurfaceMesh = true`) so the grey debug fill does not obscure the production surface layers.
+   * Enter Play Mode and load a chart.
+   * All three layers should be visible in render order (base, then detail on top, then accent on top of detail).
+
+7. **Iterate safely**
+   * All `ArenaSurfaceSkinSet` fields are hot-reloadable in Play Mode via the Inspector — change `tint`, `opacity`, `uvScale`, or `uvScrollSpeed` and the renderer picks them up on the next `LateUpdate`.
+   * Enabling or disabling a layer takes effect immediately without leaving Play Mode.
+   * The `surfaceOpacityMultiplier` global slider fades the entire surface in/out for quick tuning.
+   * If a layer is enabled but its `material` field is empty, the renderer logs a **one-time** warning and skips that layer — it does not spam the Console every frame.
+
+---
+
+#### Ownership and separation rules (non-negotiable)
+
+| Concern | Owner | Must not be touched by |
+|---|---|---|
+| Surface appearance (colour, texture, tint, opacity, UV) | `ArenaSurfaceSkinSet` | `PlayfieldFrustumProfile`, `ArenaColliderProvider`, `PlayerDebugArenaSurface` |
+| Production rendering of the surface | `ArenaSurfaceRenderer` | Debug components |
+| Frustum cone shape (Z heights) | `PlayfieldFrustumProfile` | `ArenaSurfaceSkinSet`, `ArenaSurfaceRenderer` (reads only) |
+| Arena `MeshCollider`s for input | `ArenaColliderProvider` | `ArenaSurfaceSkinSet`, `ArenaSurfaceRenderer` |
+| Debug fill mesh + debug colliders | `PlayerDebugArenaSurface` | Must not be the sole source of colliders in production |
+
+`ArenaSurfaceRenderer` reads `PlayfieldFrustumProfile` for Z heights and reads `ChartRuntimeEvaluator` for geometry.  It does **not** write to either.
+
+---
+
+#### Transitional notes (future-proofing)
+
+* **Additional layers:** The three-layer contract (base / detail / accent) is designed to be extensible.  A future `ArenaSurfaceLayer[]` array or a fourth procedural layer can be added to `ArenaSurfaceSkinSet` without changing the existing fields or breaking existing skin assets.
+* **Dynamic / animated layers:** The `uvScrollSpeed` per-layer design accommodates simple animated energy effects in v0.  More complex per-frame procedural animation (e.g. shader-driven pulse or ripple) is deferred — do not add shader variants or animation curves to `ArenaSurfaceSkinSet` until specified.
+* **Per-arena skin overrides:** The current contract applies one skin set to all arenas.  Per-arena skin override (different look per arena slot) is deferred.
+* **Global fade (surfaceOpacityMultiplier):** The global multiplier is reserved for runtime fade effects (e.g. song intro/outro fade, scene transition).  Animating it via code is safe.  Keyframe-driven animation from the chart editor is deferred.
+
+---
 
 ### **5.9) Runtime geometry evaluation pipeline (per-frame)**
 
