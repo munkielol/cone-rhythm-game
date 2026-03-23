@@ -34,10 +34,14 @@
 //    • Radial thickness:  noteSkinSet.noteRadialHalfThicknessLocal
 //    • Missed tint:       noteSkinSet.missedTintColor (via _Color)
 //    • Normal tint:       Color.white (texture drives the look; no extra tint)
+//    • Lead time:         playerAppController.NoteLeadTimeMs   (shared approach setting)
+//    • Spawn factor:      playerAppController.SpawnRadiusFactor (shared approach setting)
 //
-//  All sizing and color parameters are now authoritative on NoteSkinSet.
+//  Sizing/color parameters are authoritative on NoteSkinSet.
+//  Approach settings (noteLeadTimeMs, spawnRadiusFactor) are authoritative on
+//  PlayerAppController and shared across all renderers (Tap/Catch/Flick/Hold).
 //  The old per-renderer flickMaterial / noteLaneWidthRatio / noteHalfThicknessLocal
-//  / flickColor / missedTintColor fields have been removed.
+//  / flickColor / missedTintColor / noteLeadTimeMs / spawnRadiusFactor fields have been removed.
 //
 // ── Geometry (v0 step 3a: edge-aware column placement) ───────────────────────
 //
@@ -137,20 +141,6 @@ namespace RhythmicFlow.Player
 
         [Tooltip("Flat Z offset (no frustum profile). Prevents z-fighting. Default: 0.002.")]
         [SerializeField] private float surfaceOffsetLocal = 0.002f;
-
-        // -------------------------------------------------------------------
-        // Inspector — Approach
-        // -------------------------------------------------------------------
-
-        [Header("Approach")]
-        [Tooltip("How many ms before the note's hit time it first becomes visible. " +
-                 "Must match HoldBodyRenderer.noteLeadTimeMs. Default: 2000.")]
-        [SerializeField] private int noteLeadTimeMs = 2000;
-
-        [Tooltip("Spawn radius as fraction of approach path (0 = inner arc, 1 = judgement ring). " +
-                 "Keep 0 for v0 to match hold ribbon and debug renderer behaviour.")]
-        [Range(0f, 1f)]
-        [SerializeField] private float spawnRadiusFactor = 0f;
 
         // -------------------------------------------------------------------
         // Inspector — Debug geometry verification
@@ -316,6 +306,13 @@ namespace RhythmicFlow.Player
             // Tap/Catch/Flick family. Hold uses its own separate sizing parameters.
             float noteLaneWidthRatio     = noteSkinSet.noteLaneWidthRatio;
             float noteHalfThicknessLocal = noteSkinSet.noteRadialHalfThicknessLocal;
+
+            // ── Read approach settings from PlayerAppController (shared for all renderers) ─
+            // noteLeadTimeMs and spawnRadiusFactor are authoritative on PlayerAppController.
+            // All renderers read these values from the same source — a single Inspector
+            // change on the controller propagates to Tap, Catch, Flick, and Hold at once.
+            int   noteLeadTimeMs   = playerAppController.NoteLeadTimeMs;
+            float spawnRadiusFactor = playerAppController.SpawnRadiusFactor;
 
             // ── Geometry / playfield data ──────────────────────────────────────────────
             var allNotes = playerAppController.NotesAll;

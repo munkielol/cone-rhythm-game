@@ -73,6 +73,23 @@ namespace RhythmicFlow.Player
         [Tooltip("Timing window set — Standard (30/90 ms) or Challenger (22/60 ms). Spec §4.1.")]
         public GameplayMode gameplayMode = GameplayMode.Standard;
 
+        [Header("Note Approach")]
+        [Tooltip("How many ms before a note's hit time it first becomes visible.\n\n" +
+                 "Shared source of truth for all visual renderers — Tap, Catch, Flick, and Hold\n" +
+                 "all read NoteLeadTimeMs from here. A single change propagates to every renderer.\n\n" +
+                 "Note: PlayerDebugRenderer has its own separate noteLeadTimeMs field;\n" +
+                 "ensure they match to keep the debug hold rail visually aligned.\n" +
+                 "Default: 2000")]
+        [SerializeField] private int noteLeadTimeMs = 2000;
+
+        [Tooltip("Spawn radius as a fraction of the approach path from inner arc (0) to judgement ring (1).\n\n" +
+                 "0 = notes first appear at the inner band edge and travel outward (v0 default).\n" +
+                 "1 = notes spawn directly at the judgement ring with no travel.\n\n" +
+                 "Shared source of truth for all visual renderers. Keep at 0 for v0.\n" +
+                 "Default: 0")]
+        [Range(0f, 1f)]
+        [SerializeField] private float spawnRadiusFactor = 0f;
+
         [Header("Input Projection")]
         [Tooltip("When true, screen rays are tested against visualSurfaceLayerMask before falling back " +
                  "to the flat Z=0 plane. Corrects parallax on frustum-shaped arena surfaces. Spec §5.2.1.")]
@@ -257,6 +274,20 @@ namespace RhythmicFlow.Player
         /// Null before Start() completes.
         /// </summary>
         public ChartRuntimeEvaluator                      Evaluator        => _evaluator;
+
+        /// <summary>
+        /// Shared note approach lead time in milliseconds. All visual renderers read this value —
+        /// Tap, Catch, Flick, and Hold. A single Inspector change propagates everywhere.
+        /// Default: 2000.
+        /// </summary>
+        public int   NoteLeadTimeMs    => noteLeadTimeMs;
+
+        /// <summary>
+        /// Shared note spawn radius fraction [0..1].
+        /// 0 = notes first appear at the inner band edge; 1 = at the judgement ring.
+        /// All visual renderers read this value. Default: 0 (v0).
+        /// </summary>
+        public float SpawnRadiusFactor => spawnRadiusFactor;
 
         // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.

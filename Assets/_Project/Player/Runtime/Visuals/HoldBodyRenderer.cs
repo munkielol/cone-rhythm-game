@@ -137,29 +137,6 @@ namespace RhythmicFlow.Player
         [SerializeField] private Color holdColorReleased = new Color(0.8f, 0.2f, 0.2f, 0.55f);
 
         // -------------------------------------------------------------------
-        // Inspector — Approach
-        // -------------------------------------------------------------------
-
-        [Header("Approach")]
-        [Tooltip("How many ms before StartTimeMs the ribbon first becomes visible.\n\n" +
-                 "MUST match noteLeadTimeMs in PlayerDebugRenderer (default 2000) so that:\n" +
-                 "  alpha = 1 − Clamp01(headToHit / noteLeadTimeMs)\n" +
-                 "gives alpha=0 (spawn at innerLocal) on the first visible frame.\n\n" +
-                 "With noteLeadTimeMs=2000 and ActivationLeadMs=5000 (in PlayerAppController),\n" +
-                 "notes become Active 5000 ms before startTimeMs, but only VISIBLE for the\n" +
-                 "last 2000 ms — so alpha=0 (innerLocal) is always the first rendered position.\n\n" +
-                 "BUG: if this is set higher than noteLeadTimeMs in PlayerDebugRenderer (e.g. 5000),\n" +
-                 "notes appear mid-approach on the first frame whenever startTimeMs - t0 < noteLeadTimeMs\n" +
-                 "(i.e. the song starts and the hold is already partway through its approach window).")]
-        [SerializeField] private int noteLeadTimeMs = 2000;
-
-        [Tooltip("Spawn radius as a fraction of the approach path from inner arc to judgement ring. " +
-                 "0 = spawn at inner arc (v0 default — holds first appear at the inner band edge " +
-                 "and travel outward). 1 = spawn at judgement ring (no travel). Keep at 0 for v0.")]
-        [Range(0f, 1f)]
-        [SerializeField] private float spawnRadiusFactor = 0f;
-
-        // -------------------------------------------------------------------
         // Inspector — Ribbon sizing
         // -------------------------------------------------------------------
 
@@ -269,6 +246,12 @@ namespace RhythmicFlow.Player
             double chartTimeMs   = playerAppController.EffectiveChartTimeMs;
             double greatWindowMs = playerAppController.GreatWindowMs;
 
+            // ── Shared approach settings from PlayerAppController ─────────────────────
+            // Authoritative on PlayerAppController — a single Inspector change propagates
+            // to Tap, Catch, Flick, and Hold simultaneously.
+            int   noteLeadTimeMs   = playerAppController.NoteLeadTimeMs;
+            float spawnRadiusFactor = playerAppController.SpawnRadiusFactor;
+
             // localToWorld is the model→world matrix passed to Graphics.DrawMesh.
             // Vertices are written in PlayfieldRoot local space, so this promotes them correctly.
             Matrix4x4 localToWorld = pfRoot.localToWorldMatrix;
@@ -344,6 +327,7 @@ namespace RhythmicFlow.Player
                     note.StartTimeMs, note.EndTimeMs,
                     chartTimeMs, greatWindowMs,
                     spawnR, judgementR,
+                    noteLeadTimeMs,
                     out float headR, out float tailR, out bool visible);
 
                 if (!visible) { continue; }
@@ -554,6 +538,7 @@ namespace RhythmicFlow.Player
             double greatWindowMs,
             float  spawnR,
             float  judgementR,
+            int    noteLeadTimeMs,  // shared approach setting from PlayerAppController
             out float headR,
             out float tailR,
             out bool  visible)
@@ -574,8 +559,8 @@ namespace RhythmicFlow.Player
             }
 
             // headApproachParam: when headToHit ≤ 0, Clamp01 gives alpha=1 → headR = judgementR (pinned).
-            headR   = ComputeApproachR((float)headToHit, spawnR, judgementR);
-            tailR   = ComputeApproachR((float)tailToHit, spawnR, judgementR);
+            headR   = ComputeApproachR((float)headToHit, spawnR, judgementR, noteLeadTimeMs);
+            tailR   = ComputeApproachR((float)tailToHit, spawnR, judgementR, noteLeadTimeMs);
             visible = true;
         }
 
@@ -583,7 +568,7 @@ namespace RhythmicFlow.Player
         /// Maps time-to-event to a local radius (spec §6.1).
         /// Delegates to <see cref="NoteApproachMath.ApproachRadius"/> — single source of truth.
         /// </summary>
-        private float ComputeApproachR(float timeToHitMs, float spawnR, float judgementR)
+        private static float ComputeApproachR(float timeToHitMs, float spawnR, float judgementR, int noteLeadTimeMs)
             => NoteApproachMath.ApproachRadius(timeToHitMs, noteLeadTimeMs, spawnR, judgementR);
 
         // -------------------------------------------------------------------
