@@ -636,7 +636,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.JudgementRingRenderer
   playerAppController: {fileID: 4343613}
   ringMaterial: {fileID: 2100000, guid: 6c17239c269bc0a42987279c679b6f7a, type: 2}
-  ringColor: {r: 0.85, g: 0.75, b: 1, a: 0.9}
+  ringColor: {r: 1, g: 1, b: 1, a: 0.9}
   ringHalfThicknessLocal: 0.0003
   ringSegments: 64
   frustumProfile: {fileID: 1154423719}
@@ -1086,6 +1086,54 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1464150561
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1464150562}
+  - component: {fileID: 1464150563}
+  m_Layer: 0
+  m_Name: ArenaSurfaceRenderer
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1464150562
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1464150561}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1817056020}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1464150563
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1464150561}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1271e7995d654cb4cbb1f3b311c2aa99, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Player::RhythmicFlow.Player.ArenaSurfaceRenderer
+  playerAppController: {fileID: 4343613}
+  frustumProfile: {fileID: 1154423719}
+  skinSet: {fileID: 11400000, guid: a15b67d935abc3a40a4ace75556f9251, type: 2}
+  arcSegments: 48
 --- !u!1 &1817056019
 GameObject:
   m_ObjectHideFlags: 0
@@ -1115,12 +1163,13 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 1464150562}
+  - {fileID: 1985800227}
+  - {fileID: 435185999}
   - {fileID: 48081049}
   - {fileID: 1828881583}
   - {fileID: 581349477}
   - {fileID: 780337768}
-  - {fileID: 435185999}
-  - {fileID: 1985800227}
   - {fileID: 429095854}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
@@ -1221,8 +1270,8 @@ MonoBehaviour:
   playerAppController: {fileID: 4343613}
   bandMaterial: {fileID: 2100000, guid: cdeb0c0ad74f7054082630f3ac81e66e, type: 2}
   frustumProfile: {fileID: 1154423719}
-  outerArcColor: {r: 0.7, g: 0.85, b: 1, a: 0.85}
-  innerArcColor: {r: 0.5, g: 0.65, b: 0.9, a: 0.55}
+  outerArcColor: {r: 0, g: 0, b: 0, a: 1}
+  innerArcColor: {r: 0, g: 0, b: 0, a: 1}
   arcHalfThicknessLocal: 0.0003
   arcSegments: 48
 --- !u!1660057539 &9223372036854775807
