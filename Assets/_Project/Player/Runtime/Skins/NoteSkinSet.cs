@@ -1,5 +1,6 @@
 // NoteSkinSet.cs
-// ScriptableObject data container for Tap / Catch / Flick note skins and flick arrow overlays.
+// ScriptableObject data container for note skins: Tap / Catch / Flick (single-interaction
+// body family) plus Hold ribbon skin data.
 //
 // ── Single-interaction note body family ──────────────────────────────────────
 //
@@ -15,10 +16,19 @@
 //    - direction-specific body texture selection  (GetFlickBodyTexture)
 //    - arrow overlay material, textures, and placement  (flickArrow* fields)
 //
-//  Hold is NOT part of this family (v0). The hold ribbon uses different geometry
-//  (trapezoid ribbon vs curved cap) and will get its own sizing/skin parameters
-//  when migrated. Do NOT reuse noteLaneWidthRatio or noteRadialHalfThicknessLocal
-//  for hold rendering — those fields are single-interaction-family-only.
+//  Hold is NOT part of this family. The hold ribbon uses different geometry
+//  (trapezoid ribbon vs curved cap) and has its own skin layout contract.
+//  Do NOT reuse noteLaneWidthRatio or noteRadialHalfThicknessLocal for Hold.
+//
+// ── Hold ribbon skin contract ─────────────────────────────────────────────────
+//
+//  Hold bodies use the same fixed-edge + tiled-center layout as single-interaction
+//  bodies, but with two independent tiling axes:
+//    • holdCenterTileRatePerUnit  — tiling across the ribbon width  (U axis)
+//    • holdLengthTileRatePerUnit  — tiling along the ribbon length  (V axis)
+//
+//  holdLaneWidthRatio controls ribbon angular width (migrated from HoldBodyRenderer).
+//  holdFlipVertical flips the V axis (consistent with the single-interaction pattern).
 //
 // ── Authoring workflow ────────────────────────────────────────────────────────
 //
@@ -79,16 +89,18 @@ namespace RhythmicFlow.Player
     }
 
     /// <summary>
-    /// Data container for Tap / Catch / Flick note skins and flick arrow overlays.
+    /// Data container for all note skins: Tap / Catch / Flick (single-interaction body family)
+    /// and Hold ribbon.
     ///
     /// <para>Tap, Catch, and Flick form the <b>single-interaction note body family</b>:
     /// they share one material template, one body-sizing set, one skin layout contract,
     /// and one missed-tint color. Flick adds direction-specific body texture overrides
     /// and an arrow overlay on top of the same shared family base.</para>
     ///
-    /// <para><b>Hold is not part of this family.</b> Hold ribbon sizing and skin parameters
-    /// are kept separate and will be migrated to their own NoteSkinSet fields in a later step.
-    /// Do not reuse the single-interaction sizing fields for Hold rendering.</para>
+    /// <para>Hold has its own skin layout contract under the <b>Hold Body</b> headers:
+    /// <see cref="holdBodyTexture"/>, independent edge UV fractions, two tiling axes
+    /// (width + length), <see cref="holdLaneWidthRatio"/>, and <see cref="holdFlipVertical"/>.
+    /// Use <see cref="GetHoldBodyTexture"/> to resolve the texture with fallback.</para>
     ///
     /// <para>Create via <b>Assets → Create → RhythmicFlow → Note Skin Set</b>.
     /// Assign to the <c>noteSkinSet</c> field on each production note renderer.</para>
@@ -364,6 +376,91 @@ namespace RhythmicFlow.Player
         [SerializeField] public float arrowTangentialOffsetLocal = 0f;
 
         // -------------------------------------------------------------------
+        // Hold ribbon skin — body texture
+        // Hold is NOT part of the single-interaction family. It has its own
+        // material (on HoldBodyRenderer), its own geometry, and its own
+        // sizing fields below.
+        // -------------------------------------------------------------------
+
+        [Header("Hold Body — Texture")]
+        [Tooltip("Body texture for Hold notes (the ribbon body, not the head or tail caps).\n\n" +
+                 "Assigned to _MainTex via MaterialPropertyBlock at draw time.\n" +
+                 "Use GetHoldBodyTexture() to resolve this with fallback to fallbackBodyTexture.\n\n" +
+                 "Texture should be authored using the hold fixed-edge + tiled-center layout:\n" +
+                 "  [ left border | ← tiled center → | right border ]  (U axis, across ribbon width)\n\n" +
+                 "Leave null to fall back to fallbackBodyTexture during development.")]
+        [SerializeField] public Texture2D holdBodyTexture;
+
+        // -------------------------------------------------------------------
+        // Hold ribbon skin — skin layout (fixed-edge + tiled-center, both axes)
+        // -------------------------------------------------------------------
+
+        [Header("Hold Body — Skin Layout")]
+        [Tooltip("Left decorative border width as a normalized fraction of hold texture width [0..0.5].\n\n" +
+                 "Same convention as bodyLeftEdgeU on the single-interaction family, but for the hold ribbon.\n" +
+                 "The leftmost (holdLeftEdgeU × texture width) pixels are the fixed decorative border.\n\n" +
+                 "Default: 0.1")]
+        [Range(0f, 0.5f)]
+        [SerializeField] public float holdLeftEdgeU = 0.1f;
+
+        [Tooltip("Right decorative border width as a normalized fraction of hold texture width [0..0.5].\n\n" +
+                 "Same convention as bodyRightEdgeU on the single-interaction family, but for the hold ribbon.\n\n" +
+                 "Default: 0.1")]
+        [Range(0f, 0.5f)]
+        [SerializeField] public float holdRightEdgeU = 0.1f;
+
+        [Tooltip("Physical width of the hold ribbon's left decorative border in PlayfieldLocal units.\n\n" +
+                 "Same convention as bodyLeftEdgeLocalWidth, applied to the hold ribbon width axis.\n" +
+                 "Default: 0.012")]
+        [Min(0f)]
+        [SerializeField] public float holdLeftEdgeLocalWidth = 0.012f;
+
+        [Tooltip("Physical width of the hold ribbon's right decorative border in PlayfieldLocal units.\n\n" +
+                 "Same convention as bodyRightEdgeLocalWidth, applied to the hold ribbon width axis.\n" +
+                 "Default: 0.012")]
+        [Min(0f)]
+        [SerializeField] public float holdRightEdgeLocalWidth = 0.012f;
+
+        [Tooltip("How many times the hold center UV region tiles per PlayfieldLocal unit of ribbon chord width.\n\n" +
+                 "Controls tiling across the ribbon (U axis). Same convention as bodyCenterTileRatePerUnit,\n" +
+                 "applied to hold ribbon width only.\n\n" +
+                 "Default: 1.0")]
+        [Min(0.01f)]
+        [SerializeField] public float holdCenterTileRatePerUnit = 1.0f;
+
+        [Tooltip("How many times the hold texture tiles per PlayfieldLocal unit of ribbon length.\n\n" +
+                 "Controls tiling along the ribbon (V axis / radial direction). Independent of the\n" +
+                 "width-tiling rate (holdCenterTileRatePerUnit).\n\n" +
+                 "Higher values produce shorter, more frequently repeated texture tiles along the ribbon.\n" +
+                 "Default: 1.0")]
+        [Min(0.01f)]
+        [SerializeField] public float holdLengthTileRatePerUnit = 1.0f;
+
+        // -------------------------------------------------------------------
+        // Hold ribbon skin — sizing & orientation
+        // holdLaneWidthRatio mirrors the single-interaction noteLaneWidthRatio
+        // pattern, but with a separate default (0.7) appropriate for hold ribbons.
+        // -------------------------------------------------------------------
+
+        [Header("Hold Body — Sizing & Orientation")]
+        [Tooltip("Hold ribbon width as a fraction of the lane angular span at the ribbon's radius.\n\n" +
+                 "1.0 = fills the full lane; 0.7 = 70% of the lane width (default).\n" +
+                 "Applied as ribbonHalfAngleDeg = laneHalfWidthDeg × holdLaneWidthRatio.\n\n" +
+                 "Separate from noteLaneWidthRatio (the single-interaction family field) —\n" +
+                 "hold ribbons are typically narrower than tap/catch/flick note heads.\n" +
+                 "Default: 0.7")]
+        [Range(0.1f, 1f)]
+        [SerializeField] public float holdLaneWidthRatio = 0.7f;
+
+        [Tooltip("Controls the V direction of the hold ribbon body texture.\n\n" +
+                 "false (default) — normal orientation: V=0 at the head end (note hit point),\n" +
+                 "V increases toward the tail.\n\n" +
+                 "true — flipped orientation: V=1 at the head end, V=0 at the tail.\n\n" +
+                 "Use this to correct art orientation at runtime without needing a flipped PNG.\n" +
+                 "Same convention as flipTapBodyVertical, applied to the hold ribbon only.")]
+        [SerializeField] public bool holdFlipVertical = false;
+
+        // -------------------------------------------------------------------
         // Runtime helpers — single-interaction body family (Tap/Catch/Flick)
         // Allocation-free; read-only convenience; called per draw call.
         // -------------------------------------------------------------------
@@ -498,6 +595,39 @@ namespace RhythmicFlow.Player
         public float CenterUWidth => CenterUEnd - CenterUStart;
 
         // -------------------------------------------------------------------
+        // Runtime helpers — Hold ribbon skin
+        // Allocation-free; read-only convenience; called per draw call.
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Returns the hold ribbon body texture, falling back to
+        /// <see cref="fallbackBodyTexture"/> if <see cref="holdBodyTexture"/> is null.
+        /// Returns null if both are null (renderer should use color-only mode).
+        /// </summary>
+        public Texture2D GetHoldBodyTexture()
+        {
+            return holdBodyTexture != null ? holdBodyTexture : fallbackBodyTexture;
+        }
+
+        /// <summary>
+        /// UV start of the hold ribbon's center region: <c>holdLeftEdgeU</c>.
+        /// The hold center UV range is [HoldCenterUStart .. HoldCenterUEnd].
+        /// </summary>
+        public float HoldCenterUStart => holdLeftEdgeU;
+
+        /// <summary>
+        /// UV end of the hold ribbon's center region: <c>1f − holdRightEdgeU</c>.
+        /// The hold center UV range is [HoldCenterUStart .. HoldCenterUEnd].
+        /// </summary>
+        public float HoldCenterUEnd => 1f - holdRightEdgeU;
+
+        /// <summary>
+        /// Width of the hold ribbon's center UV region: <c>HoldCenterUEnd − HoldCenterUStart</c>.
+        /// Always ≥ 0 after <see cref="OnValidate"/> clamping.
+        /// </summary>
+        public float HoldCenterUWidth => HoldCenterUEnd - HoldCenterUStart;
+
+        // -------------------------------------------------------------------
         // Validation
         // -------------------------------------------------------------------
 
@@ -533,6 +663,24 @@ namespace RhythmicFlow.Player
             arrowWidthLocal       = Mathf.Max(0f, arrowWidthLocal);
             arrowHeightLocal      = Mathf.Max(0f, arrowHeightLocal);
             arrowSurfaceOffsetLocal = Mathf.Max(0f, arrowSurfaceOffsetLocal);
+
+            // Hold ribbon skin layout — mirror the same clamping pattern as the single-interaction family.
+            float holdSumEdgeU = holdLeftEdgeU + holdRightEdgeU;
+            if (holdSumEdgeU > 1f)
+            {
+                float scale = 1f / holdSumEdgeU;
+                holdLeftEdgeU  *= scale;
+                holdRightEdgeU *= scale;
+            }
+
+            holdLeftEdgeLocalWidth  = Mathf.Max(0f, holdLeftEdgeLocalWidth);
+            holdRightEdgeLocalWidth = Mathf.Max(0f, holdRightEdgeLocalWidth);
+
+            holdCenterTileRatePerUnit = Mathf.Max(0.01f, holdCenterTileRatePerUnit);
+            holdLengthTileRatePerUnit = Mathf.Max(0.01f, holdLengthTileRatePerUnit);
+
+            // Hold ribbon sizing.
+            holdLaneWidthRatio = Mathf.Clamp(holdLaneWidthRatio, 0.1f, 1f);
         }
     }
 }
