@@ -223,7 +223,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.TapNoteRenderer
   playerAppController: {fileID: 4343613}
-  tapMaterial: {fileID: 2100000, guid: 7950b3bc1afac7a488846282909a2005, type: 2}
+  noteSkinSet: {fileID: 11400000, guid: 819a3a86b9915f947805ac9482b8d9c6, type: 2}
   arenaSurface: {fileID: 412451162}
   useFrustumProfile: 1
   frustumHeightInner: 0.001
@@ -231,10 +231,6 @@ MonoBehaviour:
   surfaceOffsetLocal: 0.002
   noteLeadTimeMs: 2000
   spawnRadiusFactor: 0
-  noteHalfThicknessLocal: 0.002
-  noteLaneWidthRatio: 0.8
-  tapColor: {r: 1, g: 1, b: 1, a: 0.95}
-  missedTintColor: {r: 0.4, g: 0.4, b: 0.4, a: 0.55}
   debugDrawNoteOutline: 0
   debugDrawLaneBoundary: 0
 --- !u!1 &58450156
@@ -848,7 +844,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 714554977}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: da45ca1a049dc074e97b4c5c866c21b6, type: 3}
   m_Name: 
@@ -962,8 +958,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 780337766}
   serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -0.01761, y: 0, z: 0.78737}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

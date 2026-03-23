@@ -13,21 +13,21 @@ MonoBehaviour:
   m_Name: DefaultNoteSkinSet
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.NoteSkinSet
   noteBodyMaterial: {fileID: 0}
-  tapBodyTexture: {fileID: 0}
+  tapBodyTexture: {fileID: 2800000, guid: 8cd6a1b086061934c9d0495f2cd113b7, type: 3}
   catchBodyTexture: {fileID: 0}
   flickBodyTexture: {fileID: 0}
   fallbackBodyTexture: {fileID: 0}
-  bodyLeftEdgeU: 0.1
-  bodyRightEdgeU: 0.1
-  bodyLeftEdgeLocalWidth: 0.012
-  bodyRightEdgeLocalWidth: 0.012
+  bodyLeftEdgeU: 0.25
+  bodyRightEdgeU: 0.25
+  bodyLeftEdgeLocalWidth: 0.01
+  bodyRightEdgeLocalWidth: 0.01
   bodyCenterTileRatePerUnit: 1
   flickArrowMaterialUp: {fileID: 0}
   flickArrowMaterialDown: {fileID: 0}
   flickArrowMaterialLeft: {fileID: 0}
   flickArrowMaterialRight: {fileID: 0}
-  noteLaneWidthRatio: 0.9
-  noteRadialHalfThicknessLocal: 0.022
+  noteLaneWidthRatio: 0.8
+  noteRadialHalfThicknessLocal: 0.002
   arrowSizeLocal: 0.08
   arrowSurfaceOffsetLocal: 0.003
   missedTintColor: {r: 0.4, g: 0.4, b: 0.4, a: 0.55}
