@@ -615,6 +615,111 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // Hold ribbon width-side UV helper (fixed-edge + tiled-center, U axis only)
+        // V mapping (length axis) is intentionally deferred — not computed here.
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Computes the U coordinate for a point at chord distance
+        /// <paramref name="chordFromLeft"/> from the left edge of a hold ribbon,
+        /// using the fixed-left-edge + tiled-center + fixed-right-edge UV layout.
+        ///
+        /// <para>Three-region layout (U axis = ribbon width direction):
+        /// <code>
+        ///   [ left border | ← tiled center → | right border ]
+        ///   ← fixed UV  →←  tiles with chord →←  fixed UV  →
+        /// </code>
+        /// </para>
+        ///
+        /// <para>The left and right decorative border regions map to fixed UV fractions
+        /// (<see cref="NoteSkinSet.holdLeftEdgeU"/> / <see cref="NoteSkinSet.holdRightEdgeU"/>)
+        /// and are never distorted by ribbon width changes.  The center region tiles at
+        /// <see cref="NoteSkinSet.holdCenterTileRatePerUnit"/> repetitions per PlayfieldLocal unit.</para>
+        ///
+        /// <para><b>Narrow-width fallback:</b>
+        /// When <paramref name="totalChord"/> is less than
+        /// <c>holdLeftEdgeLocalWidth + holdRightEdgeLocalWidth</c>, both edge widths are
+        /// scaled proportionally so they still fit, and the center collapses to zero.
+        /// UVs remain valid with no inversion.</para>
+        ///
+        /// <para><b>Center-anchored tiling:</b>
+        /// Phase is measured from the midpoint of the center region, consistent with
+        /// <see cref="FillCapUVs"/>.  The pattern stays visually anchored at the ribbon
+        /// midline as width changes.</para>
+        ///
+        /// <para><b>V mapping deferred:</b>
+        /// This method only solves the U axis (across ribbon width).  V mapping (along
+        /// ribbon length) is intentionally left for a later integration step.</para>
+        /// </summary>
+        /// <param name="chordFromLeft">
+        /// Chord distance from the left ribbon edge in PlayfieldLocal units.
+        /// Expected range: [0 .. <paramref name="totalChord"/>].
+        /// </param>
+        /// <param name="totalChord">
+        /// Full chord width of the ribbon in PlayfieldLocal units.
+        /// Typically: <c>2 × radius × sin(laneHalfWidthDeg × Deg2Rad) × holdLaneWidthRatio</c>.
+        /// </param>
+        /// <param name="skin">
+        /// Active <see cref="NoteSkinSet"/> supplying the hold-specific UV fields:
+        /// <see cref="NoteSkinSet.holdLeftEdgeU"/>, <see cref="NoteSkinSet.holdRightEdgeU"/>,
+        /// <see cref="NoteSkinSet.holdLeftEdgeLocalWidth"/>,
+        /// <see cref="NoteSkinSet.holdRightEdgeLocalWidth"/>,
+        /// <see cref="NoteSkinSet.holdCenterTileRatePerUnit"/>.
+        /// Must not be null.
+        /// </param>
+        /// <returns>U value in UV space for the given chord position.</returns>
+        public static float ComputeHoldWidthU(float chordFromLeft, float totalChord, NoteSkinSet skin)
+        {
+            // ── Effective physical edge widths (narrow-width fallback) ────────────────
+            //
+            // Delegates to the same ComputeEdgeWidths helper used by FillCapUVs and
+            // FillCapVerticesEdgeAware so the fallback behaviour is identical.
+            ComputeEdgeWidths(totalChord,
+                skin.holdLeftEdgeLocalWidth, skin.holdRightEdgeLocalWidth,
+                out float leftW, out float centerW, out float rightW);
+
+            float rightEdgeStartChord = totalChord - rightW;
+
+            // ── UV region boundaries (from hold-specific NoteSkinSet fields) ──────────
+            float leftEdgeU    = skin.holdLeftEdgeU;
+            float rightEdgeU   = skin.holdRightEdgeU;
+            float centerUStart = skin.HoldCenterUStart;   // == holdLeftEdgeU
+            float centerUWidth = skin.HoldCenterUWidth;   // == 1 - holdRightEdgeU - holdLeftEdgeU
+            float tileRate     = Mathf.Max(0.01f, skin.holdCenterTileRatePerUnit);
+
+            if (chordFromLeft <= leftW)
+            {
+                // ── Left decorative border ────────────────────────────────────────────
+                // Linear ramp: U = 0 at chord=0 → holdLeftEdgeU at chord=leftW.
+                // Guard: if leftW collapsed to 0 (very narrow ribbon), return U=0.
+                return (leftW > 0f) ? (chordFromLeft / leftW) * leftEdgeU : 0f;
+            }
+            else if (chordFromLeft >= rightEdgeStartChord)
+            {
+                // ── Right decorative border ───────────────────────────────────────────
+                // Linear ramp: U = (1-holdRightEdgeU) at chord=rightEdgeStartChord → 1 at chord=totalChord.
+                // Guard: if rightW collapsed to 0, return U=1.
+                return (rightW > 0f)
+                    ? (1f - rightEdgeU) + ((chordFromLeft - rightEdgeStartChord) / rightW) * rightEdgeU
+                    : 1f;
+            }
+            else
+            {
+                // ── Tiled center region (center-anchored) ─────────────────────────────
+                //
+                // Phase is measured from the midpoint of the center chord region:
+                //   centerMidChord = leftW + centerW × 0.5
+                //
+                // A +0.5 phase offset places the tile midpoint at the ribbon midline,
+                // giving a visually balanced starting appearance — same convention as
+                // FillCapUVs.
+                float signedDistFromCenter = chordFromLeft - (leftW + centerW * 0.5f);
+                float tileFrac = Mathf.Repeat(signedDistFromCenter * tileRate + 0.5f, 1f);
+                return centerUStart + tileFrac * centerUWidth;
+            }
+        }
+
+        // -------------------------------------------------------------------
         // Angular occupancy helper
         // -------------------------------------------------------------------
 
