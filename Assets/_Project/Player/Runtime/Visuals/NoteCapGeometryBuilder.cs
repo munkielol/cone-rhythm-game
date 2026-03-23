@@ -452,8 +452,13 @@ namespace RhythmicFlow.Player
         /// </para>
         ///
         /// <para><b>V convention:</b>
-        /// V = 0 on the tail row (inner edge), V = 1 on the head row (outer edge).
-        /// This matches the placeholder UVs written by <see cref="BuildCapMesh"/>.
+        /// Normal (<paramref name="flipBodyVertical"/> = false):
+        ///   V = 0 on the tail row (inner edge), V = 1 on the head row (outer edge).
+        ///   This matches the placeholder UVs written by <see cref="BuildCapMesh"/>.
+        /// Flipped (<paramref name="flipBodyVertical"/> = true):
+        ///   V = 1 on the tail row, V = 0 on the head row — inverts the texture
+        ///   vertically so art designed upside-down displays correctly without
+        ///   requiring a re-exported PNG.
         /// </para>
         ///
         /// <para><b>Radius choice:</b>
@@ -487,11 +492,16 @@ namespace RhythmicFlow.Player
         /// value passed to <see cref="FillCapVerticesEdgeAware"/> for this note on the same frame.</param>
         /// <param name="skin">Active <see cref="NoteSkinSet"/> providing UV region fractions,
         /// physical edge widths, and tile rate.  Must not be null.</param>
+        /// <param name="flipBodyVertical">When <c>true</c>, swaps V so the tail row
+        /// receives V = 1 and the head row receives V = 0, flipping the texture
+        /// orientation vertically.  Read from the per-type flip field on
+        /// <see cref="NoteSkinSet"/> (e.g. <c>flipTapBodyVertical</c>).</param>
         public static void FillCapUVs(
             Vector2[]   uvs,
             float       noteRadiusLocal,
             float       noteHalfAngleDeg,
-            NoteSkinSet skin)
+            NoteSkinSet skin,
+            bool        flipBodyVertical = false)
         {
             // ── Total chord width at the approach radius ──────────────────────────
             //
@@ -594,9 +604,13 @@ namespace RhythmicFlow.Player
                     u = centerUStart + tileFrac * centerUWidth;
                 }
 
-                // Both rows share the same U value; V separates tail (0) from head (1).
-                uvs[TailRow + i] = new Vector2(u, 0f);
-                uvs[HeadRow + i] = new Vector2(u, 1f);
+                // Both rows share the same U value; V separates tail from head.
+                // Normal:  tail = V 0 (inner edge), head = V 1 (outer/front edge).
+                // Flipped: tail = V 1,              head = V 0  — inverts body art vertically.
+                float vTail = flipBodyVertical ? 1f : 0f;
+                float vHead = flipBodyVertical ? 0f : 1f;
+                uvs[TailRow + i] = new Vector2(u, vTail);
+                uvs[HeadRow + i] = new Vector2(u, vHead);
             }
         }
 

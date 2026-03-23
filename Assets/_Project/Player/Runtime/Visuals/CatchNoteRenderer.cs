@@ -370,7 +370,8 @@ namespace RhythmicFlow.Player
                     _uvScratch,
                     r,                  // approach radius — see FillCapUVs for why we use r
                     noteHalfAngleDeg,
-                    noteSkinSet);
+                    noteSkinSet,
+                    noteSkinSet.flipCatchBodyVertical);
 
                 // ── MaterialPropertyBlock: texture + tint ─────────────────────────────
                 //

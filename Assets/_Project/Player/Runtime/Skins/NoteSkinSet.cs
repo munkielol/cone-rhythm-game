@@ -105,6 +105,31 @@ namespace RhythmicFlow.Player
         [SerializeField] public Texture2D fallbackBodyTexture;
 
         // -------------------------------------------------------------------
+        // Body orientation — per-type vertical flip
+        // -------------------------------------------------------------------
+
+        [Header("Body Orientation — Vertical Flip")]
+        [Tooltip("Controls the V direction of the Tap body texture on the note mesh.\n\n" +
+                 "false (default) — normal orientation: V=0 on the inner (tail) edge, " +
+                 "V=1 on the outer (head/front) edge.\n\n" +
+                 "true — flipped orientation: V=1 on the inner edge, V=0 on the outer edge.\n\n" +
+                 "Use this to correct art orientation at runtime without needing a flipped PNG.")]
+        [SerializeField] public bool flipTapBodyVertical = false;
+
+        [Tooltip("Controls the V direction of the Catch body texture on the note mesh.\n\n" +
+                 "false (default) — normal orientation.\n" +
+                 "true — flip V: V=1 on inner edge, V=0 on outer edge.\n\n" +
+                 "Same convention as flipTapBodyVertical, applied to Catch only.")]
+        [SerializeField] public bool flipCatchBodyVertical = false;
+
+        [Tooltip("Controls the V direction of the Flick body texture on the note mesh.\n\n" +
+                 "false (default) — normal orientation.\n" +
+                 "true — flip V: V=1 on inner edge, V=0 on outer edge.\n\n" +
+                 "Same convention as flipTapBodyVertical, applied to Flick only.\n" +
+                 "(Flick renderer skin integration is not yet active — field is reserved.)")]
+        [SerializeField] public bool flipFlickBodyVertical = false;
+
+        // -------------------------------------------------------------------
         // Skin layout — fixed decorative edges + tiled center
         // -------------------------------------------------------------------
 
