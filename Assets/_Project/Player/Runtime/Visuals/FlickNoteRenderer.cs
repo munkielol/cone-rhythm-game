@@ -1,5 +1,5 @@
 // FlickNoteRenderer.cs
-// Production renderer for Flick note heads (body only — arrow overlay is a future step).
+// Production renderer for Flick note heads: body + arrow overlay.
 //
 // ── Architecture ─────────────────────────────────────────────────────────────
 //
@@ -17,7 +17,7 @@
 //    - Stable under lane centerDeg / widthDeg / arenaRadius animation
 //    - Wrap-safe: cos/sin handle angles outside [0, 360) naturally
 //
-// ── Skin rendering (v0 step 3: texture-driven, CPU UV — body only) ────────────
+// ── Skin rendering (v0 step 3: texture-driven, CPU UV) ────────────────────────
 //
 //  Replaces the placeholder _Color-only path with the texture-driven body path
 //  described in spec §5.7.3 (identical pattern to TapNoteRenderer / CatchNoteRenderer):
@@ -46,21 +46,33 @@
 //  regions exactly (fixed left border / tiled center / fixed right border),
 //  using the same EdgeAwareChordAtColumn helper as FillCapUVs.
 //
-// ── Flick arrow overlay ───────────────────────────────────────────────────────
+// ── Flick arrow overlay (v0 step 3d) ─────────────────────────────────────────
 //
-//  NOT included in this step. Arrow direction billboard (spec §5.7.2) will be
-//  added in a future step as a separate overlay pass. Arrow directions follow
-//  spec §5.7.2 / §7.3.1:
-//    U = radialIn (−cosθ, −sinθ)   D = radialOut (+cosθ, +sinθ)
-//    L = CW tangent (+sinθ, −cosθ) R = CCW tangent (−sinθ, +cosθ)
+//  A second Graphics.DrawMesh call per visible flick note draws a camera-facing
+//  direction arrow on top of the body, implemented per spec §5.7.2:
+//
+//    • Material:   noteSkinSet.GetFlickArrowMaterial(note.FlickDirection)
+//      (U/D fallback chain: Down→Up; L/R fallback chain: Right→Left)
+//    • Mesh:       _arrowMesh — single shared unit-square quad; never modified per-frame
+//    • Size:       noteSkinSet.arrowSizeLocal — constant, does NOT scale with lane width
+//    • Z offset:   noteSkinSet.arrowSurfaceOffsetLocal — lifts quad above note body
+//    • Orientation: camera-facing billboard, up-axis = flick gesture direction in world space
+//      The quad's local +Y axis points in the flick direction (spec §5.7.2 table):
+//        U  = radial inward  (-cosθ, -sinθ)   D = radial outward (+cosθ, +sinθ)
+//        L  = CW tangent     (+sinθ, -cosθ)   R = CCW tangent   (-sinθ, +cosθ)
+//      where θ = laneCenterDeg in radians (PlayfieldRoot XY).
+//    • Billboard matrix: LookRotation(forward=arrowNorm, up=arrowUp) where arrowNorm
+//      is derived from Cross(arrowRight, arrowUp) with arrowRight = Cross(arrowUp, -camForward)
+//    • No MaterialPropertyBlock override: arrow materials carry their own texture.
+//    • If no arrow material is resolved (all slots null): arrow is silently skipped.
 //
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
-//  Step 3d (Flick arrow): billboard overlay pass using NoteSkinSet flick arrow materials.
 //  Step 4  (Hold):        hold ribbon skin migration to same philosophy.
 //  Step 5  (Shader tile): optional shader-side tiling optimisation.
 //
-// Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin) / step 3a (edge-aware geometry).
+// Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin) /
+//      §5.7.2 step 3d (arrow overlay).
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -68,11 +80,11 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Production Flick note head renderer — body only (step 3, no arrow overlay yet).
+    /// Production Flick note head renderer — body + arrow overlay (spec §5.7.3 + §5.7.2).
     /// Texture-driven skin via <see cref="NoteSkinSet"/>; CPU-driven per-frame UV
     /// assignment for fixed-edge + center-anchored tiled-center body layout (spec §5.7.3).
-    /// Geometry: 5-column edge-aware segmented curved-cap from <see cref="NoteCapGeometryBuilder"/>.
-    /// Arrow overlay is deferred to a future step.
+    /// Arrow overlay: camera-facing billboard per note, direction-aware via NoteSkinSet
+    /// arrow materials; constant size regardless of lane width (spec §5.7.2).
     /// </summary>
     [AddComponentMenu("RhythmicFlow/Visuals/FlickNoteRenderer")]
     public class FlickNoteRenderer : MonoBehaviour
@@ -85,10 +97,12 @@ namespace RhythmicFlow.Player
         [Tooltip("The PlayerAppController this renderer reads notes and geometry from.")]
         [SerializeField] private PlayerAppController playerAppController;
 
-        [Tooltip("NoteSkinSet asset driving the body material, body texture, lane width ratio, " +
-                 "radial half-thickness, missed tint, and vertical flip for Flick notes.\n\n" +
+        [Tooltip("NoteSkinSet asset driving the body material, body texture, arrow materials, " +
+                 "lane width ratio, radial half-thickness, arrow size, missed tint, and vertical " +
+                 "flip for Flick notes.\n\n" +
                  "Create via Assets → Create → RhythmicFlow → Note Skin Set.\n" +
-                 "Assign flickBodyTexture and noteBodyMaterial on the asset, then drag it here.")]
+                 "Assign flickBodyTexture, noteBodyMaterial, and flickArrowMaterial* on the asset, " +
+                 "then drag it here.")]
         [SerializeField] private NoteSkinSet noteSkinSet;
 
         // -------------------------------------------------------------------
@@ -147,7 +161,7 @@ namespace RhythmicFlow.Player
         [SerializeField] private bool debugDrawLaneBoundary = false;
 
         // -------------------------------------------------------------------
-        // Internals — mesh pool
+        // Internals — body mesh pool
         // -------------------------------------------------------------------
 
         // One mesh per simultaneously visible Flick note. Vertices and UVs overwritten
@@ -166,8 +180,17 @@ namespace RhythmicFlow.Player
         // Length = NoteCapGeometryBuilder.VertexCount (12), matching mesh topology.
         private readonly Vector2[] _uvScratch = new Vector2[NoteCapGeometryBuilder.VertexCount];
 
-        // Pre-allocated property block — reused every DrawMesh call (no per-frame allocation).
+        // Pre-allocated property block — reused for every body DrawMesh call (no per-frame allocation).
         private MaterialPropertyBlock _propBlock;
+
+        // -------------------------------------------------------------------
+        // Internals — arrow overlay
+        // -------------------------------------------------------------------
+
+        // Single shared unit-square quad mesh used for all arrow overlays. Never modified
+        // per frame — orientation is encoded entirely in the per-note Matrix4x4 passed to
+        // Graphics.DrawMesh (spec §5.7.2 "billboard construction").
+        private Mesh _arrowMesh;
 
         // -------------------------------------------------------------------
         // Internals — one-time warning guards (warn once, not every frame)
@@ -193,7 +216,7 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
-            // Pre-allocate the mesh pool. Each mesh has the curved-cap topology set up
+            // Pre-allocate the body mesh pool. Each mesh has the curved-cap topology set up
             // once in BuildCapMesh (triangles + placeholder UVs). Vertices and UVs are
             // overwritten in-place every frame — no per-frame GC allocation.
             _meshPool = new Mesh[MaxNotePool];
@@ -202,15 +225,24 @@ namespace RhythmicFlow.Player
                 _meshPool[i] = NoteCapGeometryBuilder.BuildCapMesh("FlickNoteCurvedCap");
             }
             _propBlock = new MaterialPropertyBlock();
+
+            // Build the shared arrow overlay quad. This mesh is the same unit-square for every
+            // note and every frame — per-note orientation is driven entirely by the DrawMesh
+            // matrix. No per-frame allocation needed.
+            _arrowMesh = BuildArrowQuadMesh();
         }
 
         private void OnDestroy()
         {
-            if (_meshPool == null) { return; }
-            for (int i = 0; i < _meshPool.Length; i++)
+            if (_meshPool != null)
             {
-                if (_meshPool[i] != null) { Destroy(_meshPool[i]); _meshPool[i] = null; }
+                for (int i = 0; i < _meshPool.Length; i++)
+                {
+                    if (_meshPool[i] != null) { Destroy(_meshPool[i]); _meshPool[i] = null; }
+                }
             }
+
+            if (_arrowMesh != null) { Destroy(_arrowMesh); _arrowMesh = null; }
         }
 
         private void LateUpdate()
@@ -289,6 +321,13 @@ namespace RhythmicFlow.Player
             // Precompute frustum heights once per frame — same for all notes this frame.
             float hInner = ReadFrustumHeightInner();
             float hOuter = ReadFrustumHeightOuter();
+
+            // ── Camera forward for arrow billboard ─────────────────────────────────────
+            // Resolved once per frame; passed into the per-note arrow matrix calculation.
+            // Falls back to Vector3.back (0,0,-1) if no main camera is present, which
+            // makes the arrow face +Z — reasonable when rendering without a camera.
+            Camera cam = Camera.main;
+            Vector3 camForward = cam != null ? cam.transform.forward : Vector3.back;
 
             _poolUsed = 0;
 
@@ -405,7 +444,7 @@ namespace RhythmicFlow.Player
                     : Color.white;
                 _propBlock.SetColor("_Color", tint);
 
-                // ── Upload mesh data and draw ──────────────────────────────────────────
+                // ── Upload mesh data and draw body ─────────────────────────────────────
                 Mesh mesh = _meshPool[_poolUsed++];
                 mesh.vertices = _vertScratch;
                 mesh.uv       = _uvScratch;       // per-frame UV: fixed-edge + center-anchored tiled-center
@@ -413,6 +452,16 @@ namespace RhythmicFlow.Player
 
                 Graphics.DrawMesh(mesh, localToWorld, bodyMaterial,
                     gameObject.layer, null, 0, _propBlock);
+
+                // ── Arrow overlay ──────────────────────────────────────────────────────
+                // Separate DrawMesh call on top of the body (spec §5.7.2).
+                // The arrow is a camera-facing billboard: its local +Y axis points in the
+                // flick gesture direction; its local +Z faces the camera.
+                // Arrow size is constant — does NOT scale with lane width (readability rule).
+                // Arrow materials use their own baked texture; no MaterialPropertyBlock needed.
+                DrawArrowOverlay(note.FlickDirection, laneCenterDeg,
+                    ctr, r, innerLocal, outerLocal, hInner, hOuter,
+                    pfRoot, camForward);
 
                 // ── Debug geometry verification (no GC — only Debug.DrawLine) ──────────
                 if (debugDrawNoteOutline || debugDrawLaneBoundary)
@@ -423,6 +472,153 @@ namespace RhythmicFlow.Player
                         hInner, hOuter);
                 }
             }
+        }
+
+        // -------------------------------------------------------------------
+        // Arrow overlay rendering
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Draws the flick arrow overlay quad for one note.
+        /// Camera-facing billboard (spec §5.7.2): the quad's local +Y axis aligns with the
+        /// flick gesture direction in world space; local +Z faces the camera.
+        /// Silently skips if no arrow material is assigned for this direction.
+        /// </summary>
+        private void DrawArrowOverlay(
+            string    flickDirection,
+            float     laneCenterDeg,
+            Vector2   ctr,
+            float     r,
+            float     innerLocal,
+            float     outerLocal,
+            float     hInner,
+            float     hOuter,
+            Transform pfRoot,
+            Vector3   camForward)
+        {
+            // Arrow material — selected by direction with NoteSkinSet fallback chain.
+            // (U/D share family; R/L share family. Null means this direction is unassigned.)
+            Material arrowMaterial = noteSkinSet.GetFlickArrowMaterial(flickDirection);
+            if (arrowMaterial == null || _arrowMesh == null) { return; }
+
+            // ── Note centre in PlayfieldRoot local space ───────────────────────────────
+            // The arrow is centred on the note body at the approach radius, with a small
+            // Z offset (arrowSurfaceOffsetLocal) to lift it above the body surface.
+            float centreRad = laneCenterDeg * Mathf.Deg2Rad;
+            float bodyZ     = NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal, hInner, hOuter);
+            Vector3 noteCentreLocal = new Vector3(
+                ctr.x + r * Mathf.Cos(centreRad),
+                ctr.y + r * Mathf.Sin(centreRad),
+                bodyZ + noteSkinSet.arrowSurfaceOffsetLocal);
+
+            // ── Billboard orientation (spec §5.7.2) ───────────────────────────────────
+            //
+            // dir2DLocal: the gesture direction as a unit vector in PlayfieldRoot XY.
+            //   U (radialIn)    = (-cosθ, -sinθ)  where θ = laneCenterDeg in radians
+            //   D (radialOut)   = (+cosθ, +sinθ)
+            //   L (CW tangent)  = (+sinθ, -cosθ)
+            //   R (CCW tangent) = (-sinθ, +cosθ)
+            //
+            // arrowUp    = pfRoot.TransformDirection(dir2DLocal)   — gesture direction in world
+            // arrowRight = Cross(arrowUp, -camForward).normalized   — quad right edge in world
+            // arrowNorm  = Cross(arrowRight, arrowUp)               — faces the camera
+            //
+            // This keeps the arrow correctly oriented relative to the playfield arc even
+            // as the arena rotates or the camera angle changes.
+            Vector3 dir2DLocal = FlickDirToLocal(flickDirection, laneCenterDeg);
+            Vector3 arrowUp    = pfRoot.TransformDirection(dir2DLocal);  // world space
+
+            // arrowRight lies in the plane perpendicular to camForward that also contains arrowUp.
+            // Using Cross(arrowUp, -camForward): if arrowUp is in the XY plane of the playfield
+            // and camForward is mostly -Z, this gives a stable horizontal-ish right axis.
+            Vector3 arrowRight = Vector3.Cross(arrowUp, -camForward);
+            // Guard: if arrowUp happens to be parallel to camForward (degenerate), skip.
+            if (arrowRight.sqrMagnitude < 1e-6f) { return; }
+            arrowRight.Normalize();
+
+            Vector3 arrowNorm = Vector3.Cross(arrowRight, arrowUp); // faces camera
+
+            // LookRotation: forward = arrowNorm (faces camera), up = arrowUp (gesture direction).
+            // The quad's local +Y axis will point in the flick gesture direction after rotation.
+            Quaternion arrowRot = Quaternion.LookRotation(arrowNorm, arrowUp);
+
+            // ── Arrow matrix ───────────────────────────────────────────────────────────
+            // Position is in world space (pfRoot.TransformPoint promotes local → world).
+            // Scale is uniform (arrowSizeLocal × arrowSizeLocal) — constant, never lane-dependent.
+            float s = noteSkinSet.arrowSizeLocal;
+            Matrix4x4 arrowMatrix = Matrix4x4.TRS(
+                pfRoot.TransformPoint(noteCentreLocal),
+                arrowRot,
+                new Vector3(s, s, 1f));
+
+            // Draw with no property block override — the arrow material carries its own texture.
+            Graphics.DrawMesh(_arrowMesh, arrowMatrix, arrowMaterial, gameObject.layer);
+        }
+
+        // -------------------------------------------------------------------
+        // Arrow static helpers (allocation-free, called per-note)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Returns the flick gesture direction as a unit vector in PlayfieldRoot local XY,
+        /// matching the table in spec §5.7.2.
+        /// θ = laneCenterDeg in radians.
+        /// </summary>
+        private static Vector3 FlickDirToLocal(string flickDirection, float laneCenterDeg)
+        {
+            float rad  = laneCenterDeg * Mathf.Deg2Rad;
+            float cosA = Mathf.Cos(rad);
+            float sinA = Mathf.Sin(rad);
+
+            // Each case matches the spec §5.7.2 "dir2DLocal in PlayfieldRoot XY" column.
+            return flickDirection switch
+            {
+                "U" => new Vector3(-cosA, -sinA, 0f),   // radial inward  (toward arena centre)
+                "D" => new Vector3( cosA,  sinA, 0f),   // radial outward (away from centre)
+                "L" => new Vector3( sinA, -cosA, 0f),   // CW tangent
+                "R" => new Vector3(-sinA,  cosA, 0f),   // CCW tangent
+                _   => new Vector3(-cosA, -sinA, 0f),   // unknown / undirected: default to U
+            };
+        }
+
+        /// <summary>
+        /// Builds the shared unit-square quad mesh used for all arrow overlays (spec §5.7.2).
+        /// The quad is in the local XY plane, centred at the origin, with extents ±0.5.
+        /// Local +Y = "arrow points here" = the direction set by the billboard LookRotation.
+        /// Arrow texture should be authored with the arrow graphic pointing toward V=1 (+Y).
+        /// Called once in Awake; the resulting mesh is never modified per-frame.
+        /// </summary>
+        private static Mesh BuildArrowQuadMesh()
+        {
+            var mesh = new Mesh();
+            mesh.name = "FlickArrowQuad";
+
+            // Four corners of a unit quad centred at origin in the local XY plane.
+            mesh.vertices = new Vector3[]
+            {
+                new Vector3(-0.5f, -0.5f, 0f),  // 0  bottom-left
+                new Vector3( 0.5f, -0.5f, 0f),  // 1  bottom-right
+                new Vector3( 0.5f,  0.5f, 0f),  // 2  top-right
+                new Vector3(-0.5f,  0.5f, 0f),  // 3  top-left
+            };
+
+            // UV: (0,0) at bottom-left → (1,1) at top-right.
+            // Arrow texture should point toward V=1 (top of texture = direction arrow points).
+            mesh.uv = new Vector2[]
+            {
+                new Vector2(0f, 0f),  // 0
+                new Vector2(1f, 0f),  // 1
+                new Vector2(1f, 1f),  // 2
+                new Vector2(0f, 1f),  // 3
+            };
+
+            // Two triangles, winding CCW from +Z → normal faces +Z in local space.
+            // The billboard LookRotation will orient +Z toward the camera at runtime.
+            mesh.triangles = new int[] { 0, 1, 2,  0, 2, 3 };
+
+            mesh.RecalculateBounds();
+            mesh.RecalculateNormals();
+            return mesh;
         }
 
         // -------------------------------------------------------------------
