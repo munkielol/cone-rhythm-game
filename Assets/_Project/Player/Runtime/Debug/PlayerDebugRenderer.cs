@@ -57,13 +57,6 @@ namespace RhythmicFlow.Player
         [SerializeField] private int maxNoteMarkers = 32;
 
         [Header("Note Approach (DEBUG)")]
-        [Tooltip("How many ms before a note's hit time it becomes visible and starts approaching.")]
-        [SerializeField] private int noteLeadTimeMs = 2000;
-
-        [Tooltip("Spawn radius as a fraction of band width from the inner edge (0 = inner, 1 = outer).")]
-        [Range(0f, 1f)]
-        [SerializeField] private float spawnRadiusFactor = 0f;
-
         [Tooltip("If true, show notes within noteLeadTimeMs even when outside the narrow judgement window.")]
         [SerializeField] private bool showNotesOutsideWindow = true;
 
@@ -757,6 +750,12 @@ namespace RhythmicFlow.Player
         private void UpdateNoteMarkers()
         {
             if (_notePool == null) { return; }
+
+            // Read shared approach settings from PlayerAppController — the single source of truth
+            // for all renderers (Tap/Catch/Flick/Hold and this debug overlay).
+            // Reading here keeps debug timing automatically in sync with production renderers.
+            int   noteLeadTimeMs   = playerAppController.NoteLeadTimeMs;
+            float spawnRadiusFactor = playerAppController.SpawnRadiusFactor;
 
             IReadOnlyDictionary<string, ArenaGeometry> arenas = playerAppController.DebugArenaGeometries;
             IReadOnlyDictionary<string, LaneGeometry>  lanes  = playerAppController.DebugLaneGeometries;
