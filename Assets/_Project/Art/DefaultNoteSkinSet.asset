@@ -17,6 +17,9 @@ MonoBehaviour:
   catchBodyTexture: {fileID: 2800000, guid: 049fbcd7717318742bbcfd4b593211a2, type: 3}
   flickBodyTexture: {fileID: 0}
   fallbackBodyTexture: {fileID: 0}
+  flipTapBodyVertical: 1
+  flipCatchBodyVertical: 1
+  flipFlickBodyVertical: 1
   bodyLeftEdgeU: 0.25
   bodyRightEdgeU: 0.25
   bodyLeftEdgeLocalWidth: 0.01
