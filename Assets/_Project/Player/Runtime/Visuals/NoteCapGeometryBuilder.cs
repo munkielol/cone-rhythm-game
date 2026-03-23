@@ -87,6 +87,19 @@ namespace RhythmicFlow.Player
         /// </summary>
         public const int ColumnCount = 5;
 
+        // Fixed column allocation for edge-aware geometry (FillCapVerticesEdgeAware)
+        // and UV assignment (FillCapUVs). Must satisfy:
+        //   LeftEdgeCols + CenterCols + RightEdgeCols == ColumnCount
+        //
+        //   Col 0          → left cap boundary (chord = 0)
+        //   Col LeftEdge   → left edge / center boundary (chord = leftW)
+        //   Cols LeftEdge+1..LeftEdge+CenterCols-1  → center interior
+        //   Col LeftEdge+CenterCols → center / right edge boundary (chord = leftW + centerW)
+        //   Col ColumnCount → right cap boundary (chord = totalChord)
+        private const int LeftEdgeCols  = 1;  // 1 column for the left decorative border
+        private const int CenterCols    = 3;  // 3 columns for the tiled center
+        // RightEdgeCols is implicit: ColumnCount - LeftEdgeCols - CenterCols = 1
+
         /// <summary>Total vertex count: 2 rows × (ColumnCount + 1) column lines.</summary>
         public const int VertexCount = (ColumnCount + 1) * 2; // = 12
 
@@ -234,6 +247,176 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
+        // Edge-aware helpers  (shared by FillCapVerticesEdgeAware + FillCapUVs)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Resolves effective physical edge widths after the narrow-width fallback.
+        ///
+        /// <para>When <paramref name="totalChord"/> is narrower than the sum of the
+        /// two skin edge widths, both edges are scaled down proportionally so they
+        /// still fit inside the note without inverting.  The center collapses to zero.</para>
+        /// </summary>
+        private static void ComputeEdgeWidths(
+            float  totalChord,
+            float  skinLeftW,
+            float  skinRightW,
+            out float leftW,
+            out float centerW,
+            out float rightW)
+        {
+            leftW  = skinLeftW;
+            rightW = skinRightW;
+
+            float sumEdgeW = leftW + rightW;
+            if (sumEdgeW > totalChord && sumEdgeW > 0f)
+            {
+                float scale = totalChord / sumEdgeW;
+                leftW  *= scale;
+                rightW *= scale;
+            }
+            centerW = Mathf.Max(0f, totalChord - leftW - rightW);
+        }
+
+        /// <summary>
+        /// Returns the chord distance (in PlayfieldLocal units) from the left cap boundary
+        /// to column boundary <paramref name="i"/>, using the fixed 1:3:1 edge-aware
+        /// column allocation (LeftEdgeCols : CenterCols : RightEdgeCols).
+        ///
+        /// <para>Column boundaries:
+        /// <list type="bullet">
+        ///   <item><c>i = 0</c>  → 0 (left cap edge)</item>
+        ///   <item><c>i = 1</c>  → <paramref name="leftW"/> (end of left border)</item>
+        ///   <item><c>i = 2..4</c> → subdivides <paramref name="centerW"/> uniformly</item>
+        ///   <item><c>i = 5</c>  → leftW + centerW + rightW = totalChord (right cap edge)</item>
+        /// </list>
+        /// </para>
+        /// </summary>
+        private static float EdgeAwareChordAtColumn(int i, float leftW, float centerW, float rightW)
+        {
+            // Left decorative border: columns 0..LeftEdgeCols
+            if (i <= LeftEdgeCols)
+                return (i * leftW) / LeftEdgeCols;
+
+            int ci = i - LeftEdgeCols;
+
+            // Tiled center: columns LeftEdgeCols..LeftEdgeCols+CenterCols
+            if (ci <= CenterCols)
+                return leftW + (ci * centerW) / CenterCols;
+
+            // Right decorative border: columns LeftEdgeCols+CenterCols..ColumnCount
+            int ri         = i - LeftEdgeCols - CenterCols;
+            int rightCols  = ColumnCount - LeftEdgeCols - CenterCols; // = 1
+            return leftW + centerW + (ri * rightW) / rightCols;
+        }
+
+        // -------------------------------------------------------------------
+        // Per-frame vertex fill — edge-aware  (zero allocations)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Writes curved-cap vertex positions using edge-aware column placement.
+        ///
+        /// <para>This is the preferred path for <c>TapNoteRenderer</c> (and future
+        /// <c>CatchNoteRenderer</c> / <c>FlickNoteRenderer</c> once migrated).
+        /// It allocates the five column quads across three physical regions — fixed left
+        /// border, tiled center, fixed right border — so that each column boundary in the
+        /// mesh sits at the same chord position as the corresponding UV column written by
+        /// <see cref="FillCapUVs"/>. Geometry and UV regions are guaranteed to agree.</para>
+        ///
+        /// <para>Column angular positions are derived from chord distances via
+        /// the inverse chord formula:
+        /// <code>
+        ///   chordToI = EdgeAwareChordAtColumn(i, leftW, centerW, rightW)
+        ///   deltaAngleDeg = 2 × Asin(chordToI / (2 × noteRadiusLocal)) × Rad2Deg
+        ///   colDeg = (centerDeg − noteHalfAngleDeg) + deltaAngleDeg
+        /// </code>
+        /// </para>
+        ///
+        /// <para>The original <see cref="FillCapVertices"/> (uniform angular steps) is kept
+        /// for <c>CatchNoteRenderer</c> and <c>FlickNoteRenderer</c> until they are
+        /// migrated to the skin system.</para>
+        /// </summary>
+        /// <param name="verts">Pre-allocated scratch, length ≥ <see cref="VertexCount"/> (12).</param>
+        /// <param name="ctr">PlayfieldRoot local-space XY position of the arena centre.</param>
+        /// <param name="tailR">Inner radius of the note band (PlayfieldLocal units).</param>
+        /// <param name="headR">Outer radius of the note band (PlayfieldLocal units).</param>
+        /// <param name="centerDeg">Lane centre angle in degrees.</param>
+        /// <param name="noteHalfAngleDeg">Note cap half-span in degrees. Use <see cref="NoteHalfAngleDeg"/>.</param>
+        /// <param name="noteRadiusLocal">Note approach radius (PlayfieldLocal units).
+        /// Used to convert chord distances to arc angles.  Must match the value passed
+        /// to <see cref="FillCapUVs"/> so geometry and UV column positions agree.</param>
+        /// <param name="leftEdgeLocalWidth">Physical left border width (PlayfieldLocal units).
+        /// Read from <c>NoteSkinSet.bodyLeftEdgeLocalWidth</c>.</param>
+        /// <param name="rightEdgeLocalWidth">Physical right border width (PlayfieldLocal units).
+        /// Read from <c>NoteSkinSet.bodyRightEdgeLocalWidth</c>.</param>
+        /// <param name="innerLocal">Arena inner band radius — for frustum Z.</param>
+        /// <param name="outerLocal">Arena outer band radius — for frustum Z.</param>
+        /// <param name="hInner">Frustum cone height at the inner band edge.</param>
+        /// <param name="hOuter">Frustum cone height at the outer band edge.</param>
+        public static void FillCapVerticesEdgeAware(
+            Vector3[] verts,
+            Vector2   ctr,
+            float     tailR,
+            float     headR,
+            float     centerDeg,
+            float     noteHalfAngleDeg,
+            float     noteRadiusLocal,
+            float     leftEdgeLocalWidth,
+            float     rightEdgeLocalWidth,
+            float     innerLocal,
+            float     outerLocal,
+            float     hInner,
+            float     hOuter)
+        {
+            // Frustum Z per row — same as FillCapVertices (depends only on radius).
+            float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter);
+            float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter);
+
+            // Total chord of the note cap at the approach radius.
+            float totalChord = 2f * noteRadiusLocal * Mathf.Sin(noteHalfAngleDeg * Mathf.Deg2Rad);
+
+            // Resolve effective physical edge widths (with narrow-width fallback).
+            ComputeEdgeWidths(totalChord, leftEdgeLocalWidth, rightEdgeLocalWidth,
+                out float leftW, out float centerW, out float rightW);
+
+            // Left angular boundary of the note cap.
+            float leftDeg = centerDeg - noteHalfAngleDeg;
+
+            for (int i = 0; i <= ColumnCount; i++)
+            {
+                // Chord from the left cap boundary to this column boundary.
+                float chordToI = EdgeAwareChordAtColumn(i, leftW, centerW, rightW);
+
+                // Convert chord back to arc angle at the approach radius.
+                // chordToI = 2r × sin(deltaAngle/2)  →  deltaAngle = 2 × Asin(chordToI / 2r)
+                //
+                // Clamp the Asin argument to [−1, 1] to guard against floating-point
+                // overrun (chordToI can briefly exceed totalChord by tiny FP amounts).
+                float deltaAngleDeg = 0f;
+                if (noteRadiusLocal > 0f)
+                {
+                    float sinArg = Mathf.Clamp(chordToI / (2f * noteRadiusLocal), -1f, 1f);
+                    deltaAngleDeg = 2f * Mathf.Asin(sinArg) * Mathf.Rad2Deg;
+                }
+
+                float colRad = (leftDeg + deltaAngleDeg) * Mathf.Deg2Rad;
+                float cosA   = Mathf.Cos(colRad);
+                float sinA   = Mathf.Sin(colRad);
+
+                verts[TailRow + i] = new Vector3(
+                    ctr.x + tailR * cosA,
+                    ctr.y + tailR * sinA,
+                    zTail);
+
+                verts[HeadRow + i] = new Vector3(
+                    ctr.x + headR * cosA,
+                    ctr.y + headR * sinA,
+                    zHead);
+            }
+        }
+
+        // -------------------------------------------------------------------
         // Per-frame UV fill  (zero allocations — spec §5.7.3 step 3)
         // -------------------------------------------------------------------
 
@@ -279,13 +462,21 @@ namespace RhythmicFlow.Player
         /// of left-edge : center : right-edge stable as the note travels — the border widths
         /// do not appear to grow or shrink relative to the body as the note approaches.
         /// </para>
+        ///
+        /// <para><b>Column chord positions:</b>
+        /// UVs use <see cref="EdgeAwareChordAtColumn"/> (the same helper used by
+        /// <see cref="FillCapVerticesEdgeAware"/>) to determine the chord distance at each
+        /// column boundary.  This guarantees that UV region transitions land exactly on the
+        /// same column boundaries as the mesh vertices — geometry and UV cannot disagree.
+        /// </para>
         /// </summary>
         /// <param name="uvs">Pre-allocated scratch, length ≥ <see cref="VertexCount"/> (12).</param>
         /// <param name="noteRadiusLocal">Note approach radius in PlayfieldLocal units.
-        /// Used to convert <paramref name="noteHalfAngleDeg"/> into a chord width and to
-        /// map physical edge widths to column positions.</param>
+        /// Used to compute the total chord width from <paramref name="noteHalfAngleDeg"/>.
+        /// Must match the value passed to <see cref="FillCapVerticesEdgeAware"/> so that
+        /// physical edge widths resolve identically in both methods.</param>
         /// <param name="noteHalfAngleDeg">Note cap half-span in degrees.  Must be the same
-        /// value passed to <see cref="FillCapVertices"/> for this note on the same frame.</param>
+        /// value passed to <see cref="FillCapVerticesEdgeAware"/> for this note on the same frame.</param>
         /// <param name="skin">Active <see cref="NoteSkinSet"/> providing UV region fractions,
         /// physical edge widths, and tile rate.  Must not be null.</param>
         public static void FillCapUVs(
@@ -300,33 +491,15 @@ namespace RhythmicFlow.Player
             // The chord (straight-line distance) subtending that full angular span is:
             //
             //   totalChord = 2 × r × sin(noteHalfAngleDeg × Deg2Rad)
-            //
-            // This is exact — the same formula used by NoteApproachMath.LaneChordWidthAtRadius,
-            // applied here to the note's own angular half-span.
             float totalChord = 2f * noteRadiusLocal * Mathf.Sin(noteHalfAngleDeg * Mathf.Deg2Rad);
 
             // ── Physical edge widths with narrow-width fallback ───────────────────
             //
-            // Left and right decorative borders each occupy a fixed physical width
-            // (PlayfieldLocal units) that does NOT scale with lane width.  If the total
-            // chord is narrower than their combined width, scale both down proportionally
-            // so they still fill the note without inverting.  Center collapses to zero.
-            float leftW  = skin.bodyLeftEdgeLocalWidth;
-            float rightW = skin.bodyRightEdgeLocalWidth;
-
-            float sumEdgeW = leftW + rightW;
-            if (sumEdgeW > totalChord && sumEdgeW > 0f)
-            {
-                // Proportional scale: leftW/rightW maintain their ratio to each other
-                // but together now exactly fill totalChord.
-                float scale = totalChord / sumEdgeW;
-                leftW  *= scale;
-                rightW *= scale;
-            }
-
-            // Physical width of the tiled center after edges are reserved.
-            // Mathf.Max guards against tiny negative values from floating-point drift.
-            float centerW = Mathf.Max(0f, totalChord - leftW - rightW);
+            // Delegates to the same ComputeEdgeWidths helper used by
+            // FillCapVerticesEdgeAware so both methods resolve identical leftW/centerW/rightW.
+            ComputeEdgeWidths(totalChord,
+                skin.bodyLeftEdgeLocalWidth, skin.bodyRightEdgeLocalWidth,
+                out float leftW, out float centerW, out float rightW);
 
             // Chord distance at which the right decorative border begins.
             float rightEdgeStartChord = totalChord - rightW;
@@ -348,31 +521,23 @@ namespace RhythmicFlow.Player
 
             // ── Per-column UV assignment ──────────────────────────────────────────
             //
-            // Column i (0..ColumnCount) is at angular offset i × stepDeg from the left
-            // cap boundary, where stepDeg = 2 × noteHalfAngleDeg / ColumnCount.
+            // Column chord positions come from EdgeAwareChordAtColumn — the same helper
+            // used by FillCapVerticesEdgeAware for vertex placement.  Because both methods
+            // use identical chord positions, UV region boundaries land exactly on mesh
+            // column edges: no UV/geometry mismatch.
             //
-            // The chord distance from the left cap edge to column i is derived from
-            // the arc geometry:  the angular separation between column 0 and column i
-            // is i × stepDeg, so the subtended chord is:
+            // Column mapping (LeftEdgeCols=1, CenterCols=3, RightEdgeCols=1):
+            //   i=0 → chord=0           → U=0           (left cap edge)
+            //   i=1 → chord=leftW       → U=leftEdgeU   (left border / center boundary)
+            //   i=2,3 → center interior → tiled U
+            //   i=4 → chord=leftW+centerW → U=1-rightEdgeU (center / right border boundary)
+            //   i=5 → chord=totalChord  → U=1           (right cap edge)
             //
-            //   chordToI = 2 × r × sin( i × noteHalfAngleDeg / ColumnCount × Deg2Rad )
-            //            = 2 × r × sin( i × stepHalfAngleDeg × Deg2Rad )
-            //
-            // where stepHalfAngleDeg = noteHalfAngleDeg / ColumnCount.
-            //
-            // Verification:
-            //   i = 0  → sin(0)                 = 0           = left cap edge   ✓
-            //   i = N  → sin(noteHalfAngleDeg)  = totalChord/2r → totalChord    ✓
-            //
-            // We use noteRadiusLocal (approach centre) for all columns.  The tail and
-            // head rows share the same U — only V differs (0 vs 1).
-            float stepHalfAngleDeg = noteHalfAngleDeg / ColumnCount;
-
+            // Both rows share the same U; V separates tail (0) from head (1).
             for (int i = 0; i <= ColumnCount; i++)
             {
                 // Chord distance from the left cap boundary to this column boundary.
-                float chordToI = 2f * noteRadiusLocal
-                    * Mathf.Sin(i * stepHalfAngleDeg * Mathf.Deg2Rad);
+                float chordToI = EdgeAwareChordAtColumn(i, leftW, centerW, rightW);
 
                 float u;
 

@@ -37,6 +37,17 @@
 //  The old per-renderer tapMaterial / noteLaneWidthRatio / noteHalfThicknessLocal
 //  / tapColor / missedTintColor fields have been removed.
 //
+// ── Geometry (v0 step 3a: edge-aware column placement) ───────────────────────
+//
+//  FillCapVerticesEdgeAware replaces the old uniform FillCapVertices call.
+//  Column boundaries are placed at chord positions that match the three skin
+//  regions exactly (fixed left border / tiled center / fixed right border),
+//  using the same EdgeAwareChordAtColumn helper as FillCapUVs.  Geometry and
+//  UV column boundaries are guaranteed to agree — no asymmetry artefacts.
+//
+//  The original FillCapVertices (uniform angular steps) remains in the builder
+//  for CatchNoteRenderer and FlickNoteRenderer until they are migrated.
+//
 // ── Future steps (do not implement here) ─────────────────────────────────────
 //
 //  Step 3b (Catch/Flick): identical integration pattern on CatchNoteRenderer
@@ -45,7 +56,7 @@
 //  Step 4  (Hold):        hold ribbon skin migration to same philosophy.
 //  Step 5  (Shader tile): optional shader-side tiling optimisation.
 //
-// Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin).
+// Spec §5.7.a / §5.7.0 step 2 (geometry) / §5.7.3 step 3 (UV + skin) / step 3a (edge-aware geometry).
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -335,16 +346,21 @@ namespace RhythmicFlow.Player
                 float noteHalfAngleDeg = NoteCapGeometryBuilder.NoteHalfAngleDeg(
                     halfWidthDeg, noteLaneWidthRatio);
 
-                // ── Curved-cap vertex fill ─────────────────────────────────────────────
-                // Arc-samples ColumnCount+1 column boundaries across the note's angular span.
-                // Each column boundary has a tail vertex (at tailR) and a head vertex (at headR).
-                NoteCapGeometryBuilder.FillCapVertices(
+                // ── Curved-cap vertex fill (edge-aware) ───────────────────────────────
+                // Places the ColumnCount+1 column boundaries at chord positions that
+                // match the three skin regions: fixed left border / tiled center /
+                // fixed right border.  Uses the same EdgeAwareChordAtColumn helper as
+                // FillCapUVs so geometry and UV columns are guaranteed to align.
+                NoteCapGeometryBuilder.FillCapVerticesEdgeAware(
                     _vertScratch,
                     ctr,
                     tailR,
                     headR,
                     laneCenterDeg,
                     noteHalfAngleDeg,
+                    r,                                      // approach radius (for chord → angle)
+                    noteSkinSet.bodyLeftEdgeLocalWidth,
+                    noteSkinSet.bodyRightEdgeLocalWidth,
                     innerLocal,
                     outerLocal,
                     hInner,
