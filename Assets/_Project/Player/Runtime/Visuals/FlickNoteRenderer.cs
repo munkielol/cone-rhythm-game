@@ -24,8 +24,9 @@
 //
 //    • Material template: noteSkinSet.noteBodyMaterial
 //      (shared across all note types; do NOT bake a texture into it)
-//    • Body texture:      noteSkinSet.GetBodyTexture(NoteBodySkinType.Flick)
-//      (assigned per draw call via MaterialPropertyBlock._MainTex)
+//    • Body texture:      noteSkinSet.GetFlickBodyTexture(note.FlickDirection)
+//      (per-note direction-specific lookup; direction override → generic flick → fallback;
+//       assigned per draw call via MaterialPropertyBlock._MainTex)
 //    • UV layout:         NoteCapGeometryBuilder.FillCapUVs(…)
 //      (fixed-edge + center-anchored tiled-center written into _uvScratch each frame)
 //    • Vertical flip:     noteSkinSet.flipFlickBodyVertical
@@ -181,8 +182,9 @@ namespace RhythmicFlow.Player
         // Missing noteBodyMaterial on the assigned NoteSkinSet — warn once.
         private bool _hasWarnedMissingMaterial;
 
-        // Missing flick texture (flickBodyTexture and fallbackBodyTexture both null) — warn once.
-        // Rendering continues in color-only mode; the texture warning fires just once.
+        // Missing flick texture (all direction slots, flickBodyTexture, and fallbackBodyTexture null)
+        // — warn once when the first note with a null resolved texture is encountered.
+        // Rendering continues in color-only mode for that note.
         private bool _hasWarnedMissingTexture;
 
         // -------------------------------------------------------------------
@@ -256,19 +258,6 @@ namespace RhythmicFlow.Player
                         "MaterialPropertyBlock (e.g. Unlit/Transparent).", this);
                 }
                 return;
-            }
-
-            // ── Resolve flick body texture (warn once if missing; render color-only) ───
-            // GetBodyTexture returns flickBodyTexture, falling back to fallbackBodyTexture.
-            // If both are null it returns null — we warn once and continue in color-only mode
-            // (the material's base color shows through without _MainTex being overridden).
-            Texture2D bodyTexture = noteSkinSet.GetBodyTexture(NoteBodySkinType.Flick);
-            if (bodyTexture == null && !_hasWarnedMissingTexture)
-            {
-                _hasWarnedMissingTexture = true;
-                Debug.LogWarning(
-                    "[FlickNoteRenderer] NoteSkinSet has no flickBodyTexture or fallbackBodyTexture. " +
-                    "Flick notes will render in color-only mode until a texture is assigned.", this);
             }
 
             // ── Read sizing from NoteSkinSet (single source of truth) ─────────────────
@@ -382,10 +371,25 @@ namespace RhythmicFlow.Player
                     noteSkinSet,
                     noteSkinSet.flipFlickBodyVertical);
 
+                // ── Resolve body texture per note (direction-specific) ────────────────
+                // note.FlickDirection is the chart-authored direction string ("U"/"D"/"L"/"R"
+                // or "" for undirected). GetFlickBodyTexture applies the fallback chain:
+                //   direction override → flickBodyTexture → fallbackBodyTexture.
+                // Returns null when all slots are unassigned — rendering falls back to color-only.
+                Texture2D bodyTexture = noteSkinSet.GetFlickBodyTexture(note.FlickDirection);
+                if (bodyTexture == null && !_hasWarnedMissingTexture)
+                {
+                    _hasWarnedMissingTexture = true;
+                    Debug.LogWarning(
+                        "[FlickNoteRenderer] NoteSkinSet has no body texture for direction " +
+                        $"'{note.FlickDirection}' (and no flickBodyTexture / fallbackBodyTexture). " +
+                        "Flick notes will render in color-only mode until a texture is assigned.", this);
+                }
+
                 // ── MaterialPropertyBlock: texture + tint ─────────────────────────────
                 //
-                // _MainTex: the flick body texture. Assigned here per draw call so the shared
-                //           material asset stays clean (no texture baked into it).
+                // _MainTex: direction-specific flick body texture resolved above.
+                //           Assigned per draw call so the shared material asset stays clean.
                 //           Skipped when bodyTexture is null — falls back to color-only.
                 //
                 // _Color:   for normal notes: Color.white (texture drives the look).
