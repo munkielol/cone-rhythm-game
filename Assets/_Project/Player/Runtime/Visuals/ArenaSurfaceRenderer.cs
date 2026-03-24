@@ -8,12 +8,15 @@
 //
 //   Per active arena each LateUpdate:
 //     • Reads evaluated geometry from ChartRuntimeEvaluator.
-//     • Computes the angular gap regions not covered by enabled lanes in the arena.
-//     • Builds one filled sector mesh per gap region, spanning [innerLocal .. visualOuterLocal].
+//     • Delegates occupancy computation to ArenaOccupancyEvaluator (Shared):
+//         – Collects enabled lane intervals for this arena, clamped to the arena span.
+//         – Merges overlapping lanes into an occupied union.
+//         – Computes fill intervals as the complement of that union within the arena span.
+//     • Builds one filled sector mesh per fill interval, spanning [innerLocal .. visualOuterLocal].
 //     • Places vertices on the frustum cone surface using PlayfieldFrustumProfile.
-//     • For each gap mesh — Base layer pass, then Detail layer pass, then Accent layer pass.
+//     • For each fill mesh — Base layer pass, then Detail layer pass, then Accent layer pass.
 //
-//   The arena surface now acts as background/filler only in the angular regions between
+//   The arena surface acts as background/filler only in the angular regions between
 //   lane bodies.  LaneSurfaceRenderer draws the lane bodies themselves.  This prevents
 //   the arena surface from visually competing with lane surfaces underneath lane positions.
 //
@@ -24,22 +27,21 @@
 //   • Does NOT depend on PlayerDebugArenaSurface or PlayerDebugRenderer.
 //   • Does NOT render notes, holds, or feedback effects.
 //   • Does NOT render beneath enabled lane bodies.
+//   • Does NOT own the occupancy math — that lives in ArenaOccupancyEvaluator (Shared).
 //
 // ── Gap-only rendering ────────────────────────────────────────────────────────
 //
-//   Gap computation per arena (each LateUpdate):
-//     1. Collect all enabled lanes belonging to this arena into scratch arrays.
-//     2. Clamp each lane's angular interval [leftDeg, rightDeg] to the arena's span.
-//     3. Sort intervals by left edge (insertion sort — O(N²), N ≤ MaxLanesScratch, cheap).
-//     4. Merge overlapping/adjacent intervals.
-//     5. Walk the arena span, drawing one mesh sector for each angular gap between
-//        consecutive merged intervals (and between the span edges and the outermost lanes).
+//   This renderer delegates gap computation to ArenaOccupancyEvaluator (Shared):
+//     1. Compute(arena, evaluator) — collects lanes, merges intervals, computes fill.
+//     2. Iterate FillIntervalCount — one DrawGapSector call per fill interval.
+//
+//   See ArenaOccupancyEvaluator.cs for the full sort/merge/complement algorithm.
 //
 //   Assumptions:
 //     • Lane CenterDeg is authored within the parent arena's angular span.
 //     • Lane edges that extend beyond the arena boundary are clamped at the arena edges.
 //       No wrap-around splitting is performed for lanes that straddle the 0°/360° seam
-//       of a full-circle arena.
+//       of a full-circle arena (deferred — same limitation as ArenaOccupancyEvaluator).
 //     • If no enabled lanes exist in an arena, the full arena sector is drawn (fallback
 //       to previous behavior — gap = entire arena).
 //     • If the gap pool is exhausted (_poolUsed >= MaxGapPool), remaining gap sectors
@@ -100,9 +102,11 @@ namespace RhythmicFlow.Player
     /// Production arena surface renderer.  Draws the filled annular sector for each
     /// active arena using the base, detail, and accent layers of <see cref="ArenaSurfaceSkinSet"/>.
     ///
-    /// <para>Renders only the angular gap regions between enabled lane bodies.
-    /// <see cref="LaneSurfaceRenderer"/> draws lane bodies; this renderer fills the space
-    /// between them so it does not compete visually with lanes.</para>
+    /// <para>Renders only the angular fill intervals — the portions of the arena span not
+    /// currently occupied by any enabled lane.  Occupancy computation is delegated to
+    /// <see cref="ArenaOccupancyEvaluator"/> (Shared), which is the single source of truth
+    /// for arena partition math (spec §5.5.3).  <see cref="LaneSurfaceRenderer"/> draws the
+    /// lane bodies; this renderer fills the space between them.</para>
     ///
     /// <para>Attach to any GO in the Player scene.  Assign
     /// <see cref="playerAppController"/>, <see cref="frustumProfile"/>, and
@@ -148,7 +152,7 @@ namespace RhythmicFlow.Player
         // skipped if the pool is full.
         private const int MaxGapPool = 128;
 
-        // Maximum number of lane intervals collected per arena during gap computation.
+        // Maximum number of lanes per arena the shared occupancy evaluator is built for.
         // 64 is far above any realistic lane count per arena.
         private const int MaxLanesScratch = 64;
 
@@ -165,18 +169,10 @@ namespace RhythmicFlow.Player
         // Length = (arcSegments + 1) * 2.
         private Vector3[] _vertScratch;
 
-        // Pre-allocated scratch arrays for per-arena gap computation.
-        // Zero per-frame GC — allocated once in Awake.
-        //
-        // Step 1: Collect raw lane intervals for the current arena.
-        private float[] _laneScratchLeft;   // left  edge angle (degrees) of each collected lane
-        private float[] _laneScratchRight;  // right edge angle (degrees) of each collected lane
-        private int     _laneScratchCount;  // how many lanes were collected for the current arena
-
-        // Step 2: After merging overlapping intervals.
-        private float[] _mergedLeft;   // merged interval left edges
-        private float[] _mergedRight;  // merged interval right edges
-        private int     _mergedCount;  // number of merged intervals
+        // Shared arena partition evaluator — single source of truth for fill intervals.
+        // One instance per renderer, created in Awake.  Compute() is called once per
+        // arena per LateUpdate frame; results are valid until the next Compute() call.
+        private ArenaOccupancyEvaluator _occupancy;
 
         // Base layer: MaterialPropertyBlock and accumulated UV scroll offset.
         // Configured once before the arena loop; reused for every gap draw call.
@@ -217,12 +213,9 @@ namespace RhythmicFlow.Player
             // Shared vertex scratch (overwritten per gap sector each frame, then copied into mesh).
             _vertScratch = new Vector3[vertCount];
 
-            // ── Lane scratch arrays for gap computation ────────────────────────────────
-            // Pre-allocated so gap computation incurs zero per-frame GC.
-            _laneScratchLeft  = new float[MaxLanesScratch];
-            _laneScratchRight = new float[MaxLanesScratch];
-            _mergedLeft       = new float[MaxLanesScratch];
-            _mergedRight      = new float[MaxLanesScratch];
+            // Shared arena partition evaluator — pre-allocated, zero GC per frame.
+            // MaxLanesScratch sets the per-arena lane capacity; 64 covers all realistic charts.
+            _occupancy = new ArenaOccupancyEvaluator(MaxLanesScratch);
 
             // ── Triangle index pattern ────────────────────────────────────────────────
             // Same topology for every pool mesh; Unity copies the array internally
@@ -509,90 +502,25 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(ea.CenterXNorm, ea.CenterYNorm));
 
-                // ── Arena angular span ─────────────────────────────────────────────────
-                float arenaStart = ea.ArcStartDeg;
-                float arenaEnd   = ea.ArcStartDeg + arcSweep;
-
-                // ── Step 1: Collect enabled lanes for this arena ───────────────────────
+                // ── Compute fill intervals via shared occupancy evaluator ───────────────
                 //
-                // Each lane contributes one interval [leftDeg, rightDeg].
-                // Intervals are clamped to [arenaStart, arenaEnd] to handle lanes that
-                // are authored slightly outside the arena's defined angular span.
-                _laneScratchCount = 0;
-                for (int l = 0; l < evaluator.LaneCount; l++)
+                // ArenaOccupancyEvaluator.Compute() is the single source of truth for:
+                //   • which angular intervals are currently occupied by enabled lanes
+                //   • which fill intervals remain in the arena span after subtracting them
+                //
+                // If no enabled lanes exist, the entire arena span is one fill interval,
+                // preserving the pre-lane full-arena draw behaviour.
+                //
+                // The arena was already validated (EnabledBool, arcSweep) above, so
+                // Compute() will always return true here.  The check is kept for safety.
+                if (!_occupancy.Compute(ea, evaluator)) { continue; }
+
+                // ── Draw one sector mesh per fill interval ─────────────────────────────
+                for (int f = 0; f < _occupancy.FillIntervalCount; f++)
                 {
-                    EvaluatedLane lane = evaluator.GetLane(l);
-                    if (!lane.EnabledBool || lane.ArenaId != ea.ArenaId) { continue; }
-                    if (_laneScratchCount >= MaxLanesScratch)
-                    {
-                        // More lanes than scratch capacity — skip the overflow.
-                        // In practice lane count per arena is well below MaxLanesScratch.
-                        break;
-                    }
-
-                    float laneLeft  = lane.CenterDeg - lane.WidthDeg * 0.5f;
-                    float laneRight = lane.CenterDeg + lane.WidthDeg * 0.5f;
-
-                    // Clamp to the arena's angular span.
-                    laneLeft  = Mathf.Max(laneLeft,  arenaStart);
-                    laneRight = Mathf.Min(laneRight, arenaEnd);
-
-                    // Discard if the clamped interval is degenerate (zero or negative width).
-                    if (laneRight <= laneLeft) { continue; }
-
-                    _laneScratchLeft[_laneScratchCount]  = laneLeft;
-                    _laneScratchRight[_laneScratchCount] = laneRight;
-                    _laneScratchCount++;
-                }
-
-                // ── Step 2: Sort intervals by left edge (insertion sort) ───────────────
-                //
-                // Insertion sort is O(N²) but N (lanes per arena) is tiny in practice.
-                // No allocation required.
-                SortIntervalsByLeft(_laneScratchLeft, _laneScratchRight, _laneScratchCount);
-
-                // ── Step 3: Merge overlapping / adjacent intervals ─────────────────────
-                //
-                // Two intervals overlap or touch if left[m+1] <= right[m].
-                // Merge them into a single interval covering both.
-                _mergedCount = MergeIntervals(
-                    _laneScratchLeft, _laneScratchRight, _laneScratchCount,
-                    _mergedLeft, _mergedRight);
-
-                // ── Step 4: Draw gap sectors ───────────────────────────────────────────
-                //
-                // Walk the arena span [arenaStart, arenaEnd], drawing one mesh sector
-                // for each angular region not covered by a merged lane interval.
-                //
-                // If there are no lanes (mergedCount = 0), the cursor never advances
-                // past the loop and the full arena is drawn as a single gap sector
-                // (preserving previous behavior — fallback for arenas with no lanes).
-                float cursor = arenaStart;
-
-                for (int m = 0; m < _mergedCount; m++)
-                {
-                    float laneLeft  = _mergedLeft[m];
-                    float laneRight = _mergedRight[m];
-
-                    // Gap before this merged lane interval.
-                    if (cursor < laneLeft)
-                    {
-                        DrawGapSector(
-                            cursor, laneLeft - cursor,
-                            center, innerLocal, visualOuterLocal, zInner, zOuter,
-                            localToWorld, baseLayer, detailLayer, accentLayer,
-                            detailWillRender, accentWillRender);
-                    }
-
-                    // Advance cursor past this lane (never move backward).
-                    cursor = Mathf.Max(cursor, laneRight);
-                }
-
-                // Gap after the last merged lane (or full arena if no lanes exist).
-                if (cursor < arenaEnd)
-                {
+                    AngularInterval fill = _occupancy.GetFillInterval(f);
                     DrawGapSector(
-                        cursor, arenaEnd - cursor,
+                        fill.StartDeg, fill.SweepDeg,
                         center, innerLocal, visualOuterLocal, zInner, zOuter,
                         localToWorld, baseLayer, detailLayer, accentLayer,
                         detailWillRender, accentWillRender);
@@ -658,77 +586,6 @@ namespace RhythmicFlow.Player
                 Graphics.DrawMesh(_meshPool[slot], localToWorld, accentLayer.material,
                     gameObject.layer, null, 0, _accentPropBlock);
             }
-        }
-
-        // -------------------------------------------------------------------
-        // Gap computation helpers
-        // -------------------------------------------------------------------
-
-        // Sorts two parallel float arrays (leftArr, rightArr) of length count in-place
-        // by ascending leftArr value, using insertion sort.
-        //
-        // Insertion sort is chosen because:
-        //   • No heap allocation (works on raw arrays in-place).
-        //   • O(N²) is acceptable for N ≤ MaxLanesScratch (lane count per arena is tiny).
-        //   • Already-sorted input (common case when lanes are authored in order) is O(N).
-        private static void SortIntervalsByLeft(float[] leftArr, float[] rightArr, int count)
-        {
-            for (int i = 1; i < count; i++)
-            {
-                float keyLeft  = leftArr[i];
-                float keyRight = rightArr[i];
-                int   j        = i - 1;
-                while (j >= 0 && leftArr[j] > keyLeft)
-                {
-                    leftArr[j + 1]  = leftArr[j];
-                    rightArr[j + 1] = rightArr[j];
-                    j--;
-                }
-                leftArr[j + 1]  = keyLeft;
-                rightArr[j + 1] = keyRight;
-            }
-        }
-
-        // Merges overlapping or adjacent intervals from (srcLeft, srcRight) into
-        // (dstLeft, dstRight) and returns the number of merged intervals written.
-        //
-        // Precondition: srcLeft is sorted ascending (call SortIntervalsByLeft first).
-        //
-        // Two intervals overlap or touch if srcLeft[i+1] <= srcRight[i].  They are
-        // merged by extending the current merged interval's right edge to the maximum
-        // of the two right edges.
-        //
-        // Example:
-        //   Input:  [10,40], [20,50], [80,90], [90,100]
-        //   Output: [10,50], [80,100]   → mergedCount = 2
-        private static int MergeIntervals(
-            float[] srcLeft, float[] srcRight, int srcCount,
-            float[] dstLeft, float[] dstRight)
-        {
-            if (srcCount == 0) { return 0; }
-
-            dstLeft[0]  = srcLeft[0];
-            dstRight[0] = srcRight[0];
-            int dstCount = 1;
-
-            for (int i = 1; i < srcCount; i++)
-            {
-                // If the current source interval starts at or before the end of the
-                // last merged interval, they overlap or touch — extend the merged interval.
-                if (srcLeft[i] <= dstRight[dstCount - 1])
-                {
-                    dstRight[dstCount - 1] = Mathf.Max(dstRight[dstCount - 1], srcRight[i]);
-                }
-                else
-                {
-                    // No overlap — start a new merged interval.
-                    dstLeft[dstCount]  = srcLeft[i];
-                    dstRight[dstCount] = srcRight[i];
-                    dstCount++;
-                }
-            }
-
-            return dstCount;
         }
 
         // -------------------------------------------------------------------
