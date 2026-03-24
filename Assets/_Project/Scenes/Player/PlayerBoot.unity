@@ -1134,7 +1134,7 @@ MonoBehaviour:
   playerAppController: {fileID: 4343613}
   laneMaterial: {fileID: 2100000, guid: cdeb0c0ad74f7054082630f3ac81e66e, type: 2}
   frustumProfile: {fileID: 1154423719}
-  laneTint: {r: 0.3490566, g: 0.3490566, b: 0.3490566, a: 1}
+  laneTint: {r: 1, g: 0, b: 0, a: 1}
   liftLocal: 0
   arcSegments: 360
   radialSegments: 4

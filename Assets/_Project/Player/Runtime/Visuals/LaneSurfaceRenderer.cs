@@ -3,42 +3,65 @@
 //
 // ── What this renderer does ───────────────────────────────────────────────────
 //
-//   Per active lane each LateUpdate:
+//   Per active arena each LateUpdate:
 //     • Reads evaluated geometry from ChartRuntimeEvaluator (per-frame, not static).
-//     • Computes the lane's visual angular interval, bounded inside the parent
-//       arena's angular span:
-//           leftDeg  = Max(CenterDeg - WidthDeg/2, arenaStart)
-//           rightDeg = Min(CenterDeg + WidthDeg/2, arenaEnd)
-//       This is the same formula ArenaSurfaceRenderer uses for gap subtraction,
-//       so the two renderers always agree on what angular region a lane occupies.
-//     • Builds a filled sector mesh spanning the full (clamped) lane:
-//           Angular: leftDeg → rightDeg  (clamped to arena span)
-//           Radial:  innerLocal → visualOuterLocal
+//     • Calls ArenaOccupancyEvaluator.Compute() to get the current visible lane
+//       intervals for this arena — the same clamped intervals ArenaSurfaceRenderer
+//       uses when subtracting lanes from the arena fill.
+//     • For each raw lane interval from the occupancy evaluator:
+//           – Builds a filled sector mesh spanning the clamped lane angular extent.
+//           – Angular: laneInterval.StartDeg → laneInterval.EndDeg
+//           – Radial:  innerLocal → visualOuterLocal
 //     • Subdivides radially into radialSegments rings so the mesh conforms to the
 //       frustum cone surface — each ring row is placed at its own FrustumZAtRadius.
 //     • Draws via Graphics.DrawMesh with an inline-configured MaterialPropertyBlock.
 //
+// ── Shared occupancy model ────────────────────────────────────────────────────
+//
+//   ArenaOccupancyEvaluator (Shared) is the single source of truth for the current
+//   visible lane intervals (spec §5.5.3).  LaneSurfaceRenderer reads the raw
+//   (pre-merge) lane intervals — GetLaneInterval(i) — rather than the merged
+//   occupied union, so each authored lane still draws its own surface independently.
+//   Overlapping lanes therefore both render; ArenaSurfaceRenderer subtracts their
+//   union when computing fill intervals, keeping the two renderers consistent.
+//
+//   Using ArenaOccupancyEvaluator.GetLaneInterval() guarantees that the clamped
+//   angular interval drawn here is byte-for-byte identical to the interval
+//   ArenaSurfaceRenderer uses when deciding where NOT to draw the arena fill.
+//   This eliminates any possible seam between lane surface edges and arena fill edges.
+//
+// ── Loop structure ────────────────────────────────────────────────────────────
+//
+//   Outer loop: arenas — provides arena geometry context.
+//   Inner loop: lane intervals from ArenaOccupancyEvaluator — one mesh per interval.
+//
+//   This is arena-first rather than the previous lane-first approach.  The set of
+//   drawn meshes is identical: one mesh per currently enabled, non-degenerate lane
+//   interval per arena.  Draw order is now by angular position within each arena
+//   (ArenaOccupancyEvaluator sorts intervals by left edge) rather than by evaluator
+//   lane index.  Since all lanes share the same material and tint, this is not
+//   visually observable.
+//
 // ── Lane visual bounding ──────────────────────────────────────────────────────
 //
-//   Lane CenterDeg and WidthDeg come from ChartRuntimeEvaluator.GetLane(i), which
-//   re-evaluates all animated tracks each frame.  The lane's visual interval is
-//   clamped to [arenaStart, arenaStart + arcSweep] before mesh generation:
+//   Lane angular intervals are clamped to the parent arena's span inside
+//   ArenaOccupancyEvaluator.Compute().  The same clamp formula applies:
 //
 //     arenaStart = arena.ArcStartDeg
 //     arenaEnd   = arenaStart + Clamp(arena.ArcSweepDeg, 0, 360)
-//     leftDeg    = Max(CenterDeg - WidthDeg/2, arenaStart)
-//     rightDeg   = Min(CenterDeg + WidthDeg/2, arenaEnd)
+//     laneLeft   = Max(CenterDeg - WidthDeg/2, arenaStart)
+//     laneRight  = Min(CenterDeg + WidthDeg/2, arenaEnd)
 //
-//   If rightDeg <= leftDeg after clamping, the lane is fully outside the arena
-//   span and is skipped.  This happens when a lane is wider than the arena
-//   sweep or when CenterDeg drifts outside the arena span.
+//   Intervals degenerate after clamping (zero or negative width) are discarded by
+//   ArenaOccupancyEvaluator and are therefore never drawn.
 //
-//   Assumption: CenterDeg and ArcStartDeg are both wrap-normalized to [0, 360)
-//   by ChartRuntimeEvaluator.  Lanes that straddle the 0°/360° seam of a
-//   full-circle arena are not yet handled (deferred — see task constraints).
+//   Limitation: lanes that straddle the 0°/360° seam of a full-circle arena are
+//   not handled (same limitation as ArenaOccupancyEvaluator and ArenaSurfaceRenderer;
+//   deferred).
 //
 // ── What this renderer does NOT do ───────────────────────────────────────────
 //
+//   • Does NOT own the interval clamping math — that lives in ArenaOccupancyEvaluator.
 //   • Does NOT respond to touch or hit events.  (LaneTouchFeedbackRenderer owns that.)
 //   • Does NOT draw guide lines.  (LaneGuideRenderer owns that.)
 //   • Does NOT modify LaneTouchFeedbackRenderer, LaneGuideRenderer, or ArenaSurfaceRenderer.
@@ -82,9 +105,13 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Persistent lane surface renderer.  Draws one full-width annular sector per enabled lane,
-    /// conforming to the arena frustum cone surface.  Lane visual bounds are clamped to the
-    /// parent arena's angular span so they agree with ArenaSurfaceRenderer's gap subtraction.
+    /// Persistent lane surface renderer.  Draws one full-width annular sector per
+    /// currently visible lane interval, conforming to the arena frustum cone surface.
+    ///
+    /// <para>Lane visible intervals are sourced from <see cref="ArenaOccupancyEvaluator"/>
+    /// (Shared) — the same source <see cref="ArenaSurfaceRenderer"/> uses for fill
+    /// subtraction (spec §5.5.3).  This guarantees pixel-perfect alignment between lane
+    /// surface edges and arena fill edges at all times.</para>
     ///
     /// <para>Attach to any GO in the Player scene.  Assign <see cref="playerAppController"/>,
     /// <see cref="laneMaterial"/>, and <see cref="frustumProfile"/> in the Inspector.</para>
@@ -138,7 +165,9 @@ namespace RhythmicFlow.Player
         // Internals
         // -------------------------------------------------------------------
 
-        // Maximum number of simultaneously active lanes we can draw.
+        // Maximum number of lane surface meshes drawn per frame across all arenas.
+        // Also used as the lane capacity for the shared occupancy evaluator — 64 is
+        // far above any realistic lane count in a single chart.
         private const int MaxLanePool = 64;
 
         // Computed in Awake from arcSegments / radialSegments.
@@ -153,6 +182,11 @@ namespace RhythmicFlow.Player
         private Vector2[] _uvScratch;
 
         private MaterialPropertyBlock _propBlock;
+
+        // Shared occupancy evaluator — single source of truth for visible lane intervals.
+        // Created in Awake; Compute() is called once per arena per LateUpdate frame.
+        // Results (lane intervals) are read immediately after each Compute() call.
+        private ArenaOccupancyEvaluator _occupancy;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -172,6 +206,11 @@ namespace RhythmicFlow.Player
 
             _vertScratch = new Vector3[_vertsPerLane];
             _uvScratch   = new Vector2[_vertsPerLane];
+
+            // ── Shared occupancy evaluator ─────────────────────────────────────────
+            // MaxLanePool sets the per-arena lane capacity.  ArenaOccupancyEvaluator
+            // silently ignores lanes beyond this count — same limit as the mesh pool.
+            _occupancy = new ArenaOccupancyEvaluator(MaxLanePool);
 
             // ── Triangle indices — same pattern for every lane mesh, built once ────
             //
@@ -235,9 +274,8 @@ namespace RhythmicFlow.Player
         {
             if (playerAppController == null || laneMaterial == null) { return; }
 
-            // evaluator.GetLane(i) returns values from the most recent Evaluate(timeMs) call,
-            // which PlayerAppController issues in Update() — before LateUpdate runs.
-            // Lane geometry (CenterDeg, WidthDeg) is therefore current-frame, not stale.
+            // evaluator.Evaluate(timeMs) is called in PlayerAppController.Update()
+            // before LateUpdate runs, so all evaluated arena/lane geometry is current.
             ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
             PlayfieldTransform    pfT       = playerAppController.PlayfieldTf;
             Transform             pfRoot    = playerAppController.playfieldRoot;
@@ -254,90 +292,82 @@ namespace RhythmicFlow.Player
 
             _poolUsed = 0;
 
-            for (int laneIdx = 0; laneIdx < evaluator.LaneCount; laneIdx++)
+            // ── Outer loop: arenas ────────────────────────────────────────────────────
+            //
+            // We iterate arenas rather than lanes so that ArenaOccupancyEvaluator.Compute()
+            // can be called once per arena and its results consumed immediately.
+            // This avoids per-lane arena lookups and keeps the interval math in one place.
+            for (int arenaIdx = 0; arenaIdx < evaluator.ArenaCount; arenaIdx++)
             {
+                // Stop all rendering if the mesh pool is exhausted.
                 if (_poolUsed >= MaxLanePool) { break; }
 
-                EvaluatedLane lane = evaluator.GetLane(laneIdx);
-                if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
+                EvaluatedArena arena = evaluator.GetArena(arenaIdx);
+                if (string.IsNullOrEmpty(arena.ArenaId) || !arena.EnabledBool) { continue; }
 
-                // ── Find parent arena (linear scan — arena count is small, 1-8 typical) ─
-                EvaluatedArena arena = default;
-                bool           found = false;
-                for (int a = 0; a < evaluator.ArenaCount; a++)
-                {
-                    EvaluatedArena candidate = evaluator.GetArena(a);
-                    if (candidate.EnabledBool && candidate.ArenaId == lane.ArenaId)
-                    {
-                        arena = candidate;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) { continue; }
-
-                // ── Arena-derived geometry ────────────────────────────────────────────
+                // ── Arena geometry in PlayfieldLocal units ─────────────────────────────
                 float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
                 float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
 
-                // Extend to visual outer edge, consistent with LaneGuideRenderer and notes.
+                // Extend to the visual outer edge, consistent with LaneGuideRenderer
+                // and the note renderers.
                 float visualOuterLocal = outerLocal
                     + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
+
+                // Skip degenerate geometry that would produce zero-area triangles.
+                if (visualOuterLocal <= innerLocal || innerLocal < 0f) { continue; }
 
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // ── Lane visual angular interval — clamped to arena span ───────────────
+                // ── Compute visible lane intervals via shared occupancy evaluator ────────
                 //
-                // The unclamped interval is [CenterDeg - WidthDeg/2, CenterDeg + WidthDeg/2].
-                // We clamp it to [arenaStart, arenaEnd] before mesh generation so the lane
-                // sector never renders outside the arena's angular bounds.
+                // ArenaOccupancyEvaluator.Compute() collects all currently enabled lanes
+                // for this arena, clamps each to the arena's angular span, and stores the
+                // result in its raw lane interval array (sorted by left edge).
                 //
-                // This uses the same formula ArenaSurfaceRenderer uses for gap subtraction:
-                //   leftDeg  = Max(CenterDeg - WidthDeg/2, arenaStart)
-                //   rightDeg = Min(CenterDeg + WidthDeg/2, arenaEnd)
+                // These are exactly the intervals ArenaSurfaceRenderer uses when computing
+                // fill gaps — so lane surface edges and fill gaps are guaranteed to align.
                 //
-                // Both renderers therefore agree on the same clamped occupied interval,
-                // so lane sectors and arena gap sectors meet cleanly at the arena edges.
+                // Disabled arenas and degenerate sweeps return false; both are already
+                // guarded above, so Compute() always returns true at this point.
+                if (!_occupancy.Compute(arena, evaluator)) { continue; }
+
+                // ── Inner loop: lane intervals ─────────────────────────────────────────
                 //
-                // arenaEnd may exceed 360 (e.g. 350 + 30 = 380) — this is intentional.
-                // CenterDeg is normalized to [0, 360) by ChartRuntimeEvaluator, so lanes
-                // that straddle the 0/360 seam of a full-circle arena may clamp incorrectly.
-                // Wrap-around seam handling is deferred.
-                float arenaStart = arena.ArcStartDeg;
-                float arenaEnd   = arenaStart + Mathf.Clamp(arena.ArcSweepDeg, 0f, 360f);
+                // ArenaOccupancyEvaluator.GetLaneInterval(i) returns the i-th raw (pre-merge)
+                // lane interval — one per enabled lane that survived clamping.  Using raw
+                // intervals (not the merged occupied union) means each authored lane draws
+                // its own sector, so overlapping lanes both render independently.
+                for (int i = 0; i < _occupancy.LaneIntervalCount; i++)
+                {
+                    // Stop this arena's lanes if the pool is exhausted mid-arena.
+                    if (_poolUsed >= MaxLanePool) { break; }
 
-                float halfWidth = lane.WidthDeg * 0.5f;
-                float leftDeg   = lane.CenterDeg - halfWidth;
-                float rightDeg  = lane.CenterDeg + halfWidth;
+                    AngularInterval laneInterval = _occupancy.GetLaneInterval(i);
 
-                leftDeg  = Mathf.Max(leftDeg,  arenaStart);
-                rightDeg = Mathf.Min(rightDeg, arenaEnd);
+                    // ── Fill mesh vertices and UVs ─────────────────────────────────────
+                    // laneInterval.StartDeg and EndDeg are already clamped to the arena span
+                    // by ArenaOccupancyEvaluator — no further clamping needed here.
+                    FillLaneSectorVerts(
+                        _vertScratch, _uvScratch,
+                        laneInterval.StartDeg, laneInterval.EndDeg,
+                        center,
+                        innerLocal, visualOuterLocal,
+                        innerLocal, outerLocal,
+                        hInner, hOuter,
+                        liftLocal,
+                        arcSegments, radialSegments);
 
-                // Skip if the clamped interval is degenerate — lane is entirely outside
-                // the arena's angular span, or the lane is wider than the arena span and
-                // was pushed to zero width by both clamps.
-                if (rightDeg <= leftDeg) { continue; }
-
-                // ── Fill mesh vertices and UVs ────────────────────────────────────────
-                FillLaneSectorVerts(
-                    _vertScratch, _uvScratch,
-                    leftDeg, rightDeg,
-                    center,
-                    innerLocal, visualOuterLocal,
-                    innerLocal, outerLocal,
-                    hInner, hOuter,
-                    liftLocal,
-                    arcSegments, radialSegments);
-
-                // ── Upload and draw ───────────────────────────────────────────────────
-                int slot = _poolUsed++;
-                _meshPool[slot].vertices = _vertScratch;
-                _meshPool[slot].uv       = _uvScratch;
-                _meshPool[slot].RecalculateBounds();
-                Graphics.DrawMesh(_meshPool[slot], localToWorld, laneMaterial,
-                    gameObject.layer, null, 0, _propBlock);
+                    // ── Upload and draw ────────────────────────────────────────────────
+                    int slot = _poolUsed++;
+                    _meshPool[slot].vertices = _vertScratch;
+                    _meshPool[slot].uv       = _uvScratch;
+                    _meshPool[slot].RecalculateBounds();
+                    Graphics.DrawMesh(_meshPool[slot], localToWorld, laneMaterial,
+                        gameObject.layer, null, 0, _propBlock);
+                }
             }
         }
 
@@ -351,8 +381,8 @@ namespace RhythmicFlow.Player
         // Each row is at a fixed radius, whose Z is sampled from FrustumZAtRadius.
         // Each column steps angularly from leftDeg to rightDeg.
         //
-        // leftDeg and rightDeg must already be clamped to the arena's angular span
-        // by the caller before calling this method.
+        // leftDeg and rightDeg are the clamped interval edges from ArenaOccupancyEvaluator
+        // (AngularInterval.StartDeg / EndDeg).  No further clamping is needed.
         //
         // Parameters:
         //   leftDeg, rightDeg       — clamped angular span of the lane in degrees.
