@@ -127,14 +127,19 @@ namespace RhythmicFlow.Player
         [Min(0.005f)]
         public float radialExtentLocal;
 
-        [Tooltip("When true, the highlight covers the full lane from innerLocal to judgementRadius.\n\n" +
-                 "When false (default), the highlight covers only the near-judgement band defined by\n" +
-                 "radialExtentLocal.  Use false for a subtle ring-edge glow; use true for a full-lane\n" +
-                 "reach-in look.\n\n" +
-                 "Full-lane mode supports gradient textures that fade away from the judgement line:\n" +
-                 "  V = 1 at the outer (judgement) edge — stable anchor, should be opaque/bright.\n" +
-                 "  V = 0 at the inner edge — fade to transparent for the reach-in gradient.\n" +
-                 "Assign a texture that is opaque at V=1 and transparent at V=0 to achieve this.")]
+        [Tooltip("When true, the highlight covers the full visible lane:\n" +
+                 "  inner edge = innerLocal        (arena inner edge)\n" +
+                 "  outer edge = visualOuterLocal   (same rim as ArenaSurfaceRenderer)\n\n" +
+                 "When false (default), the highlight covers only the near-judgement band:\n" +
+                 "  inner edge = max(innerLocal, judgementRadius - radialExtentLocal)\n" +
+                 "  outer edge = judgementRadius\n\n" +
+                 "Use false for a subtle ring-edge glow near the judgement line.\n" +
+                 "Use true for a full-lane reach-in look that matches the visible arena surface.\n\n" +
+                 "Full-lane mode supports gradient textures:\n" +
+                 "  V = 1 at the outer (visual rim) edge — should be transparent or faint.\n" +
+                 "  V = 0 at the inner edge — same convention.\n" +
+                 "Assign a radial gradient texture fading from opaque at mid-V to transparent\n" +
+                 "at both edges for a glow-band look.")]
         public bool fullLaneCoverage;
 
         [Tooltip("Height in PlayfieldLocal Z units to lift the overlay above the arena cone surface.\n\n" +

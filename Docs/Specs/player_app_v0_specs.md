@@ -240,7 +240,7 @@ The player scene is organized into four tiers with strict ownership rules:
 |---|---|---|
 | **Gameplay-critical** | `ChartRuntimeEvaluator`, `JudgementEngine`, `ArenaHitTester`, `ScoreTracker`, `PlayfieldTransform` | Must function correctly with all debug components disabled or absent. No dependency on debug scaffolding. |
 | **Production visuals** | `PlayfieldFrustumProfile`, `ArenaColliderProvider`, `ArenaBandRenderer`, `LaneGuideRenderer`, `JudgementRingRenderer`, `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer` | Must be fully usable without `PlayerDebugRenderer` or `PlayerDebugArenaSurface`. Driven by `ChartRuntimeEvaluator` via `PlayerAppController`. |
-| **Production feedback** | `TouchFeedbackRenderer` *(planned)*, `JudgementFeedbackRenderer` *(planned)* | Separate from note renderers. Receive touch/judgement events from gameplay systems. Skinnable via `GameplayFeedbackSkinSet` (§5.12). |
+| **Production feedback** | `TouchFeedbackRenderer` *(planned)*, `JudgementFeedbackRenderer` *(planned)* | Separate from note renderers. Receive touch/judgement events from gameplay systems. Skinnable via `GameplayFeedbackSkinSet` (§5.12). Geometry is derived from the same evaluated lane/arena surface as production visual renderers — not camera-specific approximations. |
 | **Debug scaffolding** | `PlayerDebugArenaSurface`, `PlayerDebugRenderer` | **Additive only.** Add overlays and diagnostic readouts on top of production systems. Must not own any behavior required for correct gameplay, input, or visuals. |
 
 **Non-negotiable ownership rules:**
@@ -1087,6 +1087,20 @@ This separation is not a copy of ArcCreate's implementation — only the layerin
 * Reads lane geometry from `ChartRuntimeEvaluator` via `PlayerAppController.Evaluator` — same source as note renderers.
 * Skinnable via `GameplayFeedbackSkinSet.touchFeedback` (§5.12).
 * Uses `Graphics.DrawMesh` / `MaterialPropertyBlock` pattern — no child GameObjects per active touch.
+* **Geometry is derived from the evaluated arena/lane surface** — touch indicator geometry uses the same radius terms used throughout this spec (`innerLocal`, `judgementRadiusLocal`, `visualOuterLocal` — see §5.8) and the same evaluated arena/lane dictionaries as `ArenaSurfaceRenderer` and `LaneGuideRenderer`. Coverage extents must be expressed using these defined boundaries, not ad-hoc approximations.
+* **Must remain correct under camera motion** — the gameplay scene supports animated camera tracks (chart editor §8). Production touch feedback must be placed in world-space using the lane surface geometry so that it remains correct when the camera moves. A flat screen-facing approximation is not a valid production implementation.
+* **Flat overlay approximation is prototyping/debug only** — a fixed-Z flat sector that looks acceptable from a single static camera angle is acceptable as a transitional placeholder during development only. It must not be treated as the intended final production geometry.
+
+**Coverage modes (using spec-defined radii, §5.8):**
+
+Lane touch feedback coverage is defined by the same radius terms used by production renderers:
+
+| Mode | Inner edge | Outer edge |
+|---|---|---|
+| Near-judgement band | `max(innerLocal, judgementRadiusLocal − radialExtentLocal)` | `judgementRadiusLocal` |
+| Full visible lane | `innerLocal` | `visualOuterLocal` |
+
+The near-judgement band is the default mode: a thin indicator anchored at `judgementRadiusLocal` extending inward by `radialExtentLocal`. Full-lane mode covers the complete visible arena footprint from `innerLocal` to `visualOuterLocal`, matching `ArenaSurfaceRenderer`'s outer edge. `outerLocal` (the chart geometry boundary) must not be used as the outer edge in full-lane mode — use `visualOuterLocal` so the overlay aligns with the visual rim.
 
 **v0 scope:** Implementation is planned; this section defines the contract and ownership rules. A placeholder with no feedback rendered is acceptable as a transitional state.
 
@@ -1126,6 +1140,8 @@ Create via: **Assets → Create → RhythmicFlow → Gameplay Feedback Skin Set*
 | `touchFeedbackTexture` | `Texture2D` | Texture for the active-lane highlight arc or quad. |
 | `touchFeedbackColor` | `Color` | Base color tint applied via `MaterialPropertyBlock`. |
 | `touchFeedbackRadialHalfThickness` | `float` | Radial half-thickness of the touch indicator in PlayfieldLocal units. |
+
+**Touch feedback geometry note:** Coverage extents for touch feedback are defined by the spec-defined radius terms in §5.8 (`innerLocal`, `judgementRadiusLocal`, `visualOuterLocal`) and must match the coverage mode contract in §5.11.1. Skin parameters that control radial extent (e.g. `radialExtentLocal`, `fullLaneCoverage`) configure which coverage mode is used; they do not override the spec-defined boundaries themselves.
 
 *Judgement feedback block:*
 

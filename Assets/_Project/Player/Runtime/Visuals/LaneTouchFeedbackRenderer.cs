@@ -29,15 +29,23 @@
 //
 // ── Highlight geometry ────────────────────────────────────────────────────────
 //
-//   Per lane:
-//     outer radius = judgementRadius (where notes land visually)
-//     inner radius = max(innerLocal, judgementRadius − laneTouchFeedback.radialExtentLocal)
-//                    OR innerLocal when fullLaneCoverage is true
-//     arc span     = lane.WidthDeg × laneTouchFeedback.laneWidthScale
-//     arc center   = lane.CenterDeg
+//   Per lane (fullLaneCoverage = false — default):
+//     outer radius = judgementRadius       (judgement ring, where notes land)
+//     inner radius = max(innerLocal, judgementRadius − radialExtentLocal)
+//
+//   Per lane (fullLaneCoverage = true — full visible lane):
+//     outer radius = visualOuterLocal      (same rim used by ArenaSurfaceRenderer)
+//     inner radius = innerLocal            (arena inner edge)
+//
+//   Arc span in both modes:
+//     arc span   = lane.WidthDeg × laneTouchFeedback.laneWidthScale
+//     arc center = lane.CenterDeg
 //
 //   Z layout — flat overlay above the arena cone:
 //     overlayZ  = FrustumZAtRadius(judgementRing) + overlayHeightLocal
+//     The Z anchor is always the judgement ring radius so FrustumZAtRadius stays
+//     within the valid [innerLocal, outerLocal] interpolation range even when the
+//     sector extends outward to visualOuterLocal.
 //     Both inner and outer arc vertices share this same Z.
 //     The result is a flat disc segment that sits visibly above the arena surface
 //     stack and reads clearly from the game camera, regardless of frustum tilt.
@@ -297,6 +305,11 @@ namespace RhythmicFlow.Player
                 float judgementR = NoteApproachMath.JudgementRadius(
                     outerLocal, pfT.MinDimLocal, PlayerSettingsStore.JudgementInsetNorm);
 
+                // Visual outer edge — same expansion used by ArenaSurfaceRenderer and
+                // LaneGuideRenderer so the full-coverage overlay aligns with the visible rim.
+                float visualOuterLocal = outerLocal
+                    + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
+
                 // ── Touch membership test ──────────────────────────────────────────────
                 // Uses the same IsInsideFullLane path as JudgementEngine — radial band +
                 // arc + angular lane test.  No input-band expansion (visual use only).
@@ -336,10 +349,11 @@ namespace RhythmicFlow.Player
                 if (_laneOpacities[opIdx] <= 0f) { continue; }
 
                 // ── Highlight geometry ─────────────────────────────────────────────────
-                // Annular sector anchored at the judgement ring, extending inward by
-                // radialExtentLocal.  Angular span = lane width × laneWidthScale.
+                // fullLaneCoverage = false: narrow band anchored at the judgement ring.
+                // fullLaneCoverage = true:  full visible lane from innerLocal to the
+                //                           visual outer rim, matching ArenaSurfaceRenderer.
 
-                float highlightOuter = judgementR;
+                float highlightOuter = ltf.fullLaneCoverage ? visualOuterLocal : judgementR;
                 float highlightInner = ltf.fullLaneCoverage
                     ? innerLocal
                     : Mathf.Max(innerLocal, judgementR - ltf.radialExtentLocal);
@@ -355,14 +369,14 @@ namespace RhythmicFlow.Player
                     new Vector2(arenaGeo.CenterXNorm, arenaGeo.CenterYNorm));
 
                 // Flat overlay Z — the entire sector shares one height above the cone.
-                // Taking the Z at the judgement ring (outer edge of the highlight) as the
-                // base keeps the overlay anchored to the most visible part of the lane, then
-                // lifts it by overlayHeightLocal so it sits clearly above all arena surface
-                // layers.  Both inner and outer arcs use this same Z, making the sector a
-                // flat disc segment rather than a cone-following surface — it reads as a
-                // distinct, unambiguous overlay from the game camera without Z-fighting.
+                // The Z anchor is always judgementR, never highlightOuter, so that
+                // FrustumZAtRadius stays within its valid [innerLocal, outerLocal] range
+                // even when fullLaneCoverage extends the sector out to visualOuterLocal.
+                // The overlay is then lifted by overlayHeightLocal above that anchor so it
+                // sits clearly above all arena surface layers and reads as a distinct overlay
+                // from the game camera without Z-fighting.
                 float zAtJudgement = NoteApproachMath.FrustumZAtRadius(
-                    highlightOuter, innerLocal, outerLocal, hInner, hOuter);
+                    judgementR, innerLocal, outerLocal, hInner, hOuter);
                 float overlayZ = zAtJudgement + ltf.overlayHeightLocal;
                 float zInner   = overlayZ;
                 float zOuter   = overlayZ;
