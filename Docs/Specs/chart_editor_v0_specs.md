@@ -103,6 +103,9 @@ The chart editor Playfield Preview **must** reuse the same Shared evaluation inf
   (`Assets/_Project/Shared/Runtime/Evaluation/EvaluatedGeometry.cs`) —
   fully evaluated per-frame state; no keyframe math required after `Evaluate()`.
 
+**Arena fill intervals in the Playfield Preview:**
+The Playfield Preview must show fill intervals (the non-lane portions of each arena span) as runtime-derived visualization — not as authored objects. Fill intervals update dynamically as the playhead changes and lane geometry evaluates to new positions and widths. The preview must not treat fill intervals as selectable or exportable content; they are derived from the complement of current lane occupancy (player spec §5.5.3) and must use the same evaluated lane geometry as all other preview rendering.
+
 **Arena surface mesh in the preview must animate:**
 The arena surface mesh (cone/frustum sector) must be rebuilt whenever evaluated arena parameters
 change — the same change-detection pattern used in `PlayerDebugArenaSurface` (compare outerRadius,
@@ -262,9 +265,12 @@ A lane is an angular slice inside an arena band.
   * `centerDeg`  
   * `widthDeg`
 
+**Fill regions are derived, not authored (locked):**
+Lanes are the only chart-authored angular objects within an arena. The fill intervals between and around lanes — which visually occupy the currently unoccupied portions of the arena span — are runtime-derived from evaluated lane geometry (player spec §5.5.3). They are not authored as lane objects and must not appear in `lanes[]`. Do not create fake filler lanes to fill inter-lane visual gaps; the runtime computes fill intervals automatically from the complement of current lane occupancy.
+
 **Overlap**
 
-* Lanes are allowed to overlap partially or fully.  
+* Lanes are allowed to overlap partially or fully.
 * chart editor should provide warnings for potentially confusing overlaps (especially near hit time).
 
 **chart editor tools**
@@ -619,7 +625,7 @@ Key decisions:
 * `arenas[]` each contains:
   * `arenaId: string`
   * tracks: `enabled, opacity, centerX, centerY, outerRadius, bandThickness, arcStartDeg, arcSweepDeg`
-* `lanes[]` each contains:
+* `lanes[]` each contains only **interactive authored lanes** — fill intervals between lanes are runtime-derived and never serialized (player spec §5.5.3). Including fake filler lanes to pad visual gaps is an authoring error.
   * `laneId: string`, `arenaId: string`, `priority: int`
   * tracks: `enabled, opacity, centerDeg, widthDeg`
 * `camera` contains tracks (suggested v0):

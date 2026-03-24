@@ -446,6 +446,23 @@ See §8.3.1 for the default values of all hit-band and visual parameters.
 * `normalize360(a)` returns angle in `[0, 360)`.
 * `shortestSignedAngleDeltaDeg(a, b)` returns the signed delta from `b` to `a` on the shortest path (range `[-180, +180]`).
 
+### **5.5.3 Arena partition model (lane occupancy and fill intervals)**
+
+At any evaluated frame, each arena's angular span is fully partitioned into two kinds of intervals:
+
+**Occupied lane intervals** — the angular extents of currently enabled lanes, each clipped to the arena's current `[arcStartDeg, arcStartDeg + arcSweepDeg]` span. When lanes overlap, the occupied set is the **union** of all individual lane intervals — arena fill is removed under the entire union, not independently under each lane.
+
+**Fill intervals** — the complement of the occupied union within the current arena span. Fill intervals are **runtime-derived each frame** from the current `EvaluatedLane[]` state. They are not authored, not stored in the chart, and not computed at parse time. The complement is recomputed dynamically as lanes move, widen, narrow, overlap, enable, or disable.
+
+**Rendering split:**
+- `ArenaSurfaceRenderer` renders only fill intervals — the angular portions of the arena span not currently covered by any enabled lane body.
+- Lane visual layers (`LaneGuideRenderer`, note renderers, `HoldBodyRenderer`, touch/judgement feedback) render within occupied lane intervals.
+- Both derive their angular coverage from the **same current evaluated lane occupancy** — one shared runtime source of truth per arena, not two independent models.
+
+**Chart file contract:**
+- `lanes[]` in the chart JSON contains only interactive authored lanes. Fill intervals are never stored in the chart.
+- Do not author fake filler lanes as lane objects to cover visual gaps. The runtime computes fill intervals automatically from the evaluated complement of current lane occupancy.
+
 
 ### **5.6 Enabled vs opacity**
 
@@ -771,7 +788,7 @@ All of the following work without `PlayerDebugRenderer` or `PlayerDebugArenaSurf
 
 | Component | Script | Responsibility |
 |---|---|---|
-| `ArenaSurfaceRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaSurfaceRenderer.cs` | Filled annular sector per arena — base, detail, and accent layer passes. Skinned via `ArenaSurfaceSkinSet` (§5.8.1). |
+| `ArenaSurfaceRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaSurfaceRenderer.cs` | Renders the non-lane fill intervals of each arena (§5.5.3) — the angular portions of the arena span not currently occupied by any enabled lane. Base, detail, and accent layer passes. Skinned via `ArenaSurfaceSkinSet` (§5.8.1). Fill intervals are recomputed each frame from evaluated lane occupancy; the renderer must not draw over any currently occupied lane interval. |
 | `JudgementRingRenderer` | `Assets/_Project/Player/Runtime/Visuals/JudgementRingRenderer.cs` | Arc strip at `judgementR` per arena |
 | `ArenaBandRenderer` | `Assets/_Project/Player/Runtime/Visuals/ArenaBandRenderer.cs` | Outer + inner arc strip outlines per arena |
 | `LaneGuideRenderer` | `Assets/_Project/Player/Runtime/Visuals/LaneGuideRenderer.cs` | Left/center/right radial guide lines per lane |
@@ -1020,6 +1037,7 @@ Arena, lane, and camera keyframe tracks are sampled **every frame** by `ChartRun
 * Zero per-frame allocations — `EvaluatedArena[]` and `EvaluatedLane[]` arrays are pre-allocated once in the constructor.
 * Disabled arenas / lanes (`EnabledBool == false`) are **removed** from the geometry dicts so that
   JudgementEngine and all renderers skip them automatically (spec §5.6).
+* The current evaluated lane occupancy per arena — the union of enabled lane angular intervals, each clipped to the arena span (§5.5.3) — is derived from the same `EvaluatedLane[]` array. `ArenaSurfaceRenderer` and lane visual renderers must read from this shared evaluated state as the single runtime source of truth for visible lane occupancy; there must not be two independent occupancy models that can diverge.
 * Debug scaffolding (`PlayerDebugArenaSurface`, `PlayerDebugRenderer`) reads the same evaluated
   geometry — arena surface meshes and debug arc overlays animate in sync with production visuals.
 * Angle tracks (`arcStartDeg`, `centerDeg`) use `FloatTrack.EvaluateAngleDeg` (shortest-path wrap).
