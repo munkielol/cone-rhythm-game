@@ -41,16 +41,18 @@
 //     arc span   = lane.WidthDeg × laneTouchFeedback.laneWidthScale
 //     arc center = lane.CenterDeg
 //
-//   Z layout — flat overlay above the arena cone:
-//     overlayZ  = FrustumZAtRadius(judgementRing) + overlayHeightLocal
-//     The Z anchor is always the judgement ring radius so FrustumZAtRadius stays
-//     within the valid [innerLocal, outerLocal] interpolation range even when the
-//     sector extends outward to visualOuterLocal.
-//     Both inner and outer arc vertices share this same Z.
-//     The result is a flat disc segment that sits visibly above the arena surface
-//     stack and reads clearly from the game camera, regardless of frustum tilt.
-//     This avoids the Z-fighting and low-visibility problems of a surface-hugging
-//     approach driven only by a tiny per-layer epsilon.
+//   Z layout — surface-conforming overlay lifted above the arena cone:
+//     zInner = FrustumZAtRadius(highlightInner, innerLocal, outerLocal, hInner, hOuter)
+//              + overlayHeightLocal
+//     zOuter = FrustumZAtRadius(highlightOuter, innerLocal, outerLocal, hInner, hOuter)
+//              + overlayHeightLocal
+//     Each arc follows the actual frustum cone surface (same mapping used by
+//     ArenaSurfaceRenderer and LaneGuideRenderer — hInner at innerLocal,
+//     hOuter at outerLocal), then is lifted uniformly above the surface by
+//     overlayHeightLocal.  FrustumZAtRadius clamps its interpolant to [0,1] so
+//     passing visualOuterLocal as highlightOuter is safe.
+//     The result is a surface patch that tilts with the cone and remains
+//     visually flush with the arena regardless of camera angle.
 //
 // ── Rendering pattern ─────────────────────────────────────────────────────────
 //
@@ -276,6 +278,10 @@ namespace RhythmicFlow.Player
             int                          touchCount = touches != null ? touches.Count : 0;
 
             // ── Frustum Z heights ─────────────────────────────────────────────────────
+            // hInner = frustum cone Z at the arena inner edge (innerLocal)
+            // hOuter = frustum cone Z at the arena outer edge (outerLocal)
+            // Same values used by ArenaSurfaceRenderer — all surface-conforming renderers
+            // share this reference.  When frustumProfile is absent, both default to 0.001f.
             bool  useProfile = frustumProfile != null && frustumProfile.UseFrustumProfile;
             float hInner     = useProfile ? frustumProfile.FrustumHeightInner : 0.001f;
             float hOuter     = useProfile ? frustumProfile.FrustumHeightOuter : 0.001f;
@@ -306,7 +312,7 @@ namespace RhythmicFlow.Player
                     outerLocal, pfT.MinDimLocal, PlayerSettingsStore.JudgementInsetNorm);
 
                 // Visual outer edge — same expansion used by ArenaSurfaceRenderer and
-                // LaneGuideRenderer so the full-coverage overlay aligns with the visible rim.
+                // LaneGuideRenderer so the full-coverage highlight aligns with the visible rim.
                 float visualOuterLocal = outerLocal
                     + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
 
@@ -368,18 +374,19 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arenaGeo.CenterXNorm, arenaGeo.CenterYNorm));
 
-                // Flat overlay Z — the entire sector shares one height above the cone.
-                // The Z anchor is always judgementR, never highlightOuter, so that
-                // FrustumZAtRadius stays within its valid [innerLocal, outerLocal] range
-                // even when fullLaneCoverage extends the sector out to visualOuterLocal.
-                // The overlay is then lifted by overlayHeightLocal above that anchor so it
-                // sits clearly above all arena surface layers and reads as a distinct overlay
-                // from the game camera without Z-fighting.
-                float zAtJudgement = NoteApproachMath.FrustumZAtRadius(
-                    judgementR, innerLocal, outerLocal, hInner, hOuter);
-                float overlayZ = zAtJudgement + ltf.overlayHeightLocal;
-                float zInner   = overlayZ;
-                float zOuter   = overlayZ;
+                // ── Surface-conforming Z ───────────────────────────────────────────────
+                // Each arc is placed at the frustum cone height for its radius, then
+                // lifted above the surface by overlayHeightLocal.
+                // FrustumZAtRadius uses Clamp01 on the interpolant, so passing
+                // visualOuterLocal (slightly beyond outerLocal) is safe.
+                // This is the same mapping used by ArenaSurfaceRenderer and LaneGuideRenderer:
+                //   innerLocal → hInner,  outerLocal → hOuter.
+                float zInner = NoteApproachMath.FrustumZAtRadius(
+                    highlightInner, innerLocal, outerLocal, hInner, hOuter)
+                    + ltf.overlayHeightLocal;
+                float zOuter = NoteApproachMath.FrustumZAtRadius(
+                    highlightOuter, innerLocal, outerLocal, hInner, hOuter)
+                    + ltf.overlayHeightLocal;
 
                 // ── Fill vertex scratch ────────────────────────────────────────────────
                 FillSectorVerts(_vertScratch, arcSegments, arcStart, arcSweep,

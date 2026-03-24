@@ -44,7 +44,7 @@ MonoBehaviour:
   arrowSurfaceOffsetLocal: 0.25
   arrowRadialOffsetLocal: 0
   arrowTangentialOffsetLocal: 0
-  holdBodyTexture: {fileID: 2800000, guid: fe5b4ed94692a4b4fbed74bd9dae0ca6, type: 3}
+  holdBodyTexture: {fileID: 2800000, guid: 8cd6a1b086061934c9d0495f2cd113b7, type: 3}
   holdLeftEdgeU: 0.25
   holdRightEdgeU: 0.25
   holdLeftEdgeLocalWidth: 0.01

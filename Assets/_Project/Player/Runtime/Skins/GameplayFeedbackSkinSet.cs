@@ -143,11 +143,13 @@ namespace RhythmicFlow.Player
         public bool fullLaneCoverage;
 
         [Tooltip("Height in PlayfieldLocal Z units to lift the overlay above the arena cone surface.\n\n" +
-                 "The renderer places the entire sector flat at:\n" +
-                 "  Z = FrustumZ(judgementRing) + overlayHeightLocal\n\n" +
-                 "Both inner and outer arc vertices share this Z, so the sector reads as a clean\n" +
-                 "2D overlay disc from the game camera rather than a surface-hugging sliver.\n\n" +
-                 "Larger values float the overlay higher above the surface (recommended: 0.01–0.04).\n" +
+                 "The renderer places each arc at the frustum cone height for its radius, then\n" +
+                 "lifts it above the surface by this amount:\n" +
+                 "  Z at inner arc = FrustumZ(highlightInner) + overlayHeightLocal\n" +
+                 "  Z at outer arc = FrustumZ(highlightOuter) + overlayHeightLocal\n\n" +
+                 "The sector follows the cone surface (same mapping as ArenaSurfaceRenderer)\n" +
+                 "and remains visually correct from any camera angle.\n\n" +
+                 "Larger values float the overlay higher above the surface (recommended: 0.005–0.02).\n" +
                  "0 = flush with the cone surface (not recommended: may Z-fight arena layers).\n" +
                  "Default: 0.02")]
         [Min(0f)]
