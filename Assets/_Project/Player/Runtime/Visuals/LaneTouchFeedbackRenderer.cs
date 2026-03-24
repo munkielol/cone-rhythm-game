@@ -32,9 +32,17 @@
 //   Per lane:
 //     outer radius = judgementRadius (where notes land visually)
 //     inner radius = max(innerLocal, judgementRadius − laneTouchFeedback.radialExtentLocal)
+//                    OR innerLocal when fullLaneCoverage is true
 //     arc span     = lane.WidthDeg × laneTouchFeedback.laneWidthScale
 //     arc center   = lane.CenterDeg
-//     Z            = FrustumZAtRadius + laneTouchFeedback.surfaceOffsetLocal
+//
+//   Z layout — flat overlay above the arena cone:
+//     overlayZ  = FrustumZAtRadius(judgementRing) + overlayHeightLocal
+//     Both inner and outer arc vertices share this same Z.
+//     The result is a flat disc segment that sits visibly above the arena surface
+//     stack and reads clearly from the game camera, regardless of frustum tilt.
+//     This avoids the Z-fighting and low-visibility problems of a surface-hugging
+//     approach driven only by a tiny per-layer epsilon.
 //
 // ── Rendering pattern ─────────────────────────────────────────────────────────
 //
@@ -346,14 +354,18 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arenaGeo.CenterXNorm, arenaGeo.CenterYNorm));
 
-                // Frustum Z at the highlight radii, lifted by surfaceOffsetLocal to sit
-                // above the arena surface layers and avoid Z-fighting.
-                float zInner = NoteApproachMath.FrustumZAtRadius(
-                    highlightInner, innerLocal, outerLocal, hInner, hOuter)
-                    + ltf.surfaceOffsetLocal;
-                float zOuter = NoteApproachMath.FrustumZAtRadius(
-                    highlightOuter, innerLocal, outerLocal, hInner, hOuter)
-                    + ltf.surfaceOffsetLocal;
+                // Flat overlay Z — the entire sector shares one height above the cone.
+                // Taking the Z at the judgement ring (outer edge of the highlight) as the
+                // base keeps the overlay anchored to the most visible part of the lane, then
+                // lifts it by overlayHeightLocal so it sits clearly above all arena surface
+                // layers.  Both inner and outer arcs use this same Z, making the sector a
+                // flat disc segment rather than a cone-following surface — it reads as a
+                // distinct, unambiguous overlay from the game camera without Z-fighting.
+                float zAtJudgement = NoteApproachMath.FrustumZAtRadius(
+                    highlightOuter, innerLocal, outerLocal, hInner, hOuter);
+                float overlayZ = zAtJudgement + ltf.overlayHeightLocal;
+                float zInner   = overlayZ;
+                float zOuter   = overlayZ;
 
                 // ── Fill vertex scratch ────────────────────────────────────────────────
                 FillSectorVerts(_vertScratch, arcSegments, arcStart, arcSweep,

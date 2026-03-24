@@ -137,12 +137,16 @@ namespace RhythmicFlow.Player
                  "Assign a texture that is opaque at V=1 and transparent at V=0 to achieve this.")]
         public bool fullLaneCoverage;
 
-        [Tooltip("Local Z offset to lift the highlight above the arena surface.\n\n" +
-                 "Prevents Z-fighting with ArenaSurfaceRenderer layers.\n" +
-                 "Should be small (e.g. 0.002) to stay visually flush with the surface.\n" +
-                 "Default: 0.002")]
+        [Tooltip("Height in PlayfieldLocal Z units to lift the overlay above the arena cone surface.\n\n" +
+                 "The renderer places the entire sector flat at:\n" +
+                 "  Z = FrustumZ(judgementRing) + overlayHeightLocal\n\n" +
+                 "Both inner and outer arc vertices share this Z, so the sector reads as a clean\n" +
+                 "2D overlay disc from the game camera rather than a surface-hugging sliver.\n\n" +
+                 "Larger values float the overlay higher above the surface (recommended: 0.01–0.04).\n" +
+                 "0 = flush with the cone surface (not recommended: may Z-fight arena layers).\n" +
+                 "Default: 0.02")]
         [Min(0f)]
-        public float surfaceOffsetLocal;
+        public float overlayHeightLocal;
 
         [Tooltip("Duration in seconds to fade the highlight in when a touch begins.\n\n" +
                  "0 = instant on.\n" +
@@ -304,7 +308,7 @@ namespace RhythmicFlow.Player
             laneWidthScale    = 1.0f,
             radialExtentLocal  = 0.05f,
             fullLaneCoverage   = false,
-            surfaceOffsetLocal = 0.002f,
+            overlayHeightLocal = 0.02f,
             fadeInDuration    = 0.05f,
             fadeOutDuration   = 0.12f,
         };
@@ -475,7 +479,7 @@ namespace RhythmicFlow.Player
             f.opacity            = Mathf.Clamp01(f.opacity);
             f.laneWidthScale     = Mathf.Max(0.1f, f.laneWidthScale);
             f.radialExtentLocal  = Mathf.Max(0.005f, f.radialExtentLocal);
-            f.surfaceOffsetLocal = Mathf.Max(0f, f.surfaceOffsetLocal);
+            f.overlayHeightLocal = Mathf.Max(0f, f.overlayHeightLocal);
             f.fadeInDuration     = Mathf.Max(0f, f.fadeInDuration);
             f.fadeOutDuration    = Mathf.Max(0f, f.fadeOutDuration);
         }

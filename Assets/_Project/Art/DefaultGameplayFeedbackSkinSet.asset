@@ -19,7 +19,8 @@ MonoBehaviour:
     tint: {r: 1, g: 1, b: 1, a: 0.4}
     opacity: 0.25
     laneWidthScale: 1
-    radialExtentLocal: 0.05
+    radialExtentLocal: 1
+    fullLaneCoverage: 1
     surfaceOffsetLocal: 0.002
     fadeInDuration: 0.05
     fadeOutDuration: 0.12

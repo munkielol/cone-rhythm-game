@@ -588,8 +588,9 @@ MonoBehaviour:
   playerAppController: {fileID: 4343613}
   guideMaterial: {fileID: 2100000, guid: f99b84414ab9df941b3e44591d596b1d, type: 2}
   frustumProfile: {fileID: 1154423719}
-  guideColor: {r: 1, g: 0.75, b: 0.3, a: 0.8}
+  guideColor: {r: 1, g: 1, b: 1, a: 0.8}
   lineHalfThicknessLocal: 0.003
+  surfaceOffsetLocal: 0.1
 --- !u!1 &435185998
 GameObject:
   m_ObjectHideFlags: 0
