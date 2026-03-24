@@ -289,6 +289,15 @@ namespace RhythmicFlow.Player
         /// </summary>
         public float SpawnRadiusFactor => spawnRadiusFactor;
 
+        /// <summary>
+        /// Active touches this frame in PlayfieldRoot local XY.
+        /// Updated at the start of each <c>Update()</c> before judgement processing.
+        /// Empty (not null) before Start() completes or when no touch is active.
+        /// Production feedback renderers (e.g. <c>LaneTouchFeedbackRenderer</c>) read
+        /// this to determine per-lane touch state without duplicating input logic.
+        /// </summary>
+        public IReadOnlyList<TouchSnapshot> ActiveTouches => _touches;
+
         // -------------------------------------------------------------------
         // DEBUG RENDERER API — read-only access for PlayerDebugRenderer.
         // All members prefixed "Debug" to signal scaffolding status.

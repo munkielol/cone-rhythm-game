@@ -14,10 +14,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.GameplayFeedbackSkinSet
   laneTouchFeedback:
     enabled: 1
-    material: {fileID: 0}
+    material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
     tint: {r: 1, g: 1, b: 1, a: 0.4}
-    opacity: 1
+    opacity: 0.25
     laneWidthScale: 1
     radialExtentLocal: 0.05
     surfaceOffsetLocal: 0.002
