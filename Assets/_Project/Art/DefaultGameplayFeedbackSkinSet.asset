@@ -19,7 +19,7 @@ MonoBehaviour:
     tint: {r: 1, g: 1, b: 1, a: 1}
     opacity: 0.25
     laneWidthScale: 1
-    radialExtentLocal: 1
+    radialExtentLocal: 18.02
     fullLaneCoverage: 1
     overlayHeightLocal: 0.02
     fadeInDuration: 0.05
