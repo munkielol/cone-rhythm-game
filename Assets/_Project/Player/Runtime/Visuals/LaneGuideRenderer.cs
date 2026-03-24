@@ -57,6 +57,13 @@ namespace RhythmicFlow.Player
         [Tooltip("Tangential half-thickness of each radial line in PlayfieldLocal units.  Default: 0.003.")]
         [SerializeField] private float lineHalfThicknessLocal = 0.003f;
 
+        [Tooltip("Local Z offset added to every guide line vertex to lift guides above the arena surface.\n\n" +
+                 "Prevents Z-fighting with ArenaSurfaceRenderer layers when arena surface opacity is 1.\n" +
+                 "Should be small (e.g. 0.003) to stay visually flush with the surface.\n" +
+                 "Default: 0.003")]
+        [Min(0f)]
+        [SerializeField] private float surfaceOffsetLocal = 0.003f;
+
         // -------------------------------------------------------------------
         // Internals
         // -------------------------------------------------------------------
@@ -191,19 +198,19 @@ namespace RhythmicFlow.Player
                 FillRadialLineVerts(_vertScratch, 0, leftDeg, center,
                     innerLocal, visualOuterLocal,
                     innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal);
+                    lineHalfThicknessLocal, surfaceOffsetLocal);
 
                 // Quad 1: center line
                 FillRadialLineVerts(_vertScratch, 4, lane.CenterDeg, center,
                     innerLocal, visualOuterLocal,
                     innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal);
+                    lineHalfThicknessLocal, surfaceOffsetLocal);
 
                 // Quad 2: right edge
                 FillRadialLineVerts(_vertScratch, 8, rightDeg, center,
                     innerLocal, visualOuterLocal,
                     innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal);
+                    lineHalfThicknessLocal, surfaceOffsetLocal);
 
                 int slot = _poolUsed++;
                 _meshPool[slot].vertices = _vertScratch;
@@ -232,7 +239,7 @@ namespace RhythmicFlow.Player
             float r0, float r1,
             float arenaInnerLocal, float arenaOuterLocal,
             float hInner, float hOuter,
-            float halfThick)
+            float halfThick, float zOffset = 0f)
         {
             float rad  = angleDeg * Mathf.Deg2Rad;
             float cosA = Mathf.Cos(rad);
@@ -243,9 +250,9 @@ namespace RhythmicFlow.Player
             float tanY =  cosA;
 
             float z0 = NoteApproachMath.FrustumZAtRadius(
-                r0, arenaInnerLocal, arenaOuterLocal, hInner, hOuter);
+                r0, arenaInnerLocal, arenaOuterLocal, hInner, hOuter) + zOffset;
             float z1 = NoteApproachMath.FrustumZAtRadius(
-                r1, arenaInnerLocal, arenaOuterLocal, hInner, hOuter);
+                r1, arenaInnerLocal, arenaOuterLocal, hInner, hOuter) + zOffset;
 
             // Radial center positions at r0 and r1.
             float cx0 = center.x + cosA * r0;

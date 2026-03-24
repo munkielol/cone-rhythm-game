@@ -118,12 +118,24 @@ namespace RhythmicFlow.Player
         [Range(0.1f, 2f)]
         public float laneWidthScale;
 
-        [Tooltip("Radial extent of the highlight quad in PlayfieldLocal units.\n\n" +
+        [Tooltip("Radial extent of the highlight in PlayfieldLocal units.\n\n" +
+                 "Used when fullLaneCoverage is false (default mode).\n" +
                  "Controls how deep the highlight reaches from the judgement ring inward.\n" +
                  "A small value (e.g. 0.05) produces a thin highlight near the judgement ring.\n" +
+                 "Ignored when fullLaneCoverage is true.\n" +
                  "Default: 0.05")]
         [Min(0.005f)]
         public float radialExtentLocal;
+
+        [Tooltip("When true, the highlight covers the full lane from innerLocal to judgementRadius.\n\n" +
+                 "When false (default), the highlight covers only the near-judgement band defined by\n" +
+                 "radialExtentLocal.  Use false for a subtle ring-edge glow; use true for a full-lane\n" +
+                 "reach-in look.\n\n" +
+                 "Full-lane mode supports gradient textures that fade away from the judgement line:\n" +
+                 "  V = 1 at the outer (judgement) edge — stable anchor, should be opaque/bright.\n" +
+                 "  V = 0 at the inner edge — fade to transparent for the reach-in gradient.\n" +
+                 "Assign a texture that is opaque at V=1 and transparent at V=0 to achieve this.")]
+        public bool fullLaneCoverage;
 
         [Tooltip("Local Z offset to lift the highlight above the arena surface.\n\n" +
                  "Prevents Z-fighting with ArenaSurfaceRenderer layers.\n" +
@@ -290,7 +302,8 @@ namespace RhythmicFlow.Player
             tint              = new Color(1f, 1f, 1f, 0.4f),
             opacity           = 1.0f,
             laneWidthScale    = 1.0f,
-            radialExtentLocal = 0.05f,
+            radialExtentLocal  = 0.05f,
+            fullLaneCoverage   = false,
             surfaceOffsetLocal = 0.002f,
             fadeInDuration    = 0.05f,
             fadeOutDuration   = 0.12f,

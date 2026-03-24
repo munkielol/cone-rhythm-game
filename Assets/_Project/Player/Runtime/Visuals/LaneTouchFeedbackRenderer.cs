@@ -332,8 +332,9 @@ namespace RhythmicFlow.Player
                 // radialExtentLocal.  Angular span = lane width × laneWidthScale.
 
                 float highlightOuter = judgementR;
-                float highlightInner = Mathf.Max(innerLocal,
-                    judgementR - ltf.radialExtentLocal);
+                float highlightInner = ltf.fullLaneCoverage
+                    ? innerLocal
+                    : Mathf.Max(innerLocal, judgementR - ltf.radialExtentLocal);
 
                 if (highlightOuter <= highlightInner) { continue; } // Degenerate — skip.
 
