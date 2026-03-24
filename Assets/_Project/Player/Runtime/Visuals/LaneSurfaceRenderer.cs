@@ -4,13 +4,38 @@
 // ── What this renderer does ───────────────────────────────────────────────────
 //
 //   Per active lane each LateUpdate:
-//     • Reads evaluated geometry from ChartRuntimeEvaluator.
-//     • Builds a filled sector mesh spanning the full lane:
-//         Angular: leftEdgeDeg → rightEdgeDeg  (lane.CenterDeg ± lane.WidthDeg/2)
-//         Radial:  innerLocal  → visualOuterLocal
+//     • Reads evaluated geometry from ChartRuntimeEvaluator (per-frame, not static).
+//     • Computes the lane's visual angular interval, bounded inside the parent
+//       arena's angular span:
+//           leftDeg  = Max(CenterDeg - WidthDeg/2, arenaStart)
+//           rightDeg = Min(CenterDeg + WidthDeg/2, arenaEnd)
+//       This is the same formula ArenaSurfaceRenderer uses for gap subtraction,
+//       so the two renderers always agree on what angular region a lane occupies.
+//     • Builds a filled sector mesh spanning the full (clamped) lane:
+//           Angular: leftDeg → rightDeg  (clamped to arena span)
+//           Radial:  innerLocal → visualOuterLocal
 //     • Subdivides radially into radialSegments rings so the mesh conforms to the
 //       frustum cone surface — each ring row is placed at its own FrustumZAtRadius.
 //     • Draws via Graphics.DrawMesh with an inline-configured MaterialPropertyBlock.
+//
+// ── Lane visual bounding ──────────────────────────────────────────────────────
+//
+//   Lane CenterDeg and WidthDeg come from ChartRuntimeEvaluator.GetLane(i), which
+//   re-evaluates all animated tracks each frame.  The lane's visual interval is
+//   clamped to [arenaStart, arenaStart + arcSweep] before mesh generation:
+//
+//     arenaStart = arena.ArcStartDeg
+//     arenaEnd   = arenaStart + Clamp(arena.ArcSweepDeg, 0, 360)
+//     leftDeg    = Max(CenterDeg - WidthDeg/2, arenaStart)
+//     rightDeg   = Min(CenterDeg + WidthDeg/2, arenaEnd)
+//
+//   If rightDeg <= leftDeg after clamping, the lane is fully outside the arena
+//   span and is skipped.  This happens when a lane is wider than the arena
+//   sweep or when CenterDeg drifts outside the arena span.
+//
+//   Assumption: CenterDeg and ArcStartDeg are both wrap-normalized to [0, 360)
+//   by ChartRuntimeEvaluator.  Lanes that straddle the 0°/360° seam of a
+//   full-circle arena are not yet handled (deferred — see task constraints).
 //
 // ── What this renderer does NOT do ───────────────────────────────────────────
 //
@@ -21,11 +46,11 @@
 //
 // ── Vertex layout per lane mesh ───────────────────────────────────────────────
 //
-//   Columns = arcSegments + 1  (angular, left → right)
+//   Columns = arcSegments + 1  (angular, left → right, across clamped span)
 //   Rows    = radialSegments + 1  (radial, inner → outer)
 //   Index:    verts[row * (arcSegments + 1) + col]
 //
-//   UV:  u = col / arcSegments  (0 = left edge, 1 = right edge)
+//   UV:  u = col / arcSegments  (0 = left edge, 1 = right edge of clamped span)
 //        v = row / radialSegments  (0 = innerLocal, 1 = visualOuterLocal)
 //
 //   Z:   FrustumZAtRadius(radius_at_row, arenaInner, arenaOuter, hInner, hOuter) + liftLocal
@@ -58,7 +83,8 @@ namespace RhythmicFlow.Player
 {
     /// <summary>
     /// Persistent lane surface renderer.  Draws one full-width annular sector per enabled lane,
-    /// conforming to the arena frustum cone surface.
+    /// conforming to the arena frustum cone surface.  Lane visual bounds are clamped to the
+    /// parent arena's angular span so they agree with ArenaSurfaceRenderer's gap subtraction.
     ///
     /// <para>Attach to any GO in the Player scene.  Assign <see cref="playerAppController"/>,
     /// <see cref="laneMaterial"/>, and <see cref="frustumProfile"/> in the Inspector.</para>
@@ -209,6 +235,9 @@ namespace RhythmicFlow.Player
         {
             if (playerAppController == null || laneMaterial == null) { return; }
 
+            // evaluator.GetLane(i) returns values from the most recent Evaluate(timeMs) call,
+            // which PlayerAppController issues in Update() — before LateUpdate runs.
+            // Lane geometry (CenterDeg, WidthDeg) is therefore current-frame, not stale.
             ChartRuntimeEvaluator evaluator = playerAppController.Evaluator;
             PlayfieldTransform    pfT       = playerAppController.PlayfieldTf;
             Transform             pfRoot    = playerAppController.playfieldRoot;
@@ -259,10 +288,37 @@ namespace RhythmicFlow.Player
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // ── Lane angular span ─────────────────────────────────────────────────
+                // ── Lane visual angular interval — clamped to arena span ───────────────
+                //
+                // The unclamped interval is [CenterDeg - WidthDeg/2, CenterDeg + WidthDeg/2].
+                // We clamp it to [arenaStart, arenaEnd] before mesh generation so the lane
+                // sector never renders outside the arena's angular bounds.
+                //
+                // This uses the same formula ArenaSurfaceRenderer uses for gap subtraction:
+                //   leftDeg  = Max(CenterDeg - WidthDeg/2, arenaStart)
+                //   rightDeg = Min(CenterDeg + WidthDeg/2, arenaEnd)
+                //
+                // Both renderers therefore agree on the same clamped occupied interval,
+                // so lane sectors and arena gap sectors meet cleanly at the arena edges.
+                //
+                // arenaEnd may exceed 360 (e.g. 350 + 30 = 380) — this is intentional.
+                // CenterDeg is normalized to [0, 360) by ChartRuntimeEvaluator, so lanes
+                // that straddle the 0/360 seam of a full-circle arena may clamp incorrectly.
+                // Wrap-around seam handling is deferred.
+                float arenaStart = arena.ArcStartDeg;
+                float arenaEnd   = arenaStart + Mathf.Clamp(arena.ArcSweepDeg, 0f, 360f);
+
                 float halfWidth = lane.WidthDeg * 0.5f;
                 float leftDeg   = lane.CenterDeg - halfWidth;
                 float rightDeg  = lane.CenterDeg + halfWidth;
+
+                leftDeg  = Mathf.Max(leftDeg,  arenaStart);
+                rightDeg = Mathf.Min(rightDeg, arenaEnd);
+
+                // Skip if the clamped interval is degenerate — lane is entirely outside
+                // the arena's angular span, or the lane is wider than the arena span and
+                // was pushed to zero width by both clamps.
+                if (rightDeg <= leftDeg) { continue; }
 
                 // ── Fill mesh vertices and UVs ────────────────────────────────────────
                 FillLaneSectorVerts(
@@ -295,8 +351,11 @@ namespace RhythmicFlow.Player
         // Each row is at a fixed radius, whose Z is sampled from FrustumZAtRadius.
         // Each column steps angularly from leftDeg to rightDeg.
         //
+        // leftDeg and rightDeg must already be clamped to the arena's angular span
+        // by the caller before calling this method.
+        //
         // Parameters:
-        //   leftDeg, rightDeg       — angular span of the lane in degrees.
+        //   leftDeg, rightDeg       — clamped angular span of the lane in degrees.
         //   center                  — XY center of the arena in PlayfieldLocal units.
         //   innerLocal              — inner arc radius (PlayfieldLocal).
         //   visualOuterLocal        — outer arc radius (PlayfieldLocal).

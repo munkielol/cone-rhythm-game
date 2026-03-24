@@ -405,7 +405,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Player::RhythmicFlow.Player.ArenaColliderProvider
   playerAppController: {fileID: 4343613}
   frustumProfile: {fileID: 1154423719}
-  arcSegments: 64
+  arcSegments: 360
 --- !u!1 &412451161
 GameObject:
   m_ObjectHideFlags: 0
