@@ -582,7 +582,7 @@ namespace RhythmicFlow.Player
             if (arrowRight.sqrMagnitude < 1e-6f) { return; }
             arrowRight.Normalize();
 
-            Vector3    arrowNorm = Vector3.Cross(arrowRight, arrowUp);  // faces camera
+            Vector3    arrowNorm = Vector3.Cross(arrowUp, arrowRight);  // faces camera
             Quaternion baseRot   = Quaternion.LookRotation(arrowNorm, arrowUp);
 
             // Apply 180° flip for D/R directions when the resolved texture is from the
