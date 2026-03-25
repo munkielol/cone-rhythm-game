@@ -3,55 +3,31 @@
 //
 // ── What this renderer does ───────────────────────────────────────────────────
 //
-//   Job 1 (skeleton):
-//     • Subscribes to PlayerAppController.OnJudgement, .OnHoldTick, .OnHoldResolved.
-//     • Manages a pre-allocated pool of 32 ActiveFeedback slots.
-//     • On each event: looks up the correct JudgementFeedbackEntry from the skin,
-//       claims a free pool slot, and records spawn data.
-//     • Each LateUpdate: advances ages and expires elapsed slots.
+//   Subscribes to PlayerAppController judgement events, maintains a 32-slot
+//   pre-allocated effect pool, and draws each active effect as a world-space
+//   camera-facing billboard quad with pop/drift/fade animation.
 //
-//   Job 2 (spawn position, billboard, animation, draw):
-//     • Computes the world-space spawn position at the lane's judgement ring point:
-//         – XY: arena center + cos/sin(lane.CenterDeg) × judgementRadius
-//         – Z:  FrustumZAtRadius(judgementR) + entry.surfaceOffsetLocal
-//       Stored in SpawnPositionLocal (pfRoot local space) at spawn time.
-//     • Each LateUpdate draws each active slot as a world-space camera-facing quad:
-//         – Drift:     localPos.z += driftSpeedLocal × age (above-surface float)
-//         – Billboard: Quaternion.LookRotation(camPos − worldPos, camUp)
-//         – Pop/scale: starts at 60% size, grows to 100% over the first 15% of lifetime.
-//         – Fade-out:  full opacity until (lifetime − fadeOutDuration), then linear fade.
-//     • Draws via Graphics.DrawMesh + one shared unit-quad mesh + one MaterialPropertyBlock.
+//   On each hit or miss event:
+//     1. Resolves the correct skin entry (accounting for Perfect+ fallback).
+//     2. Guards: entry.enabled, material != null, lane geometry available.
+//     3. Applies the Replace policy if configured (deactivates prior same-lane effects).
+//     4. Claims a free pool slot and snapshots the spawn position in pfRoot local space.
 //
-//   Job 3 (this step — policy correctness and result-family correctness):
-//     • Implements the runtime meaning of JudgementStackPolicy:
-//         – Stack:   effects coexist freely; no change to existing behaviour.
-//         – Replace: before spawning, deactivates any prior active effect that belongs
-//                    to the same lane (matched by LaneId).  This ensures at most one
-//                    effect per lane is visible at a time.
-//                    Replace only fires when we are confirmed to spawn something — it
-//                    does not clear prior effects for misses with enabled = false.
-//     • Implements Perfect+ fallback:
-//         – When useSeparatePerfectPlusVisual is true but the perfectPlus entry is
-//           unusable (disabled or null material), the renderer falls back silently to
-//           the standard perfect entry, so Perfect+ hits are never visually suppressed
-//           just because the extra entry is unconfigured.
-//         – When useSeparatePerfectPlusVisual is false, Perfect+ hits use perfect
-//           directly (unchanged from Job 2 — already handled by GetJudgementEntryForTier).
-//     • Miss coverage is complete:
-//         – Direct tap/catch/flick misses → OnJudgement → HandleJudgement.
-//         – Sweep-missed non-hold notes   → OnJudgement → HandleJudgement.
-//         – Sweep-missed holds (Unbound/Finished) → OnHoldResolved → HandleHoldResolved.
-//         – Hold-tick misses (failed tick / early release) → OnHoldTick → HandleHoldTick.
-//       All four paths flow through SpawnEffect and respect the same entry.enabled flag,
-//       so the silent-miss design (enabled = false) is applied consistently everywhere.
+//   Each LateUpdate:
+//     • Advances pool slot ages; expires elapsed slots.
+//     • For each active slot: computes current position, applies billboard rotation,
+//       and issues one Graphics.DrawMesh call.
 //
 // ── What this renderer does NOT do ───────────────────────────────────────────
 //
 //   • Does NOT affect input, hit-testing, judgement, or scoring.
-//   • Does NOT add hold-specific visual families (deferred, spec §5.11.2).
+//   • Does NOT add hold-specific visual families (deferred — spec §5.11.2).
 //   • Does NOT depend on PlayerDebugRenderer or any debug component.
 //
-// ── Spawn position formula ────────────────────────────────────────────────────
+// ── Spawn position (world-space snapshot) ─────────────────────────────────────
+//
+//   The spawn position is computed once at event time and stored in pfRoot local space.
+//   This gives a stable anchor that moves naturally with the playfield if it animates.
 //
 //   In pfRoot local space:
 //     x = arenaCenter.x + cos(laneGeo.CenterDeg) × judgementR
@@ -61,23 +37,59 @@
 //
 //   Same geometry source as LaneTouchFeedbackRenderer and JudgementRingRenderer.
 //
-// ── Billboard facing ──────────────────────────────────────────────────────────
+// ── Shared motion profile (pop / drift / fade) ────────────────────────────────
 //
-//   Per frame in LateUpdate:
+//   All four effect families (Perfect+ / Perfect / Great / Miss) share the same
+//   animation profile.  Pop scale constants (PopFraction, PopStartScale) are kept
+//   as code constants rather than skin parameters to keep the skin contract minimal.
+//
+//   Per frame, for each active slot:
 //     1. currentLocalPos = SpawnPositionLocal + (0, 0, driftSpeedLocal × age)
 //     2. worldPos        = pfRoot.TransformPoint(currentLocalPos)
 //     3. billboardRot    = Quaternion.LookRotation(camPos − worldPos, camUp)
 //     4. TRS             = Matrix4x4.TRS(worldPos, billboardRot, Vector3.one × worldScale)
 //
-// ── Replace policy ────────────────────────────────────────────────────────────
+//   Pop:     starts at PopStartScale (0.6×), grows to 1.0× over first PopFraction (15%)
+//            of lifetime.  Remaining lifetime: holds at 1.0× while opacity fades.
+//   Drift:   localPos.z += driftSpeedLocal × age  (floats above arena cone surface).
+//   Fade:    full opacity until (lifetime − fadeOutDuration), then linear to zero.
+//
+// ── Stack vs Replace policy ───────────────────────────────────────────────────
 //
 //   Matching key: LaneId (string).
 //   Each unique lane has one judgement-ring position, so LaneId alone identifies the
-//   "position family" for this renderer.  No tier grouping is applied — any active
-//   effect on the same lane is replaced, regardless of whether it was Perfect or Miss.
+//   "position family" for this renderer.  No tier grouping — any active effect on
+//   the same lane is replaced, regardless of whether it was Perfect or Miss.
 //
-//   Replacement runs AFTER all entry/geometry guards succeed, so it never clears
-//   a prior effect for a miss that will not itself spawn anything.
+//   Replace runs AFTER all entry/geometry guards succeed, so it never clears a prior
+//   effect for a miss that will not itself spawn anything (e.g. miss.enabled = false).
+//
+// ── Perfect+ fallback ─────────────────────────────────────────────────────────
+//
+//   When useSeparatePerfectPlusVisual is true but the perfectPlus entry is not usable
+//   (disabled or null material), the renderer falls back silently to the standard
+//   perfect entry.  This prevents Perfect+ hits from going dark when the designer
+//   has not yet configured the perfectPlus entry.  No warning is emitted for the
+//   fallback itself — it is expected during early authoring.
+//
+//   After a fallback, any subsequent missing-material warning is attributed to "Perfect"
+//   (not "Perfect+"), because the perfect material slot is what actually needs fixing.
+//
+// ── Miss coverage ─────────────────────────────────────────────────────────────
+//
+//   All four miss paths flow through SpawnEffect and respect the same entry.enabled
+//   check, so the silent-miss design (miss.enabled = false) works consistently:
+//     – Direct tap/catch/flick miss          → OnJudgement    → HandleJudgement
+//     – Sweep-missed non-hold notes          → OnJudgement    → HandleJudgement
+//     – Sweep-missed holds (Unbound/Finished)→ OnHoldResolved → HandleHoldResolved
+//     – Hold-tick misses / early release     → OnHoldTick     → HandleHoldTick
+//
+// ── Hold-specific variants (deferred) ────────────────────────────────────────
+//
+//   Per-tick and per-release hold feedback families are deferred (spec §5.11.2).
+//   In v0, hold tick and hold-resolved events share the same single-note effect
+//   families.  When hold-specific variants are added, route them through separate
+//   handlers here and add the corresponding entries to GameplayFeedbackSkinSet.
 //
 // ── Rendering pattern ─────────────────────────────────────────────────────────
 //
@@ -179,7 +191,10 @@ namespace RhythmicFlow.Player
             /// </summary>
             public JudgementFeedbackEntry Config;
 
-            /// <summary>True when triggered by a Perfect+ hit (spec §4.3, display-only).</summary>
+            /// <summary>
+            /// True when triggered by a Perfect+ hit (spec §4.3, display-only).
+            /// Not read by the v0 draw loop — retained for future hold-specific variant support.
+            /// </summary>
             public bool IsPerfectPlus;
 
             /// <summary>
@@ -290,7 +305,8 @@ namespace RhythmicFlow.Player
                 float                  lifetime = _pool[i].Lifetime;
                 JudgementFeedbackEntry cfg      = _pool[i].Config; // struct copy, no alloc
 
-                // Material guard — skipped at spawn when null; defend against hot-reload.
+                // Material guard: Config.material can become null after a hot-reload
+                // even if it was valid at spawn time.  Skip this slot rather than crashing.
                 if (cfg.material == null) { continue; }
 
                 // ── Current position: spawn base + upward Z drift ──────────────────
@@ -402,19 +418,17 @@ namespace RhythmicFlow.Player
                 return;
             }
 
-            // ── Resolve the skin entry with Perfect+ fallback ──────────────────────
+            // ── Resolve the skin entry, with Perfect+ fallback ────────────────────
             //
-            // Step 1: ask the skin for the entry based on tier + isPerfectPlus flag.
-            //   GetJudgementEntryForTier already handles:
-            //     • useSeparatePerfectPlusVisual = false  → returns perfect directly.
-            //     • useSeparatePerfectPlusVisual = true   → returns perfectPlus.
+            // GetJudgementEntryForTier handles useSeparatePerfectPlusVisual:
+            //   false → returns perfect directly, even for Perfect+ hits.
+            //   true  → returns perfectPlus when tier == Perfect && isPerfectPlus.
             //
-            // Step 2 (new in Job 3): if useSeparatePerfectPlusVisual is true but the
-            //   perfectPlus entry is not usable (disabled, or no material assigned),
-            //   fall back silently to the standard perfect entry.  This prevents
-            //   Perfect+ hits from going dark just because the extra entry is
-            //   unconfigured.  No warning is emitted for the fallback itself —
-            //   it is expected when the designer has not yet set up perfectPlus.
+            // Fallback: if useSeparatePerfectPlusVisual is true but the perfectPlus
+            // entry is not usable (disabled or no material), fall back silently to the
+            // standard perfect entry.  This prevents Perfect+ hits from going dark when
+            // the designer has not yet configured the perfectPlus entry.
+            // No warning is emitted for the fallback — it is expected during authoring.
             bool wantsPerfectPlus = r.Tier       == JudgementTier.Perfect
                                  && r.IsPerfectPlus
                                  && skinSet.useSeparatePerfectPlusVisual;

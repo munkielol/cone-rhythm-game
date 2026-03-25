@@ -233,7 +233,7 @@ namespace RhythmicFlow.Player
     /// the note is consumed with no visual effect.  This is the intended default for
     /// <see cref="GameplayFeedbackSkinSet.miss"/> — a deliberate no-op, not an error.</para>
     ///
-    /// <para>Consumed by <c>JudgementFeedbackRenderer</c> (planned, §5.11.2).</para>
+    /// <para>Consumed by <c>JudgementFeedbackRenderer</c> (§5.11.2).</para>
     /// </summary>
     [System.Serializable]
     public struct JudgementFeedbackEntry
@@ -328,7 +328,7 @@ namespace RhythmicFlow.Player
     ///   <item><b>Lane Touch</b> — subtle highlight while a lane is being touched
     ///     (consumed by <c>LaneTouchFeedbackRenderer</c>, planned §5.11.1).</item>
     ///   <item><b>Judgement</b> — per-tier visual (Perfect / Great / Miss)
-    ///     (consumed by <c>JudgementFeedbackRenderer</c>, planned §5.11.2).</item>
+    ///     (consumed by <c>JudgementFeedbackRenderer</c>, §5.11.2).</item>
     /// </list>
     ///
     /// <para><c>miss.enabled = false</c> is the intended default: note consumed with
@@ -445,7 +445,7 @@ namespace RhythmicFlow.Player
 
         [Header("Judgement Feedback — Great")]
         [Tooltip("Visual effect spawned at the judgement ring when a note is hit Great.\n\n" +
-                 "Consumed by JudgementFeedbackRenderer (planned — spec §5.11.2).\n\n" +
+                 "Consumed by JudgementFeedbackRenderer (spec §5.11.2).\n\n" +
                  "Set enabled = false to suppress Great feedback entirely.")]
         [SerializeField] public JudgementFeedbackEntry great = new JudgementFeedbackEntry
         {
@@ -480,7 +480,7 @@ namespace RhythmicFlow.Player
                  "silently consumed and nothing is drawn.  Do not treat this as an error.\n\n" +
                  "Set enabled = true and assign a material only if you want a visible " +
                  "miss indicator (e.g. a dim grey flash).\n\n" +
-                 "Consumed by JudgementFeedbackRenderer (planned — spec §5.11.2).")]
+                 "Consumed by JudgementFeedbackRenderer (spec §5.11.2).")]
         [SerializeField] public JudgementFeedbackEntry miss = new JudgementFeedbackEntry
         {
             enabled           = false,  // intentional no-op: miss is silent by default
