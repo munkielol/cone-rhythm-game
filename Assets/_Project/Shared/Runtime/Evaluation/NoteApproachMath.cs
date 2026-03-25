@@ -110,7 +110,7 @@ namespace RhythmicFlow.Shared
         /// <code>width = 2 · r · sin( halfWidthDeg · Deg2Rad )</code>
         ///
         /// Head and tail of a hold ribbon sit at different radii and therefore
-        /// have different widths — the ribbon is a trapezoid (spec §5.7.1).
+        /// have different chord widths at each row (spec §5.7.1).
         /// </summary>
         public static float LaneChordWidthAtRadius(float r, float halfWidthDeg)
         {

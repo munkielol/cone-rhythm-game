@@ -41,19 +41,18 @@
 //   endpoints land on the same frustum surface as the debug rail.
 //
 // ══════════════════════════════════════════════════════════════════════
-//  TRAPEZOID WIDTH — MATCHING THE FRUSTUM LANE BORDERS
+//  CHORD WIDTH — UV MAPPING ALONG RIBBON WIDTH
 //
 //   Lane borders are radial lines at centerDeg ± widthDeg/2.
 //   The chord (straight-line width) between those borders at radius r is:
 //
 //       width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad )
 //
-//   Head and tail are at different radii, so the ribbon is a TRAPEZOID:
+//   Head and tail are at different radii, so chord width differs per row:
 //       widthHead = 2 · headR · sin(halfWidthDeg) · holdLaneWidthRatio
 //       widthTail = 2 · tailR · sin(halfWidthDeg) · holdLaneWidthRatio
 //
-//   holdLaneWidthRatio is now read from NoteSkinSet.holdLaneWidthRatio
-//   (migrated from the old Inspector field on this component).
+//   holdLaneWidthRatio is read from NoteSkinSet.holdLaneWidthRatio.
 //
 // ══════════════════════════════════════════════════════════════════════
 //  MESH LAYOUT — ARC-CONFORMING HOLD BODY
@@ -102,12 +101,14 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Runtime visual ribbon renderer for Hold note bodies (scroll/long-note style).
-    /// Draws trapezoid meshes in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
+    /// Runtime visual ribbon renderer for Hold note bodies.
+    /// Draws arc-conforming grid meshes in PlayfieldRoot-local space; promotes to world via localToWorldMatrix.
     ///
     /// <para>Width-side skinning reads from <see cref="NoteSkinSet"/>:
     /// fixed decorative borders, tiled center, and hold body texture.
-    /// Hold length tiling (<c>holdLengthTileRatePerUnit</c>) is deferred — V maps 0→1 for now.</para>
+    /// Length-direction (V) tiling uses hold-body-local UV mapping —
+    /// the texture is fixed to the hold body during approach (Phase A) and consumed
+    /// at the judgement line during Phase B (spec §5.7.1 "Body motion readability").</para>
     ///
     /// Attach to any GameObject in the Player scene; assign PlayerAppController and NoteSkinSet.
     /// </summary>
@@ -394,10 +395,10 @@ namespace RhythmicFlow.Player
             }
 
             // ── Skin settings read once per frame ────────────────────────────────────
-            // holdLaneWidthRatio:     migrated from the old HoldBodyRenderer Inspector field.
-            // holdFlipVertical:       controls V axis orientation along ribbon length.
+            // holdLaneWidthRatio:       ribbon angular width fraction (from NoteSkinSet).
+            // holdFlipVertical:         controls V axis orientation along ribbon length.
             // holdLengthTileRatePerUnit: how many times the texture repeats per local unit of
-            //                         hold length. Read once; applied per-note in the loop below.
+            //                           hold length. Read once; applied per-note in the loop below.
             float skinLaneWidthRatio = noteSkinSet.holdLaneWidthRatio;
             bool  flipVertical       = noteSkinSet.holdFlipVertical;
             float lengthTileRate     = Mathf.Max(0.01f, noteSkinSet.holdLengthTileRatePerUnit);
