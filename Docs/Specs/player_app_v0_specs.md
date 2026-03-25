@@ -568,7 +568,7 @@ The intended authoring workflow is: **import PNG → assign to NoteSkinSet → r
 
 ### **5.7.1 Hold body rendering — scroll / long-note style (v0)**
 
-A hold note is rendered as a **ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note.
+A hold note is rendered as a **head cap** (at `headR`) plus an **arc-conforming body ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note. The head is part of the intended visual design — not a temporary placeholder.
 
 **Approach formula (canonical, same as tap/flick):**
 
@@ -608,31 +608,57 @@ If `noteLeadTimeMs > noteLeadTimeMs_of_debug_renderer`, holds appear mid-approac
 
 The ribbon spans `[tailR → headR]` radially along `lane.CenterDeg`. As `chartTime` advances through the hold, the head is pinned and the tail catches up — the ribbon shrinks until it disappears.
 
-**Ribbon geometry (v0 — single-segment trapezoid):**
+**Body geometry (v0 — arc-conforming grid):**
 
-* Direction: current `lane.CenterDeg` each frame (follows animated lane — no bending in v0).
-* Width: the ribbon is a **trapezoid** — head and tail have different widths because they sit at different radii. Lane borders are radial lines at `centerDeg ± widthDeg/2`; the chord between them at radius `r` is:
-  ```
-  width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad ) · holdLaneWidthRatio
-  widthHead = width(headR)   (wider — farther from center)
-  widthTail = width(tailR)   (narrower — closer to center)
-  ```
-  `holdLaneWidthRatio` is a skin parameter (default 0.7; 1.0 = exact lane border width).
-* Vertex layout in PlayfieldRoot local space:
-  ```
-  tailLeft  = tailCenter − tangLocal × (widthTail / 2)
-  tailRight = tailCenter + tangLocal × (widthTail / 2)
-  headRight = headCenter + tangLocal × (widthHead / 2)
-  headLeft  = headCenter − tangLocal × (widthHead / 2)
-  ```
-* Drawn via `Graphics.DrawMesh` — vertices written in-place into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
+> ⚠️ **Conflict resolved:** A prior draft of this spec described a single-segment straight trapezoid using a `tangLocal` offset (`tailLeft = tailCenter − tangLocal × widthTail/2`, etc.). That was the Step 1 geometry (superseded). The current implementation is arc-conforming as described below. Any implementation or editor preview referencing the old `tangLocal` vertex layout must be updated.
 
-**Target ribbon skin direction (later step — not part of initial Tap/Catch/Flick skin implementation):**
+The hold body is an **arc-conforming grid mesh** that follows the lane's actual arc geometry, using the same vertex formula as `LaneSurfaceRenderer`:
+
+* **Angular span:** `lane.CenterDeg ± (halfWidthDeg × holdLaneWidthRatio)` — left and right edges are radial lines matching the lane borders scaled by `holdLaneWidthRatio`.
+  `holdLaneWidthRatio` is a skin parameter (default 0.9; 1.0 = exact lane border width).
+* **Grid topology:** `(holdArcSegments+1) columns × (holdRadialSegments+1) rows`, Inspector defaults 8 cols × 4 rows. Must be fixed for the session — pool mesh topology cannot change at runtime.
+* **Vertex formula** (same as `LaneSurfaceRenderer.FillLaneSectorVerts`):
+  ```
+  vertex(θ, r) = ( ctr.x + cos(θ)·r,  ctr.y + sin(θ)·r,  FrustumZAtRadius(r,…) + NoteLayerZLift )
+  ```
+  Columns sweep θ from `bodyLeftDeg` to `bodyRightDeg`; rows sweep `r` from `tailR` (row 0) to `headR` (top row).
+* **Chord width (UV mapping only):**
+  ```
+  chordWidth(r) = 2 · r · sin( holdHalfAngleDeg · Deg2Rad )
+  ```
+  Used to compute fixed-edge + tiled-center U coordinates. Not used for vertex placement.
+* Drawn via `Graphics.DrawMesh` — vertices written in-place each frame into a pooled `Mesh` (no per-note GameObject, no per-frame GC allocation).
+
+**Hold head cap (v0 — intended design, not a workaround):**
+
+The hold has a **head cap** — a curved note-head visual drawn at `headR` on every approach frame. This is part of the current intended design.
+
+* Uses `NoteCapGeometryBuilder.FillCapVerticesEdgeAware` — the same arc-sampled curved-cap geometry as Tap/Catch/Flick notes — so the hold head is visually consistent with other note types at the judgement line.
+* The head reaches `judgementR` and remains pinned there (by the `Clamp01` approach formula) through the hold and into the late miss window — identical to all other note heads. **No overshoot**: `Clamp01` naturally prevents the head from advancing past `judgementR`; no special branch is required.
+* The cap inherits the same phase tint (`holdColorApproaching` / `holdColorActive` / `holdColorReleased`) as the ribbon body.
+* `drawHoldHeadCap` (Inspector bool, default `true`) is a debug/testing toggle only. When `false`, the cap is completely suppressed. **Body motion readability must not depend on the cap being present** — see below.
+* **Implementation:** `_capPool` in `HoldBodyRenderer` (64 pre-allocated `NoteCapGeometryBuilder.BuildCapMesh("HoldHeadCap")` meshes, drawn before the degenerate ribbon check). Zero per-frame GC allocation.
+
+**Body motion readability (v0 — locked):**
+
+The hold body must visually read as **advancing toward the judgement line**, not as frozen or merely shrinking statically. This motion impression comes from body geometry and consumption behavior — not from an independently scrolling UV pattern.
+
+* **Body-local, head-anchored UV:** the `V` coordinate is always `0` (or `1` when `holdFlipVertical = true`) at the head/judgement end and increases toward the tail by `segmentLength × holdLengthTileRatePerUnit`. As the hold is consumed, tiles disappear from the tail end while the pattern at the head stays stable. This is the **only** motion mechanism.
+* **No independent pattern-flow parameter:** there is no `holdPatternFlowRate`, `holdScrollSpeed`, or UV-offset animation. The motion impression is produced entirely by body geometry and consumption shrinking.
+* This requirement must hold when `drawHoldHeadCap = false` — body readability must not rely on the head existing.
+
+**Hold endpoint model (v0 — locked):**
+
+* The v0 hold is **start-judged only**: `JudgementEngine` judges the start event; baked ticks are evaluated while active. There is no separate judged release endpoint in v0.
+* No visual release endpoint is required for v0.
+* **Future hold-end note type (deferred):** A future release-endpoint note type may be added in a later version. If added: endpoint judgement belongs to the endpoint note, not the hold body. The hold body remains the visual connector between start and end. The current body design is forward-compatible with this — no changes to hold body behavior or the chart schema are needed now. Do not design or schema-stub a release note type until it is explicitly scoped.
+
+**Target hold body skin direction (later step — not part of initial Tap/Catch/Flick skin implementation):**
 Hold body skins must follow the same philosophy as note head skins (§5.7.3). This migration is a separate later step; do not block Tap/Catch/Flick skin work on it:
 * **Decorative side borders** — fixed UV-mapped edge regions that preserve their art regardless of lane width changes. Must not stretch.
 * **Tiled center (width)** — the center region tiles between the borders as lane width changes. Full-surface stretch is not acceptable as a final result.
-* **Tiled length (radial)** — the ribbon texture tiles along the radial direction at a consistent rate. Stretch-based length mapping is not acceptable as a final result; it smears art on long holds.
-* The current v0 implementation uses flat color passes driven by `MaterialPropertyBlock._Color` per state. This is a transitional placeholder only — not the intended final hold rendering path.
+* **Tiled length (radial)** — the ribbon texture tiles along the radial direction at a consistent rate. Stretch-based length mapping is not acceptable as a final result; it smears art on long holds. The tiling is **body-local and head-anchored** (see "Body motion readability" above): `V` is fixed at the head/judgement end and tiles outward toward the tail. There is no independently animated UV offset in the length direction.
+* The current v0 implementation drives hold body texture via `MaterialPropertyBlock._MainTex` / `_Color` with head-anchored `V` tiling. Full fixed-edge + tiled-center skin migration is deferred to a later step.
 
 **Visibility and missed-hold lifetime (v0 locked):**
 
@@ -742,7 +768,7 @@ This approach is chosen because:
 | Step 1 | done | Single-segment trapezoid, flat `_Color` tinting only |
 | Step 2 | done | Segmented curved-cap geometry (NoteCapGeometryBuilder) |
 | Step 3 | **current** | CPU-driven per-frame UV with fixed-edge + tiled-center (this spec) |
-| Step 4 | future | Hold body skin migration to same fixed-edge + tiled-center philosophy |
+| Step 4 | **done (geometry)** / future (skin) | Hold body arc-conforming grid geometry done (§5.7.1 "Body geometry"). Hold body fixed-edge + tiled-center skin migration is a separate later step. |
 | Step 5 | future | Optional shader-side tiling optimization (same authoring data; no NoteSkinSet changes) |
 
 **Hold body skin direction:** Hold will follow the same fixed-edge + tiled-center philosophy, with an additional tiling requirement along the radial (length) direction. Hold migration is a **later step** and is explicitly not part of the Tap/Catch/Flick initial skin implementation.

@@ -122,7 +122,7 @@ The Playfield Preview must render note bodies using the same geometry rules as t
 * **Note head Z (frustum placement)** — use `NoteApproachMath.FrustumZAtRadius` with the same frustum parameters as the player arena surface. Notes must sit on the cone surface, not hover flat at Z=0.
 * **Approach radius** — use `NoteApproachMath.ApproachRadius` with the same `noteLeadTimeMs` (2000 ms) and `spawnRadiusFactor` (0) as the player renderers.
 * **Flick notes** — show a direction arrow overlay consistent with the flick arrow billboard spec (player spec §5.7.2). The arrow must point in the gesture direction (§player spec §7.3.1) and remain constant size (not scale with lane width).
-* **Hold bodies** — use the ribbon geometry rules from player spec §5.7.1 (approach formula, trapezoid shape, three-phase visibility, color/state mapping).
+* **Hold bodies** — use the arc-conforming grid geometry and head cap rules from player spec §5.7.1 (approach formula, arc-grid body, hold head cap, three-phase visibility, color/state mapping). Do not use the superseded `tangLocal` trapezoid approach.
 
 **Implementation approach:** The chart editor playfield preview can directly reference and instantiate `TapNoteRenderer`, `CatchNoteRenderer`, `FlickNoteRenderer`, `HoldBodyRenderer`, and `NoteSkinSet` from the Player assembly (or Shared equivalents when factored out). This eliminates code duplication and ensures automatic parity. This reuse remains valid regardless of whether the runtime skin implementation is currently CPU-driven UV assignment or later becomes shader-optimized — the `NoteSkinSet` authoring data contract does not change between those two implementations.
 
@@ -396,24 +396,32 @@ chart editor-only metadata allowed:
 * `chart_editor.tickPreset: "1/8"` etc. (runtime ignores)
 
 **Hold body visual (player + playtest):**
-The player renders hold bodies as a scrolling ribbon that approaches the judgement line (see player spec §5.7.1).
+The player renders holds as a **head cap** (at `headR`) plus an **arc-conforming body ribbon** that approaches the judgement line (see player spec §5.7.1). The head is part of the intended design — not a placeholder.
+
 The ribbon spans from the tail (`endTimeMs` approach position) to the head (`startTimeMs` approach position).
-Once `chartTime ≥ startTimeMs`, the head is pinned at the judgement ring and the ribbon shrinks as the tail catches up.
+Once `chartTime ≥ startTimeMs`, the head is pinned at the judgement ring and the ribbon shrinks as the tail catches up. The head **does not overshoot** — it is pinned naturally by `Clamp01` in the approach formula.
+
 In v0 the ribbon uses the **current lane geometry** (center angle, width) each frame — no bending.
 
 If the hold is **missed** (player never bound it) or **released early**, the ribbon continues to shrink geometrically until `endTimeMs` using a dim non-judging color (`holdColorReleased`). Judging stops immediately; the visual persists so the player can see the missed hold's extent. After `endTimeMs` the ribbon disappears.
 
-The ribbon is a **trapezoid** (v0 single-segment): lane borders are radial lines at `centerDeg ± widthDeg/2`, so the chord width at radius `r` is `2 · r · sin(widthDeg/2 · Deg2Rad)`. Head and tail sit at different radii and therefore have different widths. The `holdLaneWidthRatio` (skin parameter, default 0.7) scales both widths uniformly (1.0 = exact lane border width).
+> ⚠️ **Conflict resolved:** A prior draft described the ribbon body as "a trapezoid (v0 single-segment)" with `tangLocal` offset vertices. That was the Step 1 geometry and is superseded. The current body is an **arc-conforming grid** as described below.
+
+The body is an **arc-conforming grid** (see player spec §5.7.1 "Body geometry"): vertices are placed at `(ctr + cos(θ)·r, ctr + sin(θ)·r, FrustumZAtRadius(r) + NoteLayerZLift)` across a `(holdArcSegments+1) × (holdRadialSegments+1)` grid. This makes the body follow the lane's actual arc curvature. The chord width formula (`2 · r · sin(holdHalfAngleDeg · Deg2Rad)`) is used for UV mapping only; the `holdLaneWidthRatio` skin parameter scales the angular half-span (default 0.9). The chart editor playtest preview must use the same arc-conforming formula — not the old `tangLocal` trapezoid.
+
+**Body motion readability:** The body UV is head-anchored — the pattern at the judgement end stays stable while tiles disappear from the tail as it is consumed. There is no independently scrolling UV pattern. The motion impression comes from body geometry and consumption behavior. This must hold with or without the hold head cap displayed.
+
+**Hold endpoint model (v0):** The v0 hold is start-judged only (start event + baked ticks). There is no required release-endpoint judgement in v0. A future hold-end note type is deferred — do not author charts expecting endpoint judgement, and do not add chart schema fields for it now.
 
 Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear at the inner band edge (`innerLocal`) and travel outward.
 
 **Hold skin philosophy (later step — not part of initial Tap/Catch/Flick skin implementation):**
-Hold ribbon skins must follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3). Hold skin migration is explicitly a later step; the initial skin work covers Tap/Catch/Flick only:
+Hold body skins must follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3). Hold skin migration is explicitly a later step; the initial skin work covers Tap/Catch/Flick only:
 * Decorative side borders must preserve their art at fixed UV-mapped widths regardless of lane width changes. Stretch is not acceptable as a final result.
 * The center region must tile between the borders — not simply stretch. Full-surface stretch is a transitional placeholder only.
-* The ribbon must tile along the radial (length) direction rather than stretching, keeping art stable across different hold durations.
-* The current flat-color `HoldBodyRenderer` implementation is a transitional placeholder and does not meet the above requirements. It must not be treated as the intended final hold skin path.
-The chart editor playtest should eventually render hold bodies via `HoldBodyRenderer` (or a shared equivalent) with full `NoteSkinSet`-driven skin fidelity, once hold migration is implemented.
+* The ribbon must tile along the radial (length) direction rather than stretching, keeping art stable across different hold durations. The tiling is body-local and head-anchored — not a separate UV scroll animation (see player spec §5.7.1 "Body motion readability").
+* The current `HoldBodyRenderer` drives texture via `MaterialPropertyBlock._MainTex` / `_Color` with head-anchored V tiling. Full fixed-edge + tiled-center skin migration is a deferred later step.
+The chart editor playtest should eventually render hold bodies via `HoldBodyRenderer` (or a shared equivalent) with full `NoteSkinSet`-driven skin fidelity, once hold skin migration is implemented.
 
 ---
 
