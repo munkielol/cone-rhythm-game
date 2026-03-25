@@ -590,54 +590,65 @@ namespace RhythmicFlow.Player
                 // Degenerate ribbon guard: cap was drawn above; skip ribbon only.
                 if (headR - tailR < 0.0001f) { continue; }
 
-                // ── Length-direction V tiling (judgement-anchored) ────────────────────────
+                // ── Length-direction V tiling (hold-local, time-advancing) ───────────────
                 //
-                // V is tiled along the hold length with V=0 (or 1 when flipped) anchored
-                // to judgementR — the fixed judgement ring — not to headR.
+                // V is computed from the hold's own TIME coordinate, not from absolute
+                // world-space radius.  This makes the texture continuously advance toward
+                // the judgement line as the hold is consumed, creating visible motion.
                 //
-                // WHY judgementR, not headR:
-                //   During Phase A (approach), headR moves outward toward judgementR.
-                //   If V were anchored to headR (V=0 at headR), then at a fixed world
-                //   position r_fixed the computed V = rate*(headR - r_fixed) would change
-                //   as headR advances, producing a texture shift that looks like UV
-                //   scrolling — forbidden by spec §5.7.1.
-                //   Anchoring to judgementR (V = (judgementR - r) × rate) keeps V at every
-                //   world position CONSTANT across all phases.  The only motion comes from
-                //   body geometry (the body grows in Phase A and shrinks in Phase B as
-                //   tailR advances outward to catch up with the pinned headR).
+                // SEPARATION OF CONCERNS:
+                //   Geometry clipping: the visible body spans [tailR, headR] in world space
+                //     — headR is clamped to judgementR in Phase B (no overshoot).
+                //   UV mapping: V at any radius r is derived from WHEN that point will
+                //     reach the judgement ring, offset by how much hold time has already
+                //     elapsed.  This is hold-local time, not world position.
                 //
-                // Phase A (before startTimeMs):
-                //   headR < judgementR, both endpoints moving outward.
-                //   Body grows; texture at each world position is frozen.
-                //   vHead is non-zero (headR has not yet reached judgementR).
+                // FORMULA:
+                //   holdBandR    = judgementR − spawnR            (arena band, local units)
+                //   holdElapsedR = (chartTimeMs − startTimeMs)    (elapsed ms)
+                //                  × holdBandR / noteLeadTimeMs   (converted to local units)
+                //                  clamped to ≥ 0 (Phase A guard)
                 //
-                // Phase B (startTimeMs ≤ chartTime ≤ endTimeMs):
-                //   headR = judgementR (pinned by Clamp01 in ApproachRadius).
-                //   tailR advances outward (toward judgementR) — body shrinks from tail.
-                //   vHead = 0 (head is exactly at judgementR).
-                //   vTail = (judgementR - tailR) × rate = segmentLength × rate.
-                //   Texture at each world position is frozen; tiles disappear from the
-                //   tail end as tailR advances.
+                //   V(r) = (holdElapsedR + (judgementR − r)) × lengthTileRate
                 //
-                // In Phase B this formula is IDENTICAL to the old head-relative formula.
-                // Only Phase A changes: UV shift is eliminated.
+                //   holdElapsedR is the radial distance the front of the hold has already
+                //   "consumed" past judgementR.  Adding (judgementR − r) gives the total
+                //   hold-local distance from this vertex back to the hold's current front.
                 //
-                // holdFlipVertical = false:  V = (judgementR - r) × rate
-                //   V=0 at judgementR, V increases inward toward spawn.
-                // holdFlipVertical = true:   V = 1 - (judgementR - r) × rate
-                //   V=1 at judgementR, V decreases inward toward spawn.
+                // PHASE A (chartTime < startTimeMs):
+                //   holdElapsedR = 0  (clamped).
+                //   V(r) = (judgementR − r) × rate — identical to the previous formula.
+                //   Phase A visual is unchanged; body geometry grows naturally.
                 //
-                // headR ≤ judgementR always (Clamp01 prevents overshoot), so
-                // headDistFromJudgement ≥ 0 and tailDistFromJudgement ≥ segmentLength > 0.
-                float headDistFromJudgement = judgementR - headR;  // 0 when pinned, > 0 during approach
-                float tailDistFromJudgement = judgementR - tailR;  // always > 0 while body visible
+                // PHASE B (startTimeMs ≤ chartTime ≤ endTimeMs):
+                //   holdElapsedR grows as chartTimeMs advances past startTimeMs.
+                //   V(r) at every world position increases over time →
+                //   different UV values arrive at the pinned head each frame ✓.
+                //   Body shrinks geometrically (tailR advances) AND the texture flows.
+                //
+                // PHASE A→B TRANSITION:
+                //   At the exact moment chartTimeMs = startTimeMs, holdElapsedR = 0 and
+                //   headR = judgementR, so V_head = 0 — a smooth, gap-free join ✓.
+                //
+                // WHY NO FAKE SCROLL PARAMETER:
+                //   The effective flow rate is (holdBandR / noteLeadTimeMs) × lengthTileRate
+                //   — derived entirely from approach geometry and the skin tile rate.
+                //   No independent authored scroll-speed field is introduced.
+                //
+                // HEAD CAP ON OR OFF:
+                //   V computation reads from headR/tailR only — it is independent of
+                //   whether the cap mesh is drawn.  The body reads identically either way.
+                float holdBandR    = judgementR - spawnR;  // arena band size (local units)
+                float holdElapsedR = (noteLeadTimeMs > 0 && holdBandR > 0f)
+                    ? Mathf.Max(0f, (float)(chartTimeMs - note.StartTimeMs))
+                      * holdBandR / noteLeadTimeMs
+                    : 0f;
 
-                float vHead = flipVertical
-                    ? (1f - headDistFromJudgement * lengthTileRate)
-                    :        headDistFromJudgement * lengthTileRate;
-                float vTail = flipVertical
-                    ? (1f - tailDistFromJudgement * lengthTileRate)
-                    :        tailDistFromJudgement * lengthTileRate;
+                float vHeadRaw = (holdElapsedR + (judgementR - headR)) * lengthTileRate;
+                float vTailRaw = (holdElapsedR + (judgementR - tailR)) * lengthTileRate;
+
+                float vHead = flipVertical ? (1f - vHeadRaw) : vHeadRaw;
+                float vTail = flipVertical ? (1f - vTailRaw) : vTailRaw;
 
                 // Set MaterialPropertyBlock for ribbon: hold body texture + phase tint.
                 // The MPB may have been overwritten by the cap draw above, so re-set explicitly.
