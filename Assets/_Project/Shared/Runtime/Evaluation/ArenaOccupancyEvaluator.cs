@@ -140,8 +140,22 @@ namespace RhythmicFlow.Shared
         // Raw lane intervals collected for the current arena.
         // One entry per enabled lane in the arena, clamped to the arena span.
         // Sorted by left edge before merging.
+        //
+        // _laneEvalIndex[i] stores the ChartRuntimeEvaluator lane array index that
+        // produced interval i.  It is sorted in parallel with _laneLeft/_laneRight so
+        // that callers can perform identity-stable lookups via TryGetLaneInterval().
+        //
+        // Why track this separately from the sort key?
+        //   Sorting is required for the merge step (MergeIntervals needs sorted input).
+        //   But sorted spatial order is NOT a stable identity: when two lanes cross,
+        //   their left-edge order swaps, and any code that indexed by sort position
+        //   would silently reassign which authored-lane body each slot represents.
+        //   Storing the evaluator index in parallel lets consumers (LaneSurfaceRenderer)
+        //   ask "give me the interval for the lane at evaluator index N" rather than
+        //   "give me the Nth spatially sorted interval".
         private readonly float[] _laneLeft;
         private readonly float[] _laneRight;
+        private readonly int[]   _laneEvalIndex;  // evaluator lane index per sorted interval
         private          int     _laneCount;
 
         // Merged occupied intervals — sorted, non-overlapping union of all lane intervals.
@@ -214,8 +228,9 @@ namespace RhythmicFlow.Shared
         {
             int cap = Mathf.Max(1, maxLanesPerArena);
 
-            _laneLeft  = new float[cap];
-            _laneRight = new float[cap];
+            _laneLeft      = new float[cap];
+            _laneRight     = new float[cap];
+            _laneEvalIndex = new int[cap];
 
             _occupiedLeft  = new float[cap];
             _occupiedRight = new float[cap];
@@ -293,8 +308,9 @@ namespace RhythmicFlow.Shared
                 // (happens when a lane is entirely outside the arena's angular span).
                 if (laneRight <= laneLeft) { continue; }
 
-                _laneLeft[_laneCount]  = laneLeft;
-                _laneRight[_laneCount] = laneRight;
+                _laneLeft[_laneCount]      = laneLeft;
+                _laneRight[_laneCount]     = laneRight;
+                _laneEvalIndex[_laneCount] = l;  // record which evaluator lane index this came from
                 _laneCount++;
             }
 
@@ -303,7 +319,7 @@ namespace RhythmicFlow.Shared
             // MergeIntervals requires the input to be sorted by left edge.
             // Insertion sort: O(N²) worst case, O(N) on already-sorted input (the
             // common case when lanes are authored in angular order).  No allocation.
-            SortByLeft(_laneLeft, _laneRight, _laneCount);
+            SortByLeft(_laneLeft, _laneRight, _laneEvalIndex, _laneCount);
 
             // ── Step 3: Merge overlapping / adjacent intervals into occupied union ─
             //
@@ -336,9 +352,66 @@ namespace RhythmicFlow.Shared
         /// The interval is clamped to the arena's angular span and is sorted by
         /// <see cref="AngularInterval.StartDeg"/>, but intervals may still overlap
         /// (use <see cref="GetOccupiedInterval"/> for the merged set).
+        ///
+        /// <para>Note: do not assume that spatial index i corresponds to authored lane i.
+        /// When two lanes cross, their sorted positions swap without changing which lane
+        /// body each authored identity represents.  Use <see cref="TryGetLaneInterval"/>
+        /// for identity-stable access instead.</para>
         /// </summary>
         public AngularInterval GetLaneInterval(int i)
             => new AngularInterval(_laneLeft[i], _laneRight[i]);
+
+        /// <summary>
+        /// Returns the <see cref="ChartRuntimeEvaluator"/> lane array index that produced
+        /// the i-th sorted lane interval (0 ≤ i &lt; <see cref="LaneIntervalCount"/>).
+        ///
+        /// <para>Sorted spatial order is valid for fill-interval math (merge requires
+        /// sorted input) but is not a stable identity.  This accessor gives callers the
+        /// original evaluator index so they can round-trip to authored-lane properties
+        /// (opacity, LaneId, etc.) via <see cref="ChartRuntimeEvaluator.GetLane"/>.</para>
+        /// </summary>
+        public int GetLaneEvalIndex(int i) => _laneEvalIndex[i];
+
+        /// <summary>
+        /// Looks up the visible interval for the lane at evaluator array index
+        /// <paramref name="evalIndex"/> from the last <see cref="Compute"/> call.
+        ///
+        /// <para>Returns <c>true</c> and sets <paramref name="interval"/> when the lane
+        /// produced a non-degenerate clamped interval in this arena.  Returns <c>false</c>
+        /// when the lane was absent from the results — it was not enabled, does not belong
+        /// to this arena, or its clamped interval collapsed to zero width (entirely outside
+        /// the arena's angular span).</para>
+        ///
+        /// <para><strong>Why not index by spatial sort position?</strong>  Sorted spatial
+        /// order is necessary for the merge/complement math (fill-interval computation
+        /// requires sorted, non-overlapping input).  However it is not a stable per-lane
+        /// identity: when two lanes cross and their angular positions swap, the sorted
+        /// index assignment silently changes which authored lane body each slot represents.
+        /// This method bypasses spatial ordering and provides a stable, identity-keyed
+        /// lookup so each authored lane always renders its own interval regardless of
+        /// whether its neighbours have moved past it.</para>
+        /// </summary>
+        /// <param name="evalIndex">
+        /// The lane array index from <see cref="ChartRuntimeEvaluator"/> — i.e., the value
+        /// of <c>i</c> passed to <c>evaluator.GetLane(i)</c>.
+        /// </param>
+        /// <param name="interval">
+        /// Set to the clamped lane interval on success; <c>default</c> on failure.
+        /// </param>
+        public bool TryGetLaneInterval(int evalIndex, out AngularInterval interval)
+        {
+            // Linear scan over _laneCount (2–8 in practice) — O(N), zero allocation.
+            for (int i = 0; i < _laneCount; i++)
+            {
+                if (_laneEvalIndex[i] == evalIndex)
+                {
+                    interval = new AngularInterval(_laneLeft[i], _laneRight[i]);
+                    return true;
+                }
+            }
+            interval = default;
+            return false;
+        }
 
         /// <summary>
         /// Returns the i-th merged occupied interval (0 ≤ i &lt; <see cref="OccupiedIntervalCount"/>).
@@ -361,8 +434,12 @@ namespace RhythmicFlow.Shared
         // Core static math helpers (private)
         // -------------------------------------------------------------------
 
-        // Sorts two parallel float arrays (leftArr, rightArr, length = count) in-place
-        // by ascending leftArr value, using insertion sort.
+        // Sorts three parallel arrays (leftArr, rightArr, evalIndexArr, length = count)
+        // in-place by ascending leftArr value, using insertion sort.
+        //
+        // evalIndexArr is sorted in tandem so that after sorting, evalIndexArr[i] still
+        // identifies which ChartRuntimeEvaluator lane index produced interval i.
+        // This allows identity-stable lookup via TryGetLaneInterval() even after reordering.
         //
         // Chosen because:
         //   • In-place, zero allocation.
@@ -370,23 +447,26 @@ namespace RhythmicFlow.Shared
         //     lanes are authored in angular order around the arena).
         //   • Stable — equal left edges preserve relative order.
         //   • N is tiny in practice (1–8 lanes per arena).
-        private static void SortByLeft(float[] leftArr, float[] rightArr, int count)
+        private static void SortByLeft(float[] leftArr, float[] rightArr, int[] evalIndexArr, int count)
         {
             for (int i = 1; i < count; i++)
             {
-                float keyLeft  = leftArr[i];
-                float keyRight = rightArr[i];
-                int   j        = i - 1;
+                float keyLeft      = leftArr[i];
+                float keyRight     = rightArr[i];
+                int   keyEvalIndex = evalIndexArr[i];
+                int   j            = i - 1;
 
                 while (j >= 0 && leftArr[j] > keyLeft)
                 {
-                    leftArr[j + 1]  = leftArr[j];
-                    rightArr[j + 1] = rightArr[j];
+                    leftArr[j + 1]      = leftArr[j];
+                    rightArr[j + 1]     = rightArr[j];
+                    evalIndexArr[j + 1] = evalIndexArr[j];
                     j--;
                 }
 
-                leftArr[j + 1]  = keyLeft;
-                rightArr[j + 1] = keyRight;
+                leftArr[j + 1]      = keyLeft;
+                rightArr[j + 1]     = keyRight;
+                evalIndexArr[j + 1] = keyEvalIndex;
             }
         }
 

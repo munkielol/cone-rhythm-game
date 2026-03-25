@@ -20,27 +20,33 @@
 //
 //   ArenaOccupancyEvaluator (Shared) is the single source of truth for the current
 //   visible lane intervals (spec §5.5.3).  LaneSurfaceRenderer reads the raw
-//   (pre-merge) lane intervals — GetLaneInterval(i) — rather than the merged
-//   occupied union, so each authored lane still draws its own surface independently.
-//   Overlapping lanes therefore both render; ArenaSurfaceRenderer subtracts their
-//   union when computing fill intervals, keeping the two renderers consistent.
+//   (pre-merge) lane intervals via TryGetLaneInterval(evalIndex) — one call per
+//   authored lane — rather than iterating sorted spatial indices.  Each authored
+//   lane therefore always renders its own surface independently, regardless of how
+//   its position relates to neighbouring lanes.
 //
-//   Using ArenaOccupancyEvaluator.GetLaneInterval() guarantees that the clamped
-//   angular interval drawn here is byte-for-byte identical to the interval
-//   ArenaSurfaceRenderer uses when deciding where NOT to draw the arena fill.
-//   This eliminates any possible seam between lane surface edges and arena fill edges.
+//   ArenaSurfaceRenderer subtracts the merged occupied union when computing fill
+//   intervals; both renderers derive their intervals from the same Compute() call,
+//   so lane surface edges and arena fill edges are guaranteed to align.
 //
 // ── Loop structure ────────────────────────────────────────────────────────────
 //
-//   Outer loop: arenas — provides arena geometry context.
-//   Inner loop: lane intervals from ArenaOccupancyEvaluator — one mesh per interval.
+//   Outer loop: arenas — sets up arena geometry once, then calls Compute() once.
+//   Inner loop: evaluator lanes filtered to this arena — one mesh per visible interval.
 //
-//   This is arena-first rather than the previous lane-first approach.  The set of
-//   drawn meshes is identical: one mesh per currently enabled, non-degenerate lane
-//   interval per arena.  Draw order is now by angular position within each arena
-//   (ArenaOccupancyEvaluator sorts intervals by left edge) rather than by evaluator
-//   lane index.  Since all lanes share the same material and tint, this is not
-//   visually observable.
+//   Why iterate by authored lane identity rather than by sorted spatial index?
+//
+//   ArenaOccupancyEvaluator sorts lane intervals by left edge because the merge step
+//   (for the occupied union) requires sorted input.  Spatial sort order is therefore
+//   valid and necessary for fill-interval math.  However, sorted spatial order is NOT
+//   a stable per-lane identity: when two lanes cross (their left-edge order swaps),
+//   the sorted index assignment changes which authored lane body each slot represents.
+//   Indexing by sort position would silently reassign mesh slots between authors and
+//   would break per-lane features (opacity, tint) in future.
+//
+//   TryGetLaneInterval(evalIndex) bypasses spatial order and performs an identity-keyed
+//   lookup, so each authored lane always draws from its own clamped interval regardless
+//   of whether its neighbours have moved past it.
 //
 // ── Lane visual bounding ──────────────────────────────────────────────────────
 //
@@ -323,29 +329,46 @@ namespace RhythmicFlow.Player
 
                 // ── Compute visible lane intervals via shared occupancy evaluator ────────
                 //
-                // ArenaOccupancyEvaluator.Compute() collects all currently enabled lanes
-                // for this arena, clamps each to the arena's angular span, and stores the
-                // result in its raw lane interval array (sorted by left edge).
+                // Compute() collects all currently enabled lanes for this arena, clamps
+                // each to the arena's angular span, and builds the sorted lane interval
+                // array, merged occupied union, and fill intervals.
                 //
-                // These are exactly the intervals ArenaSurfaceRenderer uses when computing
-                // fill gaps — so lane surface edges and fill gaps are guaranteed to align.
+                // The same Compute() call is also used by ArenaSurfaceRenderer for fill
+                // subtraction — both renderers share identical interval boundaries.
                 //
                 // Disabled arenas and degenerate sweeps return false; both are already
                 // guarded above, so Compute() always returns true at this point.
                 if (!_occupancy.Compute(arena, evaluator)) { continue; }
 
-                // ── Inner loop: lane intervals ─────────────────────────────────────────
+                // ── Inner loop: authored lanes (identity-stable) ───────────────────────
                 //
-                // ArenaOccupancyEvaluator.GetLaneInterval(i) returns the i-th raw (pre-merge)
-                // lane interval — one per enabled lane that survived clamping.  Using raw
-                // intervals (not the merged occupied union) means each authored lane draws
-                // its own sector, so overlapping lanes both render independently.
-                for (int i = 0; i < _occupancy.LaneIntervalCount; i++)
+                // We iterate by evaluator lane index — the authored identity — not by
+                // sorted spatial position.  For each lane in this arena we ask the
+                // occupancy evaluator for that specific lane's clamped visible interval
+                // via TryGetLaneInterval(laneIdx).
+                //
+                // This guarantees that each authored lane always renders its own interval:
+                // if two lanes cross (left/right order swaps), the sort index changes but
+                // the authored identity doesn't, so neither lane surface disappears.
+                //
+                // TryGetLaneInterval returns false only if the lane was actually clipped
+                // to empty (its clamped extent collapsed to zero — the lane is entirely
+                // outside the arena's angular span).  In that case we correctly skip it.
+                for (int laneIdx = 0; laneIdx < evaluator.LaneCount; laneIdx++)
                 {
-                    // Stop this arena's lanes if the pool is exhausted mid-arena.
+                    // Stop if pool is exhausted.
                     if (_poolUsed >= MaxLanePool) { break; }
 
-                    AngularInterval laneInterval = _occupancy.GetLaneInterval(i);
+                    EvaluatedLane lane = evaluator.GetLane(laneIdx);
+
+                    // Skip lanes that don't belong to this arena or are not currently enabled.
+                    if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
+                    if (lane.ArenaId != arena.ArenaId) { continue; }
+
+                    // Look up this lane's clamped visible interval by its authored identity.
+                    // Returns false when the lane's interval collapsed to zero after clamping
+                    // (i.e., the lane is entirely outside the arena's angular span).
+                    if (!_occupancy.TryGetLaneInterval(laneIdx, out AngularInterval laneInterval)) { continue; }
 
                     // ── Fill mesh vertices and UVs ─────────────────────────────────────
                     // laneInterval.StartDeg and EndDeg are already clamped to the arena span
