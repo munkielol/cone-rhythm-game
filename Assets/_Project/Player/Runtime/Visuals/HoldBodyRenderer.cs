@@ -185,8 +185,8 @@ namespace RhythmicFlow.Player
                  "Use this to compare the ribbon centerline against the debug hold rail.")]
         [SerializeField] private bool debugDrawEndpoints = false;
 
-        [Tooltip("Draws the ribbon mesh trapezoid outline (outer 4 corners + centerline) in world space. " +
-                 "Verifies that the mesh exactly covers the expected trapezoid area.")]
+        [Tooltip("Draws the arc body outline (outer 4 corners + centerline) in world space. " +
+                 "Verifies that the mesh covers the expected hold body area.")]
         [SerializeField] private bool debugDrawMeshOutline = true;
 
         [Tooltip("Logs approach values once per second for every currently visible hold.\n" +
@@ -246,6 +246,10 @@ namespace RhythmicFlow.Player
         // -------------------------------------------------------------------
 
         private const int MaxHoldPool = 64;   // simultaneous hold ribbons
+
+        // Note-layer Z lift: places hold ribbons above the lane surface.
+        // Must be greater than LaneSurfaceRenderer.liftLocal (0.005f) so ribbons are not occluded.
+        private const float NoteLayerZLift = 0.010f;
 
         // Arc mesh geometry counts — computed once in Awake, fixed for the session.
         // Must not be changed at runtime (pool mesh topology cannot change after allocation).
@@ -476,7 +480,7 @@ namespace RhythmicFlow.Player
                 if (!laneToArena.TryGetValue(note.LaneId, out string arenaId))      { continue; }
                 if (!arenaGeos.TryGetValue(arenaId,       out ArenaGeometry arena)) { continue; }
 
-                // ── Step 1: Compute band radii (PlayfieldRoot local units) ───────────────
+                // ── Band radii (PlayfieldLocal units) ────────────────────────────────────
 
                 float outerLocal = pfTf.NormRadiusToLocal(arena.OuterRadiusNorm);
                 float bandLocal  = pfTf.NormRadiusToLocal(arena.BandThicknessNorm);
@@ -490,7 +494,7 @@ namespace RhythmicFlow.Player
                 // spawnRadiusFactor=0 (v0 default) → spawn at inner arc.
                 float spawnR = innerLocal + spawnRadiusFactor * (judgementR - innerLocal);
 
-                // ── Step 2: Map start/end times to local radii (with visibility check) ──
+                // ── Head and tail radii (with visibility check) ──────────────────────────
 
                 ComputeHoldEndpointsR(
                     note.StartTimeMs, note.EndTimeMs,
@@ -644,13 +648,12 @@ namespace RhythmicFlow.Player
                     _propBlock.SetTexture("_MainTex", holdTex);
                 _propBlock.SetColor("_Color", ribbonColor);
 
-                // ── Steps 4-7: Arc-conforming hold body vertices ───────────────────────────
+                // ── Arc-conforming body vertices ──────────────────────────────────────────
                 //
                 // Uses the same arc-sector formula as LaneSurfaceRenderer:
                 //   vertex = (ctr.x + cos(θ)·r, ctr.y + sin(θ)·r, FrustumZAtRadius(r) + lift)
                 // Each column sweeps angularly across the lane; each row spans tailR→headR radially.
-                // This makes the hold body conform to the lane arc instead of appearing as a
-                // flat straight trapezoid that cuts across the lane curvature.
+                // The body follows the lane arc instead of cutting across it as a flat shape.
 
                 float holdHalfAngleDeg = halfWidthDeg * skinLaneWidthRatio;
                 float bodyLeftDeg  = AngleUtil.Normalize360(lane.CenterDeg) - holdHalfAngleDeg;
@@ -667,7 +670,7 @@ namespace RhythmicFlow.Player
                 arcMesh.uv       = _uvScratch;
                 arcMesh.RecalculateBounds(); // required for correct frustum culling
 
-                // ── Step 8: Debug visualizations ─────────────────────────────────────────
+                // ── Debug visualizations ──────────────────────────────────────────────────
                 //
                 // Arc vertex layout (row-major):
                 //   tail-left  = index 0
@@ -723,12 +726,10 @@ namespace RhythmicFlow.Player
                 // Reference arcs that let you visually verify spawnR == innerLocal when factor=0.
                 if (debugDrawSpawnArcs)
                 {
-                    float halfWidthDegs = lane.WidthDeg * 0.5f;
-
-                    DrawDebugArc(pfRoot, ctr, innerLocal, lane.CenterDeg, halfWidthDegs,
+                    DrawDebugArc(pfRoot, ctr, innerLocal, lane.CenterDeg, halfWidthDeg,
                         ComputeEndpointLocalZ(innerLocal, innerLocal, outerLocal), Color.magenta);
 
-                    DrawDebugArc(pfRoot, ctr, spawnR, lane.CenterDeg, halfWidthDegs,
+                    DrawDebugArc(pfRoot, ctr, spawnR, lane.CenterDeg, halfWidthDeg,
                         ComputeEndpointLocalZ(spawnR, innerLocal, outerLocal), Color.green);
 
                     DrawDebugRadialTick(pfRoot, ctr, headR, lane.CenterDeg,
@@ -749,14 +750,14 @@ namespace RhythmicFlow.Player
         /// Consumption: headR pins to judgementR once chartTime ≥ startTimeMs (Clamp01 natural behaviour).
         /// visible = false when note is not on screen or tail has cleared the miss window.
         /// </summary>
-        private void ComputeHoldEndpointsR(
+        private static void ComputeHoldEndpointsR(
             int    startTimeMs,
             int    endTimeMs,
             double chartTimeMs,
             double greatWindowMs,
             float  spawnR,
             float  judgementR,
-            int    noteLeadTimeMs,  // shared approach setting from PlayerAppController
+            int    noteLeadTimeMs,
             out float headR,
             out float tailR,
             out bool  visible)
@@ -776,35 +777,22 @@ namespace RhythmicFlow.Player
                 headR = judgementR; tailR = judgementR; visible = false; return;
             }
 
-            // headApproachParam: when headToHit ≤ 0, Clamp01 gives alpha=1 → headR = judgementR (pinned).
-            headR   = ComputeApproachR((float)headToHit, spawnR, judgementR, noteLeadTimeMs);
-            tailR   = ComputeApproachR((float)tailToHit, spawnR, judgementR, noteLeadTimeMs);
+            // When headToHit ≤ 0, Clamp01 gives alpha=1 → headR = judgementR (naturally pinned).
+            headR   = NoteApproachMath.ApproachRadius((float)headToHit, noteLeadTimeMs, spawnR, judgementR);
+            tailR   = NoteApproachMath.ApproachRadius((float)tailToHit, noteLeadTimeMs, spawnR, judgementR);
             visible = true;
         }
-
-        /// <summary>
-        /// Maps time-to-event to a local radius (spec §6.1).
-        /// Delegates to <see cref="NoteApproachMath.ApproachRadius"/> — single source of truth.
-        /// </summary>
-        private static float ComputeApproachR(float timeToHitMs, float spawnR, float judgementR, int noteLeadTimeMs)
-            => NoteApproachMath.ApproachRadius(timeToHitMs, noteLeadTimeMs, spawnR, judgementR);
 
         // -------------------------------------------------------------------
         // Frustum Z helper — matches PlayerDebugRenderer.VisualOnlyLocalZ
         // -------------------------------------------------------------------
 
         /// <summary>
-        /// Computes the PlayfieldRoot local Z for a ribbon endpoint at radius <paramref name="r"/>.
+        /// Computes the PlayfieldRoot local Z for a point at radius <paramref name="r"/> on the
+        /// frustum surface, plus <see cref="NoteLayerZLift"/> to place the hold above lane surfaces.
         /// Delegates to <see cref="NoteApproachMath.FrustumZAtRadius"/> — single source of truth.
-        ///
-        /// When <see cref="frustumProfile"/> is assigned its values are used automatically,
-        /// keeping the ribbon in sync with all other production renderers.
-        /// When the frustum profile is null or disabled, returns <c>surfaceOffsetLocal</c>.
+        /// When <see cref="frustumProfile"/> is null or disabled, returns <c>surfaceOffsetLocal</c>.
         /// </summary>
-        // Note-layer Z lift: places hold ribbons above the lane surface (liftLocal = 0.005f).
-        // Must be greater than LaneSurfaceRenderer.liftLocal so ribbons are not occluded.
-        private const float NoteLayerZLift = 0.010f;
-
         private float ComputeEndpointLocalZ(float r, float innerLocal, float outerLocal)
         {
             if (frustumProfile == null || !frustumProfile.UseFrustumProfile) { return surfaceOffsetLocal; }
