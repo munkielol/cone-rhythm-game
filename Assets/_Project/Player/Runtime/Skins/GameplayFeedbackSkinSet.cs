@@ -5,7 +5,7 @@
 //
 //   GameplayFeedbackSkinSet controls feedback APPEARANCE only:
 //     – lane-touch highlight visuals (while a lane is actively touched)
-//     – judgement feedback visuals (Perfect / Great / Miss result display)
+//     – judgement feedback visuals (Perfect+ / Perfect / Great / Miss result display)
 //
 //   It does NOT control:
 //     – note, hold, or arrow body visuals      (see NoteSkinSet)
@@ -20,13 +20,24 @@
 //   LaneTouchFeedback
 //     A single config block for the lane-touch highlight: the subtle visual
 //     that activates while a player's finger touches an active lane.
-//     Rendered by LaneTouchFeedbackRenderer (planned — §5.11.1).
+//     Rendered by LaneTouchFeedbackRenderer (§5.11.1).
 //
-//   JudgementFeedbackEntry  (struct, reused for Perfect / Great / Miss)
-//     Per-judgement config block.  All three entries share the same field layout.
+//   JudgementStackPolicy  (enum)
+//     Controls how multiple overlapping judgement effects interact:
+//       Stack   — effects accumulate; several can be alive for the same lane.
+//       Replace — a new effect for a lane immediately deactivates any prior effect.
+//
+//   JudgementFeedbackEntry  (struct, reused for Perfect+ / Perfect / Great / Miss)
+//     Per-judgement config block.  All four entries share the same field layout.
 //     Miss is intentionally disabled by default — a disabled Miss entry means
 //     "consume the note with no visual effect", which is a valid no-op design.
-//     Rendered by JudgementFeedbackRenderer (planned — §5.11.2).
+//     Rendered by JudgementFeedbackRenderer (§5.11.2).
+//
+//   GameplayFeedbackSkinSet judgement block:
+//     – useSeparatePerfectPlusVisual: when true, Perfect+ hits use the perfectPlus
+//       entry instead of the perfect entry.  When false, Perfect+ shares perfect.
+//     – perfectPlus, perfect, great, miss: per-tier entries.
+//     – stackPolicy: Stack or Replace (see JudgementStackPolicy).
 //
 // ── Hold-specific feedback ────────────────────────────────────────────────────
 //
@@ -49,8 +60,11 @@
 //   3. Optionally assign textures; leave null for solid-color tint-only looks.
 //   4. Set tint, opacity, size, and timing fields per section.
 //   5. Leave miss.enabled = false for a silent "no miss effect" design.
-//   6. Assign this asset to LaneTouchFeedbackRenderer / JudgementFeedbackRenderer
-//      in the Inspector (renderers not yet implemented — reserved for next steps).
+//   6. Enable useSeparatePerfectPlusVisual and configure perfectPlus if you want
+//      a distinct Perfect+ look (e.g. brighter flash for the tightest window).
+//   7. Set stackPolicy to Replace if you want new effects to cancel old ones.
+//   8. Assign this asset to LaneTouchFeedbackRenderer / JudgementFeedbackRenderer
+//      in the Inspector.
 //
 // ── Spec reference ────────────────────────────────────────────────────────────
 //
@@ -60,6 +74,36 @@ using UnityEngine;
 
 namespace RhythmicFlow.Player
 {
+    // -------------------------------------------------------------------------
+    // JudgementStackPolicy — how concurrent judgement effects interact
+    //
+    // Controls the renderer's behaviour when a new judgement fires while one or
+    // more effects are already alive for the same lane.
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Controls how <c>JudgementFeedbackRenderer</c> handles overlapping effects
+    /// for the same lane (spec §5.11.2).
+    ///
+    /// <para><b>Stack</b> — multiple effects can be alive simultaneously for the
+    /// same lane.  Rapid note streams produce layered bursts.</para>
+    ///
+    /// <para><b>Replace</b> — a new effect immediately deactivates any still-active
+    /// effect on the same lane, then starts fresh.  Keeps the display uncluttered
+    /// during dense passages.</para>
+    ///
+    /// <para>The renderer stores this setting at init time; runtime policy switching
+    /// mid-song is intentionally not supported in v0.</para>
+    /// </summary>
+    public enum JudgementStackPolicy
+    {
+        /// <summary>Effects accumulate: several can be alive for the same lane at once.</summary>
+        Stack,
+
+        /// <summary>A new effect replaces any prior active effect on the same lane.</summary>
+        Replace,
+    }
+
     // -------------------------------------------------------------------------
     // LaneTouchFeedback — serializable config for the lane-touch highlight
     //
@@ -257,6 +301,16 @@ namespace RhythmicFlow.Player
                  "Ignored when enabled is false.")]
         [Min(0f)]
         public float fadeOutDuration;
+
+        [Tooltip("Speed at which this effect drifts in the +Z (above-surface) direction during " +
+                 "its lifetime, in PlayfieldLocal units per second.\n\n" +
+                 "0 = stationary (no drift upward).\n" +
+                 "A small value (e.g. 0.04–0.08) produces a subtle float-up that reads clearly\n" +
+                 "without obscuring note geometry.\n" +
+                 "Default: 0.05\n" +
+                 "Ignored when enabled is false.")]
+        [Min(0f)]
+        public float driftSpeedLocal;
     }
 
     // -------------------------------------------------------------------------
@@ -321,14 +375,53 @@ namespace RhythmicFlow.Player
         };
 
         // -------------------------------------------------------------------
+        // Judgement Feedback — Perfect+ (optional distinct visual, spec §4.3)
+        //
+        // Perfect+ is a sub-window inside Perfect for display/stats only; it
+        // does NOT change the score in v0.  When useSeparatePerfectPlusVisual
+        // is true, hits within PerfectPlusWindowMs use THIS entry instead of
+        // the standard perfect entry.  When false, Perfect+ falls back to perfect.
+        //
+        // Consumed by: JudgementFeedbackRenderer (§5.11.2).
+        // -------------------------------------------------------------------
+
+        [Header("Judgement Feedback — Perfect+ (optional distinct visual)")]
+        [Tooltip("When true, notes judged Perfect+ (within PerfectPlusWindowMs, spec §4.3) " +
+                 "use the perfectPlus entry below instead of the standard perfect entry.\n\n" +
+                 "When false, Perfect+ hits fall back to the perfect entry — the sub-window " +
+                 "has no distinct visual.\n\n" +
+                 "Perfect+ is display-only; no score change in v0.")]
+        [SerializeField] public bool useSeparatePerfectPlusVisual = false;
+
+        [Tooltip("Visual effect for a Perfect+ hit (within PerfectPlusWindowMs, spec §4.3).\n\n" +
+                 "Only used when useSeparatePerfectPlusVisual is true.\n" +
+                 "A brighter or larger version of the Perfect effect works well here.\n\n" +
+                 "Consumed by JudgementFeedbackRenderer (spec §5.11.2).")]
+        [SerializeField] public JudgementFeedbackEntry perfectPlus = new JudgementFeedbackEntry
+        {
+            enabled           = true,
+            material          = null,
+            texture           = null,
+            tint              = new Color(1.00f, 1.00f, 1.00f, 1.0f), // bright white — distinct from Perfect gold
+            opacity           = 1.0f,
+            sizeLocal         = 0.07f,   // slightly larger than Perfect
+            surfaceOffsetLocal = 0.004f,
+            lifetime          = 0.55f,
+            fadeOutDuration   = 0.28f,
+            driftSpeedLocal   = 0.06f,
+        };
+
+        // -------------------------------------------------------------------
         // Judgement Feedback — Perfect
         //
         // Fired when a note is hit within the Perfect timing window.
+        // (Also used for Perfect+ when useSeparatePerfectPlusVisual is false.)
         // -------------------------------------------------------------------
 
         [Header("Judgement Feedback — Perfect")]
         [Tooltip("Visual effect spawned at the judgement ring when a note is hit Perfect.\n\n" +
-                 "Consumed by JudgementFeedbackRenderer (planned — spec §5.11.2).\n\n" +
+                 "Also used for Perfect+ when useSeparatePerfectPlusVisual is false.\n\n" +
+                 "Consumed by JudgementFeedbackRenderer (spec §5.11.2).\n\n" +
                  "Set enabled = false to suppress Perfect feedback entirely.")]
         [SerializeField] public JudgementFeedbackEntry perfect = new JudgementFeedbackEntry
         {
@@ -341,6 +434,7 @@ namespace RhythmicFlow.Player
             surfaceOffsetLocal = 0.004f,
             lifetime          = 0.50f,
             fadeOutDuration   = 0.25f,
+            driftSpeedLocal   = 0.05f,
         };
 
         // -------------------------------------------------------------------
@@ -364,6 +458,7 @@ namespace RhythmicFlow.Player
             surfaceOffsetLocal = 0.004f,
             lifetime          = 0.35f,
             fadeOutDuration   = 0.20f,
+            driftSpeedLocal   = 0.04f,
         };
 
         // -------------------------------------------------------------------
@@ -397,7 +492,27 @@ namespace RhythmicFlow.Player
             surfaceOffsetLocal = 0.004f,
             lifetime          = 0.25f,
             fadeOutDuration   = 0.15f,
+            driftSpeedLocal   = 0.02f,
         };
+
+        // -------------------------------------------------------------------
+        // Judgement Effect — Stack vs Replace policy
+        //
+        // Controls how JudgementFeedbackRenderer handles overlapping effects
+        // when a new judgement fires while effects are still active on a lane.
+        // -------------------------------------------------------------------
+
+        [Header("Judgement Effect — Spawn Policy")]
+        [Tooltip("Controls what happens when a new judgement fires while an effect for " +
+                 "the same lane is still active:\n\n" +
+                 "  Stack   — new effects layer on top; multiple bursts can be visible\n" +
+                 "            simultaneously for the same lane.  Good for dense passages.\n\n" +
+                 "  Replace — the new effect immediately deactivates any prior active\n" +
+                 "            effect on that lane before spawning.  Keeps the display\n" +
+                 "            clean during rapid note streams.\n\n" +
+                 "Default: Stack.\n" +
+                 "Note: runtime policy switching mid-song is not supported in v0.")]
+        [SerializeField] public JudgementStackPolicy stackPolicy = JudgementStackPolicy.Stack;
 
         // -------------------------------------------------------------------
         // Hold-specific feedback — RESERVED (deferred)
@@ -454,6 +569,9 @@ namespace RhythmicFlow.Player
         /// <para>Accepted keys (case-sensitive): <c>"Perfect"</c>, <c>"Great"</c>,
         /// <c>"Miss"</c>.  Unknown keys return the miss entry (disabled by default).</para>
         ///
+        /// <para>Does not handle Perfect+; use
+        /// <see cref="GetJudgementEntryForTier"/> for tier + Perfect+ aware lookup.</para>
+        ///
         /// <para>The returned entry's <see cref="JudgementFeedbackEntry.enabled"/> flag
         /// must be checked by the renderer before spawning any effect.  A disabled entry
         /// is always a valid no-op — not an error.</para>
@@ -469,6 +587,40 @@ namespace RhythmicFlow.Player
             };
         }
 
+        /// <summary>
+        /// Returns the correct feedback entry for a judgement tier, accounting for
+        /// the optional Perfect+ visual override.
+        ///
+        /// <para>When <see cref="useSeparatePerfectPlusVisual"/> is <c>true</c> and
+        /// <paramref name="tier"/> is <see cref="JudgementTier.Perfect"/> and
+        /// <paramref name="isPerfectPlus"/> is <c>true</c>, returns
+        /// <see cref="perfectPlus"/>.  Otherwise follows the standard tier mapping.</para>
+        ///
+        /// <para>Always check the returned entry's <see cref="JudgementFeedbackEntry.enabled"/>
+        /// before spawning.  A disabled entry is a silent no-op, not an error.</para>
+        /// </summary>
+        /// <param name="tier">The judgement tier from <see cref="JudgementRecord.Tier"/>.</param>
+        /// <param name="isPerfectPlus">
+        /// <c>true</c> when the hit is within <c>PerfectPlusWindowMs</c>
+        /// (spec §4.3, display-only; no score change).
+        /// </param>
+        public JudgementFeedbackEntry GetJudgementEntryForTier(JudgementTier tier, bool isPerfectPlus)
+        {
+            // Perfect+ override: only when the flag is set AND the tier is Perfect.
+            if (tier == JudgementTier.Perfect && isPerfectPlus && useSeparatePerfectPlusVisual)
+            {
+                return perfectPlus;
+            }
+
+            return tier switch
+            {
+                JudgementTier.Perfect => perfect,
+                JudgementTier.Great   => great,
+                JudgementTier.Miss    => miss,
+                _                     => miss, // unknown tier → silent no-op
+            };
+        }
+
         // -------------------------------------------------------------------
         // Validation
         // -------------------------------------------------------------------
@@ -476,6 +628,7 @@ namespace RhythmicFlow.Player
         private void OnValidate()
         {
             ValidateLaneTouchFeedback(ref laneTouchFeedback);
+            ValidateJudgementEntry(ref perfectPlus);
             ValidateJudgementEntry(ref perfect);
             ValidateJudgementEntry(ref great);
             ValidateJudgementEntry(ref miss);
@@ -499,6 +652,7 @@ namespace RhythmicFlow.Player
             e.lifetime           = Mathf.Max(0.01f, e.lifetime);
             // fadeOutDuration must not exceed lifetime.
             e.fadeOutDuration    = Mathf.Clamp(e.fadeOutDuration, 0f, e.lifetime);
+            e.driftSpeedLocal    = Mathf.Max(0f, e.driftSpeedLocal);
         }
     }
 }

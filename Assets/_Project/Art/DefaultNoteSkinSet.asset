@@ -50,6 +50,6 @@ MonoBehaviour:
   holdLeftEdgeLocalWidth: 0.01
   holdRightEdgeLocalWidth: 0.01
   holdCenterTileRatePerUnit: 20
-  holdLengthTileRatePerUnit: 20
+  holdLengthTileRatePerUnit: 45
   holdLaneWidthRatio: 0.9
   holdFlipVertical: 0
