@@ -590,33 +590,54 @@ namespace RhythmicFlow.Player
                 // Degenerate ribbon guard: cap was drawn above; skip ribbon only.
                 if (headR - tailR < 0.0001f) { continue; }
 
-                // ── Length-direction V tiling (head-anchored) ─────────────────────────────
+                // ── Length-direction V tiling (judgement-anchored) ────────────────────────
                 //
-                // V is tiled along the hold length rather than stretched 0→1.
-                // The tiling phase is anchored at the head/judgement end so the visual
-                // pattern near the hit line stays stable as the hold is consumed.
+                // V is tiled along the hold length with V=0 (or 1 when flipped) anchored
+                // to judgementR — the fixed judgement ring — not to headR.
                 //
-                // segmentLength: current rendered distance between head and tail endpoints.
-                //   During approach (Phase A):  head and tail both move, ribbon shrinks from
-                //                               the outer side.
-                //   During hold     (Phase B):  headR pins at judgementR; tailR advances
-                //                               inward — ribbon shrinks from the tail end.
-                //   In both phases headV stays fixed at the anchor (0 or 1), so tiles
-                //   appear/disappear only at the tail end, never at the judgement end.
+                // WHY judgementR, not headR:
+                //   During Phase A (approach), headR moves outward toward judgementR.
+                //   If V were anchored to headR (V=0 at headR), then at a fixed world
+                //   position r_fixed the computed V = rate*(headR - r_fixed) would change
+                //   as headR advances, producing a texture shift that looks like UV
+                //   scrolling — forbidden by spec §5.7.1.
+                //   Anchoring to judgementR (V = (judgementR - r) × rate) keeps V at every
+                //   world position CONSTANT across all phases.  The only motion comes from
+                //   body geometry (the body grows in Phase A and shrinks in Phase B as
+                //   tailR advances outward to catch up with the pinned headR).
                 //
-                // vSpan = segmentLength × holdLengthTileRatePerUnit
-                //   A vSpan of 2.5 means the texture repeats 2.5× across the ribbon.
-                //   Because the material uses a tiling/repeat sampler, UV values outside
-                //   [0,1] wrap correctly — no special clamping is needed.
+                // Phase A (before startTimeMs):
+                //   headR < judgementR, both endpoints moving outward.
+                //   Body grows; texture at each world position is frozen.
+                //   vHead is non-zero (headR has not yet reached judgementR).
                 //
-                // holdFlipVertical = false:  headV = 0,  tailV = +vSpan
-                //   (V increases from head toward tail; tile "rows" flow outward)
-                // holdFlipVertical = true:   headV = 1,  tailV = 1 − vSpan
-                //   (V decreases from head toward tail; texture is mirrored vertically)
-                float segmentLength = headR - tailR;  // > 0.0001 (degenerate check above)
-                float vSpan         = segmentLength * lengthTileRate;
-                float vHead         = flipVertical ? 1f : 0f;
-                float vTail         = flipVertical ? (1f - vSpan) : vSpan;
+                // Phase B (startTimeMs ≤ chartTime ≤ endTimeMs):
+                //   headR = judgementR (pinned by Clamp01 in ApproachRadius).
+                //   tailR advances outward (toward judgementR) — body shrinks from tail.
+                //   vHead = 0 (head is exactly at judgementR).
+                //   vTail = (judgementR - tailR) × rate = segmentLength × rate.
+                //   Texture at each world position is frozen; tiles disappear from the
+                //   tail end as tailR advances.
+                //
+                // In Phase B this formula is IDENTICAL to the old head-relative formula.
+                // Only Phase A changes: UV shift is eliminated.
+                //
+                // holdFlipVertical = false:  V = (judgementR - r) × rate
+                //   V=0 at judgementR, V increases inward toward spawn.
+                // holdFlipVertical = true:   V = 1 - (judgementR - r) × rate
+                //   V=1 at judgementR, V decreases inward toward spawn.
+                //
+                // headR ≤ judgementR always (Clamp01 prevents overshoot), so
+                // headDistFromJudgement ≥ 0 and tailDistFromJudgement ≥ segmentLength > 0.
+                float headDistFromJudgement = judgementR - headR;  // 0 when pinned, > 0 during approach
+                float tailDistFromJudgement = judgementR - tailR;  // always > 0 while body visible
+
+                float vHead = flipVertical
+                    ? (1f - headDistFromJudgement * lengthTileRate)
+                    :        headDistFromJudgement * lengthTileRate;
+                float vTail = flipVertical
+                    ? (1f - tailDistFromJudgement * lengthTileRate)
+                    :        tailDistFromJudgement * lengthTileRate;
 
                 // Set MaterialPropertyBlock for ribbon: hold body texture + phase tint.
                 // The MPB may have been overwritten by the cap draw above, so re-set explicitly.
