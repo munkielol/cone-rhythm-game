@@ -56,20 +56,25 @@
 //   (migrated from the old Inspector field on this component).
 //
 // ══════════════════════════════════════════════════════════════════════
-//  MESH LAYOUT — 5-COLUMN RIBBON (added for width-side skin support)
+//  MESH LAYOUT — ARC-CONFORMING HOLD BODY
 //
-//   The ribbon uses HoldColumnCount=5 columns × 2 rows = 12 vertices,
-//   matching NoteCapGeometryBuilder's column count.  This is required
-//   to represent the three-region fixed-edge + tiled-center UV layout
-//   across the width — a 4-vertex quad can only do linear 0→1 UV.
+//   The ribbon is an arc-conforming grid (holdArcSegments × holdRadialSegments),
+//   using the same geometry approach as LaneSurfaceRenderer.  This makes the
+//   hold body follow the lane's actual arc shape instead of appearing as a
+//   straight flat trapezoid that cuts across the lane curvature.
 //
-//   Vertex layout (row-major, left-to-right per row):
-//     Tail row (at tailR):  verts[0..5]   — inner/younger hold edge
-//     Head row (at headR):  verts[6..11]  — outer/older hold edge
+//   Vertex grid: (holdArcSegments+1) columns × (holdRadialSegments+1) rows.
+//     Columns: angular span from (centerDeg - holdHalfAngleDeg)
+//                               to (centerDeg + holdHalfAngleDeg).
+//     Rows:    radial span from tailR (inner/younger) to headR (outer/older).
+//     Z:       FrustumZAtRadius(r, …) + NoteLayerZLift at each row.
 //
-//   Vertex positions use uniform column fractions (i/5) along the
-//   tangent axis — no arc math needed for a straight trapezoid.
-//   UV is computed per-column per-frame using ComputeHoldWidthU.
+//   Each vertex: (center.x + cos(θ)·r, center.y + sin(θ)·r, z)
+//   This is the same formula used by LaneSurfaceRenderer and produces a
+//   surface that conforms to the arc of the lane and the frustum cone.
+//
+//   Default: holdArcSegments=8, holdRadialSegments=4.  These Inspector fields
+//   must remain fixed after Awake (pool mesh topology cannot change at runtime).
 //
 // ══════════════════════════════════════════════════════════════════════
 //  SKIN SYSTEM INTEGRATION (both axes)
@@ -197,28 +202,61 @@ namespace RhythmicFlow.Player
         [SerializeField] private bool debugDrawSpawnArcs = false;
 
         // -------------------------------------------------------------------
-        // Internals — mesh pool constants
-        //
-        // HoldColumnCount=5 columns across width → 6 boundaries per row → 12 vertices.
-        // This matches NoteCapGeometryBuilder.ColumnCount and is the minimum needed to
-        // represent the three-region fixed-edge + tiled-center UV without severe
-        // misrepresentation (a 4-vertex quad can only do linear U 0→1).
+        // Inspector — Hold Head Cap
         // -------------------------------------------------------------------
 
-        private const int MaxHoldPool     = 64;  // simultaneous hold ribbons
-        private const int HoldColumnCount = 5;   // columns across ribbon width
-        private const int HoldTailRow     = 0;                        // first vertex index of tail row
-        private const int HoldHeadRow     = HoldColumnCount + 1;      // = 6; first index of head row
-        private const int HoldVertCount   = (HoldColumnCount + 1) * 2; // = 12 vertices per mesh
-        private const int HoldIndexCount  = HoldColumnCount * 6;       // = 30 triangle indices
+        [Header("Hold Head Cap")]
+        [Tooltip("When enabled, draws a curved note-head cap at the leading edge (headR) of the hold " +
+                 "body each frame.\n\n" +
+                 "The cap uses tap-note curved-cap geometry (FillCapVerticesEdgeAware) so the hold " +
+                 "head looks consistent with other note types at the judgement line.\n\n" +
+                 "When disabled, the arc body itself provides hold visibility once headR > tailR " +
+                 "(after the first approach frame).")]
+        [SerializeField] private bool drawHoldHeadCap = true;
 
-        private Mesh[]   _meshPool;   // pool of 12-vertex ribbon meshes
-        private int      _poolUsed;   // slots used this frame, reset each LateUpdate
+        // -------------------------------------------------------------------
+        // Inspector — Mesh Quality
+        // -------------------------------------------------------------------
 
-        // Scratch arrays shared across all hold iterations (sequential — no concurrency).
-        // Pre-allocated once; written into per-frame (no GC alloc at runtime).
-        private readonly Vector3[] _vertScratch = new Vector3[HoldVertCount];
-        private readonly Vector2[] _uvScratch   = new Vector2[HoldVertCount];
+        [Header("Mesh Quality")]
+        [Tooltip("Number of angular column subdivisions across the hold body width.\n\n" +
+                 "More segments produce smoother arc edges for wide lanes.\n" +
+                 "Must not be changed at runtime after Awake.\n" +
+                 "Default: 8")]
+        [Min(1)]
+        [SerializeField] private int holdArcSegments = 8;
+
+        [Tooltip("Number of radial row subdivisions along the hold body depth.\n\n" +
+                 "More segments improve frustum cone conformance along the hold length.\n" +
+                 "Must not be changed at runtime after Awake.\n" +
+                 "Default: 4")]
+        [Min(1)]
+        [SerializeField] private int holdRadialSegments = 4;
+
+        // -------------------------------------------------------------------
+        // Internals — mesh pool
+        //
+        // Each ribbon is an arc-conforming grid: (holdArcSegments+1) columns ×
+        // (holdRadialSegments+1) rows.  Vertex and index counts are computed once
+        // in Awake from the Inspector values and stay fixed for the session.
+        // -------------------------------------------------------------------
+
+        private const int MaxHoldPool = 64;   // simultaneous hold ribbons
+
+        // Arc mesh geometry counts — computed once in Awake, fixed for the session.
+        // Must not be changed at runtime (pool mesh topology cannot change after allocation).
+        private int _holdArcSegs;        // angular columns (clamped from holdArcSegments)
+        private int _holdRadialSegs;     // radial rows     (clamped from holdRadialSegments)
+        private int _vertsPerRibbon;     // (_holdArcSegs+1) * (_holdRadialSegs+1)
+        private int _indicesPerRibbon;   // _holdArcSegs * _holdRadialSegs * 6
+
+        private Mesh[] _meshPool;   // pool of arc ribbon meshes
+        private int    _poolUsed;   // slots used this frame, reset each LateUpdate
+
+        // Scratch arrays — allocated in Awake from _vertsPerRibbon (no fixed size).
+        // Reused every frame: no per-frame GC allocation after Awake.
+        private Vector3[] _vertScratch;
+        private Vector2[] _uvScratch;
 
         // Cap pool: one curved-cap mesh per hold head, drawn before the ribbon each frame.
         // Keeps the hold visible from the very first approach frame, even when the ribbon
@@ -249,12 +287,24 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
-            // Pre-allocate the mesh pool. Each mesh uses 12 vertices (5 columns × 2 rows)
-            // so UVs and vertices can be written in-place each frame without GC allocation.
+            // Clamp Inspector values — guard against invalid zero input.
+            _holdArcSegs    = Mathf.Max(1, holdArcSegments);
+            _holdRadialSegs = Mathf.Max(1, holdRadialSegments);
+
+            _vertsPerRibbon   = (_holdArcSegs + 1) * (_holdRadialSegs + 1);
+            _indicesPerRibbon = _holdArcSegs * _holdRadialSegs * 6;
+
+            // Allocate scratch arrays to match the arc mesh vertex count.
+            // Written in-place every frame — no per-frame GC after Awake.
+            _vertScratch = new Vector3[_vertsPerRibbon];
+            _uvScratch   = new Vector2[_vertsPerRibbon];
+
+            // Pre-allocate the arc ribbon mesh pool.  Triangles are stable; only
+            // vertices and UVs are overwritten each frame.
             _meshPool = new Mesh[MaxHoldPool];
             for (int i = 0; i < MaxHoldPool; i++)
             {
-                _meshPool[i] = BuildHoldRibbonMesh();
+                _meshPool[i] = BuildHoldArcMesh();
             }
 
             // Pre-allocate cap pool. Caps use NoteCapGeometryBuilder topology (12 verts, 30 indices)
@@ -490,18 +540,16 @@ namespace RhythmicFlow.Player
                 Vector2 ctr        = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
                 float halfWidthDeg = lane.WidthDeg * 0.5f;
 
-                // ── Head cap ──────────────────────────────────────────────────────────────
+                // ── Hold head cap (optional — toggle: drawHoldHeadCap) ──────────────────
                 //
-                // Drawn independently of the ribbon so the hold is visible from the very
-                // first approach frame — even when headR == tailR == spawnR (ribbon is zero-
-                // area) or while the ribbon is still too thin to be clearly seen.
-                //
-                // Geometry: 5-column curved-cap via FillCapVerticesEdgeAware, identical to
-                //   TapNoteRenderer.  Centred on headR; radially thin band [capTailR, capHeadR].
-                // Texture:  tap body texture (capTex) so it matches the visual style of Tap
-                //   note heads at the judgement line.
-                // Z layer:  NoteLayerZLift = 0.010f, same as all other note types.
-                if (_capPoolUsed < MaxHoldPool)
+                // When ON:  draws a curved-cap note head at headR from the very first approach
+                //   frame — even when the arc body is zero-area (headR == tailR == spawnR).
+                //   Geometry identical to TapNoteRenderer so the cap looks consistent with
+                //   other note types at the judgement line.
+                // When OFF: the arc body itself provides visibility once headR > tailR (a single
+                //   frame after first appearance).  The arc spans the full lane width so it is
+                //   clearly visible even when radially thin.
+                if (drawHoldHeadCap && _capPoolUsed < MaxHoldPool)
                 {
                     float noteHalfAngleDeg = NoteCapGeometryBuilder.NoteHalfAngleDeg(
                         halfWidthDeg, skinLaneWidthRatio);
@@ -576,112 +624,59 @@ namespace RhythmicFlow.Player
                     _propBlock.SetTexture("_MainTex", holdTex);
                 _propBlock.SetColor("_Color", ribbonColor);
 
-                // ── Step 4: Local-space axes ──────────────────────────────────────────────
-
-                float thetaRad = AngleUtil.Normalize360(lane.CenterDeg) * Mathf.Deg2Rad;
-                float cosT     = Mathf.Cos(thetaRad);
-                float sinT     = Mathf.Sin(thetaRad);
-
-                // tangLocal: 90° CCW from radial direction, in local XY — the ribbon width axis.
-                // Cross(localZ, dir) = Cross((0,0,1), (cosT,sinT,0)) = (-sinT, cosT, 0).
-                var tangLocal = new Vector3(-sinT, cosT, 0f);
-
-                // ── Step 5: Compute 3D local-space endpoints (XY + frustum Z) ────────────
-
-                // Tail: inner (younger) end of the ribbon. Maps to V=vTail in UV.
-                var tailLocal3 = new Vector3(
-                    ctr.x + tailR * cosT,
-                    ctr.y + tailR * sinT,
-                    ComputeEndpointLocalZ(tailR, innerLocal, outerLocal));
-
-                // Head: outer (older) end, pinned at judgementR during the hold. Maps to V=vHead.
-                var headLocal3 = new Vector3(
-                    ctr.x + headR * cosT,
-                    ctr.y + headR * sinT,
-                    ComputeEndpointLocalZ(headR, innerLocal, outerLocal));
-
-                // ── Step 6: Trapezoid chord widths at each endpoint ───────────────────────
+                // ── Steps 4-7: Arc-conforming hold body vertices ───────────────────────────
                 //
-                // Lane borders are radial lines at centerDeg ± widthDeg/2.
-                // The chord between those lines at radius r is:
-                //   width(r) = 2 · r · sin( widthDeg/2 · Deg2Rad )
-                //
-                // head and tail are at different radii → trapezoid.
-                // holdLaneWidthRatio is now read from NoteSkinSet.
+                // Uses the same arc-sector formula as LaneSurfaceRenderer:
+                //   vertex = (ctr.x + cos(θ)·r, ctr.y + sin(θ)·r, FrustumZAtRadius(r) + lift)
+                // Each column sweeps angularly across the lane; each row spans tailR→headR radially.
+                // This makes the hold body conform to the lane arc instead of appearing as a
+                // flat straight trapezoid that cuts across the lane curvature.
 
-                float widthHead = ComputeLaneWidthAtRadiusLocal(headR, halfWidthDeg) * skinLaneWidthRatio;
-                float widthTail = ComputeLaneWidthAtRadiusLocal(tailR, halfWidthDeg) * skinLaneWidthRatio;
+                float holdHalfAngleDeg = halfWidthDeg * skinLaneWidthRatio;
+                float bodyLeftDeg  = AngleUtil.Normalize360(lane.CenterDeg) - holdHalfAngleDeg;
+                float bodyRightDeg = AngleUtil.Normalize360(lane.CenterDeg) + holdHalfAngleDeg;
 
-                // ── Step 7: Build 12-vertex ribbon (HoldColumnCount columns × 2 rows) ─────
-                //
-                // Vertex positions use uniform column fractions (i / HoldColumnCount) along
-                // the tangent axis — simple linear interpolation across the trapezoid width.
-                //
-                // UV (U axis = width, V axis = length):
-                //   U: computed per-column via ComputeHoldWidthU — fixed-edge + tiled-center.
-                //      Each row uses its own totalChord (widthTail or widthHead) because head
-                //      and tail have different chord widths at different radii.
-                //   V: head-anchored tiling along ribbon length.
-                //      vHead and vTail were computed above from segmentLength × lengthTileRate,
-                //      anchored at the head end so the pattern stays stable near judgement.
-                //      All columns in a row share the same V (V does not vary across width).
-                //
-                // Mesh vertex indices:
-                //   Tail row: [HoldTailRow .. HoldTailRow + HoldColumnCount] = [0..5]
-                //   Head row: [HoldHeadRow .. HoldHeadRow + HoldColumnCount] = [6..11]
+                FillHoldArcVerts(_vertScratch, _uvScratch, tailR, headR,
+                    bodyLeftDeg, bodyRightDeg, ctr, innerLocal, outerLocal,
+                    hInner, hOuter, vTail, vHead, noteSkinSet, _holdArcSegs, _holdRadialSegs);
 
-                for (int col = 0; col <= HoldColumnCount; col++)
-                {
-                    float frac = (float)col / HoldColumnCount;  // 0..1 uniform step
-
-                    // Tail-row vertex: linear interpolation from tail-left to tail-right.
-                    float chordTail = frac * widthTail;
-                    _vertScratch[HoldTailRow + col] = tailLocal3
-                        + tangLocal * (chordTail - widthTail * 0.5f);
-                    _uvScratch[HoldTailRow + col] = new Vector2(
-                        NoteCapGeometryBuilder.ComputeHoldWidthU(chordTail, widthTail, noteSkinSet),
-                        vTail);
-
-                    // Head-row vertex: linear interpolation from head-left to head-right.
-                    float chordHead = frac * widthHead;
-                    _vertScratch[HoldHeadRow + col] = headLocal3
-                        + tangLocal * (chordHead - widthHead * 0.5f);
-                    _uvScratch[HoldHeadRow + col] = new Vector2(
-                        NoteCapGeometryBuilder.ComputeHoldWidthU(chordHead, widthHead, noteSkinSet),
-                        vHead);
-                }
-
-                // Write vertices and UVs into the pooled mesh.
-                // Triangles were set once in BuildHoldRibbonMesh and never change.
-                Mesh trapMesh = _meshPool[_poolUsed++];
-                trapMesh.vertices = _vertScratch;
-                trapMesh.uv       = _uvScratch;
-                trapMesh.RecalculateBounds(); // required for correct frustum culling
+                // Write vertices and UVs into the pooled arc mesh.
+                // Triangles were set once in BuildHoldArcMesh and never change.
+                Mesh arcMesh = _meshPool[_poolUsed++];
+                arcMesh.vertices = _vertScratch;
+                arcMesh.uv       = _uvScratch;
+                arcMesh.RecalculateBounds(); // required for correct frustum culling
 
                 // ── Step 8: Debug visualizations ─────────────────────────────────────────
+                //
+                // Arc vertex layout (row-major):
+                //   tail-left  = index 0
+                //   tail-right = index _holdArcSegs
+                //   head-left  = index _holdRadialSegs * (_holdArcSegs + 1)
+                //   head-right = headLeft + _holdArcSegs
 
                 if (debugDrawEndpoints || debugDrawMeshOutline)
                 {
+                    int headLeft  = _holdRadialSegs * (_holdArcSegs + 1);
+                    int headRight = headLeft + _holdArcSegs;
+
                     if (debugDrawEndpoints)
                     {
                         // Centerline connecting tail and head midpoints — compare against debug hold rail.
-                        Vector3 tailWorld = pfRoot.TransformPoint(tailLocal3);
-                        Vector3 headWorld = pfRoot.TransformPoint(headLocal3);
+                        int tailMid = _holdArcSegs / 2;
+                        int headMid = headLeft + _holdArcSegs / 2;
+                        Vector3 tailWorld = pfRoot.TransformPoint(_vertScratch[tailMid]);
+                        Vector3 headWorld = pfRoot.TransformPoint(_vertScratch[headMid]);
                         Debug.DrawLine(tailWorld, headWorld, ribbonColor);
                     }
 
                     if (debugDrawMeshOutline)
                     {
-                        // Outer 4 corners of the trapezoid in world space — should outline the mesh exactly.
-                        // Corner indices in the 12-vertex layout:
-                        //   tail-left  = _vertScratch[HoldTailRow]
-                        //   tail-right = _vertScratch[HoldTailRow + HoldColumnCount]
-                        //   head-right = _vertScratch[HoldHeadRow + HoldColumnCount]
-                        //   head-left  = _vertScratch[HoldHeadRow]
-                        Vector3 p0 = pfRoot.TransformPoint(_vertScratch[HoldTailRow]);
-                        Vector3 p1 = pfRoot.TransformPoint(_vertScratch[HoldTailRow + HoldColumnCount]);
-                        Vector3 p2 = pfRoot.TransformPoint(_vertScratch[HoldHeadRow + HoldColumnCount]);
-                        Vector3 p3 = pfRoot.TransformPoint(_vertScratch[HoldHeadRow]);
+                        // Outer 4 corners of the arc body in world space — should outline the mesh exactly.
+                        Vector3 p0 = pfRoot.TransformPoint(_vertScratch[0]);
+                        Vector3 p1 = pfRoot.TransformPoint(_vertScratch[_holdArcSegs]);
+                        Vector3 p2 = pfRoot.TransformPoint(_vertScratch[headRight]);
+                        Vector3 p3 = pfRoot.TransformPoint(_vertScratch[headLeft]);
 
                         Color outlineColor = Color.cyan;
                         Debug.DrawLine(p0, p1, outlineColor); // tail edge
@@ -690,16 +685,18 @@ namespace RhythmicFlow.Player
                         Debug.DrawLine(p1, p2, outlineColor); // right edge
 
                         // Centerline (yellow) — compare against the debug hold rail.
-                        Vector3 tailCenter = pfRoot.TransformPoint(tailLocal3);
-                        Vector3 headCenter = pfRoot.TransformPoint(headLocal3);
+                        int tailMid = _holdArcSegs / 2;
+                        int headMid = headLeft + _holdArcSegs / 2;
+                        Vector3 tailCenter = pfRoot.TransformPoint(_vertScratch[tailMid]);
+                        Vector3 headCenter = pfRoot.TransformPoint(_vertScratch[headMid]);
                         Debug.DrawLine(tailCenter, headCenter, Color.yellow);
                     }
                 }
 
-                // Draw the ribbon mesh. Vertices are in PlayfieldRoot local space;
+                // Draw the arc mesh. Vertices are in PlayfieldRoot local space;
                 // localToWorld promotes them to world space for rendering.
                 Graphics.DrawMesh(
-                    trapMesh, localToWorld, bodyMaterial,
+                    arcMesh, localToWorld, bodyMaterial,
                     gameObject.layer, null, 0, _propBlock);
 
                 // ── debugDrawSpawnArcs ─────────────────────────────────────────────────────
@@ -797,17 +794,6 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
-        // Lane width helper
-        // -------------------------------------------------------------------
-
-        /// <summary>
-        /// Computes the chord width of a lane at a given local radius.
-        /// Delegates to <see cref="NoteApproachMath.LaneChordWidthAtRadius"/> — single source of truth.
-        /// </summary>
-        private static float ComputeLaneWidthAtRadiusLocal(float r, float halfWidthDeg)
-            => NoteApproachMath.LaneChordWidthAtRadius(r, halfWidthDeg);
-
-        // -------------------------------------------------------------------
         // Debug draw helpers (no GC — only Debug.DrawLine calls)
         // -------------------------------------------------------------------
 
@@ -869,59 +855,111 @@ namespace RhythmicFlow.Player
         }
 
         // -------------------------------------------------------------------
-        // Hold ribbon mesh template
+        // Hold arc mesh template
         // -------------------------------------------------------------------
 
-        // Builds a 12-vertex mesh (5 columns × 2 rows) with stable triangle topology.
-        // Placeholder zero vertices are written here; LateUpdate overwrites positions and
-        // UVs every frame via _vertScratch / _uvScratch (no per-frame GC allocation).
-        //
-        // Vertex layout:
-        //   Tail row [0..5]:  tail-left → tail-right  (inner/younger hold edge)
-        //   Head row [6..11]: head-left → head-right  (outer/older hold edge)
-        //
-        // UV placeholder: U = i/HoldColumnCount, V = 0 (tail) / 1 (head).
-        // These placeholders are overwritten per-frame; they are only used during
-        // the first frame before LateUpdate runs.
-        //
-        // Triangles: HoldColumnCount quads, each as two CCW tris (matching
-        // NoteCapGeometryBuilder winding convention):
-        //   Tri A: tail_i,  tail_(i+1), head_(i+1)
-        //   Tri B: tail_i,  head_(i+1), head_i
-        private static Mesh BuildHoldRibbonMesh()
+        /// <summary>
+        /// Builds a pooled arc-grid mesh with stable triangle topology.
+        /// Grid: <c>(_holdArcSegs+1)</c> columns × <c>(_holdRadialSegs+1)</c> rows, row-major.
+        /// Placeholder zero vertices are written here; LateUpdate overwrites positions and UVs
+        /// every frame via <c>_vertScratch</c> / <c>_uvScratch</c> — no per-frame GC allocation.
+        /// Winding: CCW, matching <see cref="LaneSurfaceRenderer"/> (v00→v10→v11, v00→v11→v01).
+        /// </summary>
+        private Mesh BuildHoldArcMesh()
         {
-            var mesh = new Mesh { name = "HoldBodyRibbon" };
+            var mesh = new Mesh { name = "HoldBodyArc" };
 
             // Placeholder zero vertices — overwritten every frame in LateUpdate.
-            mesh.vertices = new Vector3[HoldVertCount];
+            mesh.vertices = new Vector3[_vertsPerRibbon];
+            mesh.uv       = new Vector2[_vertsPerRibbon];
 
-            // Placeholder UVs — overwritten every frame in LateUpdate.
-            var uvs = new Vector2[HoldVertCount];
-            for (int i = 0; i <= HoldColumnCount; i++)
+            // Triangles: (_holdArcSegs × _holdRadialSegs) quads, each as two CCW tris.
+            // Topology is fixed for the session — only vertices/UVs change per-frame.
+            int numCols = _holdArcSegs + 1;
+            var tris = new int[_indicesPerRibbon];
+            int t = 0;
+            for (int row = 0; row < _holdRadialSegs; row++)
             {
-                float u = (float)i / HoldColumnCount;
-                uvs[HoldTailRow + i] = new Vector2(u, 0f); // tail row
-                uvs[HoldHeadRow + i] = new Vector2(u, 1f); // head row
-            }
-            mesh.uv = uvs;
-
-            // Triangles: HoldColumnCount quads, 2 CCW tris each.
-            var tris = new int[HoldIndexCount];
-            for (int i = 0; i < HoldColumnCount; i++)
-            {
-                int tailI  = HoldTailRow + i;
-                int tailI1 = HoldTailRow + i + 1;
-                int headI  = HoldHeadRow + i;
-                int headI1 = HoldHeadRow + i + 1;
-
-                int t = i * 6;
-                tris[t + 0] = tailI;  tris[t + 1] = tailI1; tris[t + 2] = headI1; // Tri A
-                tris[t + 3] = tailI;  tris[t + 4] = headI1; tris[t + 5] = headI;  // Tri B
+                for (int col = 0; col < _holdArcSegs; col++)
+                {
+                    int v00 =  row      * numCols + col;
+                    int v10 = (row + 1) * numCols + col;
+                    int v11 = (row + 1) * numCols + col + 1;
+                    int v01 =  row      * numCols + col + 1;
+                    tris[t++] = v00; tris[t++] = v10; tris[t++] = v11; // Tri A (CCW)
+                    tris[t++] = v00; tris[t++] = v11; tris[t++] = v01; // Tri B (CCW)
+                }
             }
             mesh.triangles = tris;
-
             mesh.RecalculateBounds();
             return mesh;
+        }
+
+        // -------------------------------------------------------------------
+        // Arc vertex fill
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Fills <paramref name="verts"/> and <paramref name="uvs"/> with arc-conforming hold body
+        /// geometry. Uses the same formula as <c>LaneSurfaceRenderer.FillLaneSectorVerts</c>:
+        ///   <c>vertex = (ctr.x + cos(θ)·r, ctr.y + sin(θ)·r, FrustumZAtRadius(r) + NoteLayerZLift)</c>
+        ///
+        /// <para>Grid layout (row-major): rows sweep radially from <paramref name="tailR"/> (row 0)
+        /// to <paramref name="headR"/> (row <paramref name="radSegs"/>); columns sweep angularly from
+        /// <paramref name="leftDeg"/> to <paramref name="rightDeg"/>.</para>
+        ///
+        /// <para>No allocations — caller provides scratch arrays sized
+        /// <c>(<paramref name="arcSegs"/>+1) × (<paramref name="radSegs"/>+1)</c>.</para>
+        /// </summary>
+        private static void FillHoldArcVerts(
+            Vector3[]  verts,
+            Vector2[]  uvs,
+            float      tailR,
+            float      headR,
+            float      leftDeg,
+            float      rightDeg,
+            Vector2    ctr,
+            float      arenaInnerLocal,
+            float      arenaOuterLocal,
+            float      hInner,
+            float      hOuter,
+            float      vTail,
+            float      vHead,
+            NoteSkinSet skin,
+            int        arcSegs,
+            int        radSegs)
+        {
+            int numCols = arcSegs + 1;
+            float halfAngleRad  = (rightDeg - leftDeg) * 0.5f * Mathf.Deg2Rad;
+
+            for (int row = 0; row <= radSegs; row++)
+            {
+                float rowFrac       = (float)row / radSegs;
+                float r             = Mathf.Lerp(tailR, headR, rowFrac);
+                float z             = NoteApproachMath.FrustumZAtRadius(
+                                          r, arenaInnerLocal, arenaOuterLocal, hInner, hOuter)
+                                      + NoteLayerZLift;
+                float vCoord        = Mathf.Lerp(vTail, vHead, rowFrac);
+                float totalChordAtR = 2f * r * Mathf.Sin(halfAngleRad);
+
+                for (int col = 0; col <= arcSegs; col++)
+                {
+                    float uFrac         = (float)col / arcSegs;
+                    float angleDeg      = Mathf.Lerp(leftDeg, rightDeg, uFrac);
+                    float angleRad      = angleDeg * Mathf.Deg2Rad;
+                    float cosA          = Mathf.Cos(angleRad);
+                    float sinA          = Mathf.Sin(angleRad);
+                    // Exact chord from left edge to this column's angle — used for UV mapping.
+                    float deltaHalfRad  = (angleDeg - leftDeg) * 0.5f * Mathf.Deg2Rad;
+                    float chordFromLeft = (r > 0f) ? 2f * r * Mathf.Sin(deltaHalfRad) : 0f;
+
+                    int idx   = row * numCols + col;
+                    verts[idx] = new Vector3(ctr.x + cosA * r, ctr.y + sinA * r, z);
+                    uvs[idx]   = new Vector2(
+                        NoteCapGeometryBuilder.ComputeHoldWidthU(chordFromLeft, totalChordAtR, skin),
+                        vCoord);
+                }
+            }
         }
     }
 }

@@ -1025,6 +1025,9 @@ MonoBehaviour:
   debugDrawMeshOutline: 0
   debugLogSpawnOncePerSecond: 0
   debugDrawSpawnArcs: 0
+  drawHoldHeadCap: 1
+  holdArcSegments: 360
+  holdRadialSegments: 16
 --- !u!4 &780337768
 Transform:
   m_ObjectHideFlags: 0
