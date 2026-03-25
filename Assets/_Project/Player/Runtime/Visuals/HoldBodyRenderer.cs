@@ -220,6 +220,17 @@ namespace RhythmicFlow.Player
         private readonly Vector3[] _vertScratch = new Vector3[HoldVertCount];
         private readonly Vector2[] _uvScratch   = new Vector2[HoldVertCount];
 
+        // Cap pool: one curved-cap mesh per hold head, drawn before the ribbon each frame.
+        // Keeps the hold visible from the very first approach frame, even when the ribbon
+        // is zero-area (headR == tailR == spawnR on that first frame).
+        private Mesh[] _capPool;
+        private int    _capPoolUsed;
+
+        // Scratch arrays for hold head cap geometry — filled per-frame, no GC alloc.
+        // Lengths match NoteCapGeometryBuilder.VertexCount (12): 2 rows × (ColumnCount+1) cols.
+        private readonly Vector3[] _capVertScratch = new Vector3[NoteCapGeometryBuilder.VertexCount];
+        private readonly Vector2[] _capUvScratch   = new Vector2[NoteCapGeometryBuilder.VertexCount];
+
         // Reused every DrawMesh call — no per-frame allocation.
         // Must be created in Awake; Unity forbids engine-object ctor in field initializers.
         private MaterialPropertyBlock _propBlock;
@@ -246,6 +257,14 @@ namespace RhythmicFlow.Player
                 _meshPool[i] = BuildHoldRibbonMesh();
             }
 
+            // Pre-allocate cap pool. Caps use NoteCapGeometryBuilder topology (12 verts, 30 indices)
+            // built once here — identical to TapNoteRenderer's pool.
+            _capPool = new Mesh[MaxHoldPool];
+            for (int i = 0; i < MaxHoldPool; i++)
+            {
+                _capPool[i] = NoteCapGeometryBuilder.BuildCapMesh("HoldHeadCap");
+            }
+
             _propBlock = new MaterialPropertyBlock();
         }
 
@@ -256,6 +275,13 @@ namespace RhythmicFlow.Player
                 for (int i = 0; i < _meshPool.Length; i++)
                 {
                     if (_meshPool[i] != null) { Destroy(_meshPool[i]); _meshPool[i] = null; }
+                }
+            }
+            if (_capPool != null)
+            {
+                for (int i = 0; i < _capPool.Length; i++)
+                {
+                    if (_capPool[i] != null) { Destroy(_capPool[i]); _capPool[i] = null; }
                 }
             }
         }
@@ -323,6 +349,20 @@ namespace RhythmicFlow.Player
             bool  flipVertical       = noteSkinSet.holdFlipVertical;
             float lengthTileRate     = Mathf.Max(0.01f, noteSkinSet.holdLengthTileRatePerUnit);
 
+            // ── Cap appearance (head cap drawn on every approach frame) ───────────────
+            // capHalfThicknessLocal: radial half-depth matching the single-interaction family
+            //   (Tap/Catch/Flick) so the hold head cap looks the same size as a tap note cap.
+            // capTex: tap body texture — gives the hold head cap a consistent appearance
+            //   with other note types. Falls back to null (color-only) if not assigned.
+            // hInner/hOuter: explicit frustum heights for FillCapVerticesEdgeAware, same
+            //   reads as TapNoteRenderer.
+            float capHalfThicknessLocal = noteSkinSet.noteRadialHalfThicknessLocal;
+            Texture2D capTex = noteSkinSet.GetBodyTexture(NoteBodySkinType.Tap);
+            float hInner = (frustumProfile != null && frustumProfile.UseFrustumProfile)
+                ? frustumProfile.FrustumHeightInner : surfaceOffsetLocal;
+            float hOuter = (frustumProfile != null && frustumProfile.UseFrustumProfile)
+                ? frustumProfile.FrustumHeightOuter : surfaceOffsetLocal;
+
             double chartTimeMs   = playerAppController.EffectiveChartTimeMs;
             double greatWindowMs = playerAppController.GreatWindowMs;
 
@@ -348,8 +388,9 @@ namespace RhythmicFlow.Player
                 }
             }
 
-            // Reset pool usage counter — reuse all slots from the top each frame.
-            _poolUsed = 0;
+            // Reset pool usage counters — reuse all slots from the top each frame.
+            _poolUsed    = 0;
+            _capPoolUsed = 0;
 
             foreach (RuntimeNote note in allNotes)
             {
@@ -423,7 +464,82 @@ namespace RhythmicFlow.Player
                         $"\n  headR={headR:F4}  tailR={tailR:F4}");
                 }
 
-                // Degenerate: skip to avoid divide-by-zero or zero-area mesh.
+                // ── Phase-based tint — needed by both head cap and ribbon ─────────────────
+                //
+                // Applied as _Color multiplier on top of body/hold texture.
+                //   Missed (any HoldBind)       → holdColorReleased  (dim: failed/non-judging)
+                //   Active + HoldBind.Bound     → holdColorActive    (bright: scoring)
+                //   Active + HoldBind.Finished  → holdColorReleased  (dim: released early)
+                //   Active + HoldBind.Unbound   → holdColorApproaching
+                Color ribbonColor;
+                if (note.State == NoteState.Missed)
+                {
+                    ribbonColor = holdColorReleased;
+                }
+                else
+                {
+                    switch (note.HoldBind)
+                    {
+                        case HoldBindState.Bound:    ribbonColor = holdColorActive;      break;
+                        case HoldBindState.Finished: ribbonColor = holdColorReleased;    break;
+                        default:                     ribbonColor = holdColorApproaching; break;
+                    }
+                }
+
+                // ── Arena centre and angular half-width — shared by cap and ribbon ─────────
+                Vector2 ctr        = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
+                float halfWidthDeg = lane.WidthDeg * 0.5f;
+
+                // ── Head cap ──────────────────────────────────────────────────────────────
+                //
+                // Drawn independently of the ribbon so the hold is visible from the very
+                // first approach frame — even when headR == tailR == spawnR (ribbon is zero-
+                // area) or while the ribbon is still too thin to be clearly seen.
+                //
+                // Geometry: 5-column curved-cap via FillCapVerticesEdgeAware, identical to
+                //   TapNoteRenderer.  Centred on headR; radially thin band [capTailR, capHeadR].
+                // Texture:  tap body texture (capTex) so it matches the visual style of Tap
+                //   note heads at the judgement line.
+                // Z layer:  NoteLayerZLift = 0.010f, same as all other note types.
+                if (_capPoolUsed < MaxHoldPool)
+                {
+                    float noteHalfAngleDeg = NoteCapGeometryBuilder.NoteHalfAngleDeg(
+                        halfWidthDeg, skinLaneWidthRatio);
+
+                    // Radial extent of the cap, clamped to the arena band [spawnR, judgementR].
+                    float capTailR = Mathf.Max(headR - capHalfThicknessLocal, spawnR);
+                    float capHeadR = Mathf.Min(headR + capHalfThicknessLocal, judgementR);
+
+                    if (capHeadR - capTailR > 0.0001f)
+                    {
+                        NoteCapGeometryBuilder.FillCapVerticesEdgeAware(
+                            _capVertScratch, ctr, capTailR, capHeadR,
+                            AngleUtil.Normalize360(lane.CenterDeg), noteHalfAngleDeg,
+                            headR,   // approach radius — for chord-to-angle conversion
+                            noteSkinSet.bodyLeftEdgeLocalWidth,
+                            noteSkinSet.bodyRightEdgeLocalWidth,
+                            innerLocal, outerLocal, hInner, hOuter,
+                            zOffset: NoteLayerZLift);
+
+                        NoteCapGeometryBuilder.FillCapUVs(
+                            _capUvScratch, headR, noteHalfAngleDeg, noteSkinSet,
+                            flipBodyVertical: false);
+
+                        if (capTex != null)
+                            _propBlock.SetTexture("_MainTex", capTex);
+                        _propBlock.SetColor("_Color", ribbonColor);
+
+                        Mesh capMesh = _capPool[_capPoolUsed++];
+                        capMesh.vertices = _capVertScratch;
+                        capMesh.uv       = _capUvScratch;
+                        capMesh.RecalculateBounds();
+
+                        Graphics.DrawMesh(capMesh, localToWorld, bodyMaterial,
+                            gameObject.layer, null, 0, _propBlock);
+                    }
+                }
+
+                // Degenerate ribbon guard: cap was drawn above; skip ribbon only.
                 if (headR - tailR < 0.0001f) { continue; }
 
                 // ── Length-direction V tiling (head-anchored) ─────────────────────────────
@@ -454,34 +570,8 @@ namespace RhythmicFlow.Player
                 float vHead         = flipVertical ? 1f : 0f;
                 float vTail         = flipVertical ? (1f - vSpan) : vSpan;
 
-                // ── Step 3: Phase-based tint ──────────────────────────────────────────────
-                //
-                // Applied as _Color multiplier on top of the hold body texture.
-                // With a white texture this reproduces the old flat-color behavior.
-                // With a real texture the tint modulates but doesn't replace it.
-                //
-                //   Missed (any HoldBind)       → holdColorReleased  (dim: failed/non-judging)
-                //   Active + HoldBind.Bound     → holdColorActive    (bright: scoring)
-                //   Active + HoldBind.Finished  → holdColorReleased  (dim: released early)
-                //   Active + HoldBind.Unbound   → holdColorApproaching
-                //
-                Color ribbonColor;
-                if (note.State == NoteState.Missed)
-                {
-                    ribbonColor = holdColorReleased;
-                }
-                else
-                {
-                    switch (note.HoldBind)
-                    {
-                        case HoldBindState.Bound:    ribbonColor = holdColorActive;      break;
-                        case HoldBindState.Finished: ribbonColor = holdColorReleased;    break;
-                        default:                     ribbonColor = holdColorApproaching; break;
-                    }
-                }
-
-                // Set MaterialPropertyBlock: texture + phase tint.
-                // Both must be set before DrawMesh; MPB is reused (no allocation).
+                // Set MaterialPropertyBlock for ribbon: hold body texture + phase tint.
+                // The MPB may have been overwritten by the cap draw above, so re-set explicitly.
                 if (holdTex != null)
                     _propBlock.SetTexture("_MainTex", holdTex);
                 _propBlock.SetColor("_Color", ribbonColor);
@@ -497,8 +587,6 @@ namespace RhythmicFlow.Player
                 var tangLocal = new Vector3(-sinT, cosT, 0f);
 
                 // ── Step 5: Compute 3D local-space endpoints (XY + frustum Z) ────────────
-
-                Vector2 ctr = pfTf.NormalizedToLocal(new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
                 // Tail: inner (younger) end of the ribbon. Maps to V=vTail in UV.
                 var tailLocal3 = new Vector3(
@@ -521,9 +609,8 @@ namespace RhythmicFlow.Player
                 // head and tail are at different radii → trapezoid.
                 // holdLaneWidthRatio is now read from NoteSkinSet.
 
-                float halfWidthDeg = lane.WidthDeg * 0.5f;
-                float widthHead    = ComputeLaneWidthAtRadiusLocal(headR, halfWidthDeg) * skinLaneWidthRatio;
-                float widthTail    = ComputeLaneWidthAtRadiusLocal(tailR, halfWidthDeg) * skinLaneWidthRatio;
+                float widthHead = ComputeLaneWidthAtRadiusLocal(headR, halfWidthDeg) * skinLaneWidthRatio;
+                float widthTail = ComputeLaneWidthAtRadiusLocal(tailR, halfWidthDeg) * skinLaneWidthRatio;
 
                 // ── Step 7: Build 12-vertex ribbon (HoldColumnCount columns × 2 rows) ─────
                 //
