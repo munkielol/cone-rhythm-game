@@ -568,7 +568,7 @@ The intended authoring workflow is: **import PNG → assign to NoteSkinSet → r
 
 ### **5.7.1 Hold body rendering — scroll / long-note style (v0)**
 
-A hold note is rendered as a **head cap** (at `headR`) plus an **arc-conforming body ribbon** that scrolls toward the judgement line, exactly like an ArcCreate long note. The head is part of the intended visual design — not a temporary placeholder.
+A hold note is rendered as a **head cap** (at `headR`) plus an **arc-conforming body ribbon** that approaches the judgement line as a moving textured object — the same pattern used by all other note types: geometry moves, and the hold's own texture rides with it. The head is part of the intended visual design — not a temporary placeholder.
 
 **Approach formula (canonical, same as tap/flick):**
 
@@ -641,11 +641,20 @@ The hold has a **head cap** — a curved note-head visual drawn at `headR` on ev
 
 **Body motion readability (v0 — locked):**
 
-The hold body must visually read as **advancing toward the judgement line**, not as frozen or merely shrinking statically. This motion impression comes from body geometry and consumption behavior — not from an independently scrolling UV pattern.
+The hold body must visually read as **advancing toward and being consumed at the judgement line**, not as frozen or merely shrinking statically. This impression must come from the body's own movement and consumption — not from an independently authored scrolling UV effect.
 
-* **Body-local, head-anchored UV:** the `V` coordinate is always `0` (or `1` when `holdFlipVertical = true`) at the head/judgement end and increases toward the tail by `segmentLength × holdLengthTileRatePerUnit`. As the hold is consumed, tiles disappear from the tail end while the pattern at the head stays stable. This is the **only** motion mechanism.
-* **No independent pattern-flow parameter:** there is no `holdPatternFlowRate`, `holdScrollSpeed`, or UV-offset animation. The motion impression is produced entirely by body geometry and consumption shrinking.
-* This requirement must hold when `drawHoldHeadCap = false` — body readability must not rely on the head existing.
+> ⚠️ **Conflict resolved:** An earlier version of this section specified "head-anchored UV" (V=0 always at the head/judgement end; pattern stays stable at the head). That model causes the body to appear static during Phase A approach and does not correctly represent the hold as a moving object. The correct model is **hold-body-local** UV mapping, described below.
+
+**Hold-body-local UV (two-phase):**
+
+* **Phase A — approach (before `startTimeMs`):** The UV pattern is fixed relative to the hold body itself. V=0 (or 1 if `holdFlipVertical`) is at the head (front) end; V increases toward the tail by `bodyLength × holdLengthTileRatePerUnit`. The V value on each vertex does not change while the body approaches — the entire textured hold advances as one object, exactly the way Tap/Catch/Flick note heads do.
+* **Phase B — during hold (`startTimeMs ≤ chartTime`):** The head geometry is pinned at `judgementR` (by `Clamp01`). The same textured hold body continues advancing and is **consumed** at the judgement line. Different parts of the pattern arrive at the pinned front over time. The rate at which the pattern advances is derived from the hold's actual approach geometry — there is no separate authored flow-rate parameter.
+
+The two phases join seamlessly: at `startTimeMs`, the head has just reached `judgementR` and V at the head vertex is `0`, which is the natural starting state for Phase B consumption.
+
+**No independent pattern-flow parameter:** there is no `holdPatternFlowRate`, `holdScrollSpeed`, or separately authored UV-offset animation. Any UV advance in Phase B is a direct consequence of the hold body's approach motion meeting the pinned geometry — it runs at the same rate as the Phase A approach, not a separately tuned value.
+
+**Must hold when `drawHoldHeadCap = false`:** body readability must not rely on the head cap existing. The Phase A approach motion and Phase B consumption motion must both read clearly from the body arc alone.
 
 **Hold endpoint model (v0 — locked):**
 
@@ -657,8 +666,8 @@ The hold body must visually read as **advancing toward the judgement line**, not
 Hold body skins must follow the same philosophy as note head skins (§5.7.3). This migration is a separate later step; do not block Tap/Catch/Flick skin work on it:
 * **Decorative side borders** — fixed UV-mapped edge regions that preserve their art regardless of lane width changes. Must not stretch.
 * **Tiled center (width)** — the center region tiles between the borders as lane width changes. Full-surface stretch is not acceptable as a final result.
-* **Tiled length (radial)** — the ribbon texture tiles along the radial direction at a consistent rate. Stretch-based length mapping is not acceptable as a final result; it smears art on long holds. The tiling is **body-local and head-anchored** (see "Body motion readability" above): `V` is fixed at the head/judgement end and tiles outward toward the tail. There is no independently animated UV offset in the length direction.
-* The current v0 implementation drives hold body texture via `MaterialPropertyBlock._MainTex` / `_Color` with head-anchored `V` tiling. Full fixed-edge + tiled-center skin migration is deferred to a later step.
+* **Tiled length (radial)** — the ribbon texture tiles along the radial direction at a consistent rate. Stretch-based length mapping is not acceptable as a final result; it smears art on long holds. The tiling is **hold-body-local** (see "Body motion readability" above): `V` maps the hold's own advancing body — fixed to it during Phase A approach and consuming through the judgement clip in Phase B. There is no independently authored UV offset or flow-rate setting in the length direction.
+* The current v0 implementation drives hold body texture via `MaterialPropertyBlock._MainTex` / `_Color` with hold-body-local `V` tiling. Full fixed-edge + tiled-center skin migration is deferred to a later step.
 
 **Visibility and missed-hold lifetime (v0 locked):**
 

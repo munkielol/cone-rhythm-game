@@ -409,7 +409,9 @@ If the hold is **missed** (player never bound it) or **released early**, the rib
 
 The body is an **arc-conforming grid** (see player spec §5.7.1 "Body geometry"): vertices are placed at `(ctr + cos(θ)·r, ctr + sin(θ)·r, FrustumZAtRadius(r) + NoteLayerZLift)` across a `(holdArcSegments+1) × (holdRadialSegments+1)` grid. This makes the body follow the lane's actual arc curvature. The chord width formula (`2 · r · sin(holdHalfAngleDeg · Deg2Rad)`) is used for UV mapping only; the `holdLaneWidthRatio` skin parameter scales the angular half-span (default 0.9). The chart editor playtest preview must use the same arc-conforming formula — not the old `tangLocal` trapezoid.
 
-**Body motion readability:** The body UV is head-anchored — the pattern at the judgement end stays stable while tiles disappear from the tail as it is consumed. There is no independently scrolling UV pattern. The motion impression comes from body geometry and consumption behavior. This must hold with or without the hold head cap displayed.
+**Body motion readability:** The body uses **hold-body-local UV mapping** in two phases: during approach (Phase A), the pattern is fixed relative to the hold body and the entire textured hold advances as one object; once the head pins at the judgement line (Phase B), the same textured body continues advancing and is consumed there — different parts of the pattern arrive at the pinned front over time. There is no independently authored scrolling UV pattern or flow-rate setting; the motion comes entirely from the body's own approach movement and judgement-line consumption. This must hold with or without the hold head cap displayed. See player spec §5.7.1 "Body motion readability" for the full two-phase model.
+
+> ⚠️ **Conflict resolved:** An earlier version of this section stated "the pattern at the judgement end stays stable." That described the old head-anchored model, which causes the body to appear static during approach. The correct model — hold-body-local UV — is described above.
 
 **Hold endpoint model (v0):** The v0 hold is start-judged only (start event + baked ticks). There is no required release-endpoint judgement in v0. A future hold-end note type is deferred — do not author charts expecting endpoint judgement, and do not add chart schema fields for it now.
 
@@ -419,8 +421,8 @@ Spawn position: `spawnRadiusFactor = 0` (v0 default) → hold tails first appear
 Hold body skins must follow the same fixed-edge + tiled-center philosophy as note head skins (player spec §5.7.3). Hold skin migration is explicitly a later step; the initial skin work covers Tap/Catch/Flick only:
 * Decorative side borders must preserve their art at fixed UV-mapped widths regardless of lane width changes. Stretch is not acceptable as a final result.
 * The center region must tile between the borders — not simply stretch. Full-surface stretch is a transitional placeholder only.
-* The ribbon must tile along the radial (length) direction rather than stretching, keeping art stable across different hold durations. The tiling is body-local and head-anchored — not a separate UV scroll animation (see player spec §5.7.1 "Body motion readability").
-* The current `HoldBodyRenderer` drives texture via `MaterialPropertyBlock._MainTex` / `_Color` with head-anchored V tiling. Full fixed-edge + tiled-center skin migration is a deferred later step.
+* The ribbon must tile along the radial (length) direction rather than stretching, keeping art stable across different hold durations. The tiling is **hold-body-local** — not a separately authored UV scroll animation (see player spec §5.7.1 "Body motion readability").
+* The current `HoldBodyRenderer` drives texture via `MaterialPropertyBlock._MainTex` / `_Color` with hold-body-local V tiling. Full fixed-edge + tiled-center skin migration is a deferred later step.
 The chart editor playtest should eventually render hold bodies via `HoldBodyRenderer` (or a shared equivalent) with full `NoteSkinSet`-driven skin fidelity, once hold skin migration is implemented.
 
 ---
