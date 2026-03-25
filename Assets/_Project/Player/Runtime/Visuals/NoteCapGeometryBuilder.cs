@@ -204,6 +204,9 @@ namespace RhythmicFlow.Player
         /// <param name="outerLocal">Arena outer band radius (PlayfieldLocal) — for frustum Z.</param>
         /// <param name="hInner">Frustum cone height at the inner band edge.</param>
         /// <param name="hOuter">Frustum cone height at the outer band edge.</param>
+        /// <param name="zOffset">Additional Z lift above the frustum surface (PlayfieldLocal units).
+        /// Pass a value larger than <c>LaneSurfaceRenderer.liftLocal</c> (0.005) to ensure
+        /// notes render in front of lane surfaces.  Default: 0 (raw frustum surface).</param>
         public static void FillCapVertices(
             Vector3[] verts,
             Vector2   ctr,
@@ -214,11 +217,12 @@ namespace RhythmicFlow.Player
             float     innerLocal,
             float     outerLocal,
             float     hInner,
-            float     hOuter)
+            float     hOuter,
+            float     zOffset = 0f)
         {
             // Frustum Z depends only on radius — compute once per row, not per vertex.
-            float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter);
-            float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter);
+            float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter) + zOffset;
+            float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter) + zOffset;
 
             // Angular sweep across the note cap: left boundary to right boundary.
             float leftDeg = centerDeg - noteHalfAngleDeg;
@@ -354,6 +358,9 @@ namespace RhythmicFlow.Player
         /// <param name="outerLocal">Arena outer band radius — for frustum Z.</param>
         /// <param name="hInner">Frustum cone height at the inner band edge.</param>
         /// <param name="hOuter">Frustum cone height at the outer band edge.</param>
+        /// <param name="zOffset">Additional Z lift above the frustum surface (PlayfieldLocal units).
+        /// Pass a value larger than <c>LaneSurfaceRenderer.liftLocal</c> (0.005) to ensure
+        /// notes render in front of lane surfaces.  Default: 0 (raw frustum surface).</param>
         public static void FillCapVerticesEdgeAware(
             Vector3[] verts,
             Vector2   ctr,
@@ -367,11 +374,12 @@ namespace RhythmicFlow.Player
             float     innerLocal,
             float     outerLocal,
             float     hInner,
-            float     hOuter)
+            float     hOuter,
+            float     zOffset = 0f)
         {
             // Frustum Z per row — same as FillCapVertices (depends only on radius).
-            float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter);
-            float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter);
+            float zTail = NoteApproachMath.FrustumZAtRadius(tailR, innerLocal, outerLocal, hInner, hOuter) + zOffset;
+            float zHead = NoteApproachMath.FrustumZAtRadius(headR, innerLocal, outerLocal, hInner, hOuter) + zOffset;
 
             // Total chord of the note cap at the approach radius.
             float totalChord = 2f * noteRadiusLocal * Mathf.Sin(noteHalfAngleDeg * Mathf.Deg2Rad);

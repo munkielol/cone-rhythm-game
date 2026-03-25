@@ -402,7 +402,8 @@ namespace RhythmicFlow.Player
                     innerLocal,
                     outerLocal,
                     hInner,
-                    hOuter);
+                    hOuter,
+                    zOffset: 0.010f);                       // note layer — above lane surface (liftLocal=0.005)
 
                 // ── Per-frame UV fill (fixed-edge + center-anchored tiled-center) ──────
                 // Uses the approach radius r (centre of the note band) so that edge/center

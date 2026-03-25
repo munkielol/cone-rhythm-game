@@ -697,12 +697,16 @@ namespace RhythmicFlow.Player
         /// keeping the ribbon in sync with all other production renderers.
         /// When the frustum profile is null or disabled, returns <c>surfaceOffsetLocal</c>.
         /// </summary>
+        // Note-layer Z lift: places hold ribbons above the lane surface (liftLocal = 0.005f).
+        // Must be greater than LaneSurfaceRenderer.liftLocal so ribbons are not occluded.
+        private const float NoteLayerZLift = 0.010f;
+
         private float ComputeEndpointLocalZ(float r, float innerLocal, float outerLocal)
         {
             if (frustumProfile == null || !frustumProfile.UseFrustumProfile) { return surfaceOffsetLocal; }
 
             return NoteApproachMath.FrustumZAtRadius(r, innerLocal, outerLocal,
-                frustumProfile.FrustumHeightInner, frustumProfile.FrustumHeightOuter);
+                frustumProfile.FrustumHeightInner, frustumProfile.FrustumHeightOuter) + NoteLayerZLift;
         }
 
         // -------------------------------------------------------------------
