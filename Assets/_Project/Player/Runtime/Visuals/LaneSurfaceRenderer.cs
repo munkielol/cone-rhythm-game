@@ -19,11 +19,13 @@
 // ── Shared occupancy model ────────────────────────────────────────────────────
 //
 //   ArenaOccupancyEvaluator (Shared) is the single source of truth for the current
-//   visible lane intervals (spec §5.5.3).  LaneSurfaceRenderer reads the raw
-//   (pre-merge) lane intervals via TryGetLaneInterval(evalIndex) — one call per
-//   authored lane — rather than iterating sorted spatial indices.  Each authored
-//   lane therefore always renders its own surface independently, regardless of how
-//   its position relates to neighbouring lanes.
+//   visible lane segments (spec §5.5.3).  LaneSurfaceRenderer calls
+//   GetLaneVisibleSegments(evalIndex) for each authored lane — one call per lane —
+//   which returns 0, 1, or 2 seam-aware segments for that lane.
+//
+//   Most lanes produce 1 segment.  A lane that crosses the current arena seam in a
+//   full-circle arena produces 2 segments; both are drawn as separate meshes so the
+//   lane body remains visually complete across the seam.
 //
 //   ArenaSurfaceRenderer subtracts the merged occupied union when computing fill
 //   intervals; both renderers derive their intervals from the same Compute() call,
@@ -365,31 +367,44 @@ namespace RhythmicFlow.Player
                     if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
                     if (lane.ArenaId != arena.ArenaId) { continue; }
 
-                    // Look up this lane's clamped visible interval by its authored identity.
-                    // Returns false when the lane's interval collapsed to zero after clamping
-                    // (i.e., the lane is entirely outside the arena's angular span).
-                    if (!_occupancy.TryGetLaneInterval(laneIdx, out AngularInterval laneInterval)) { continue; }
+                    // Look up this lane's visible segments by its authored identity.
+                    // Returns 0 when the lane is entirely outside the arena span.
+                    // Returns 1 for the normal case (one contiguous visible body).
+                    // Returns 2 when the lane crosses the arena seam in a full-circle
+                    // arena — both halves must be drawn to avoid a visual gap.
+                    int segCount = _occupancy.GetLaneVisibleSegments(
+                        laneIdx, out AngularInterval seg0, out AngularInterval seg1);
 
-                    // ── Fill mesh vertices and UVs ─────────────────────────────────────
-                    // laneInterval.StartDeg and EndDeg are already clamped to the arena span
-                    // by ArenaOccupancyEvaluator — no further clamping needed here.
-                    FillLaneSectorVerts(
-                        _vertScratch, _uvScratch,
-                        laneInterval.StartDeg, laneInterval.EndDeg,
-                        center,
-                        innerLocal, visualOuterLocal,
-                        innerLocal, outerLocal,
-                        hInner, hOuter,
-                        liftLocal,
-                        arcSegments, radialSegments);
+                    if (segCount == 0) { continue; }
 
-                    // ── Upload and draw ────────────────────────────────────────────────
-                    int slot = _poolUsed++;
-                    _meshPool[slot].vertices = _vertScratch;
-                    _meshPool[slot].uv       = _uvScratch;
-                    _meshPool[slot].RecalculateBounds();
-                    Graphics.DrawMesh(_meshPool[slot], localToWorld, laneMaterial,
-                        gameObject.layer, null, 0, _propBlock);
+                    // ── Draw each visible segment ──────────────────────────────────────
+                    // Intervals are in global-extended degrees [arenaStart, arenaStart+sweep].
+                    // FillLaneSectorVerts lerps across [StartDeg, EndDeg]; Unity Cos/Sin
+                    // handle extended angles correctly — no normalisation needed.
+                    for (int s = 0; s < segCount; s++)
+                    {
+                        if (_poolUsed >= MaxLanePool) { break; }
+
+                        AngularInterval seg = (s == 0) ? seg0 : seg1;
+
+                        FillLaneSectorVerts(
+                            _vertScratch, _uvScratch,
+                            seg.StartDeg, seg.EndDeg,
+                            center,
+                            innerLocal, visualOuterLocal,
+                            innerLocal, outerLocal,
+                            hInner, hOuter,
+                            liftLocal,
+                            arcSegments, radialSegments);
+
+                        // ── Upload and draw ────────────────────────────────────────────
+                        int slot = _poolUsed++;
+                        _meshPool[slot].vertices = _vertScratch;
+                        _meshPool[slot].uv       = _uvScratch;
+                        _meshPool[slot].RecalculateBounds();
+                        Graphics.DrawMesh(_meshPool[slot], localToWorld, laneMaterial,
+                            gameObject.layer, null, 0, _propBlock);
+                    }
                 }
             }
         }

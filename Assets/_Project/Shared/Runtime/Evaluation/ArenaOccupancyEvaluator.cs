@@ -7,12 +7,15 @@
 //   Given a current EvaluatedArena and the full ChartRuntimeEvaluator, Compute()
 //   derives three sets of angular intervals from current evaluated lane state:
 //
-//     Lane intervals       One per currently enabled lane in the arena, each
-//                          clamped to the arena's angular span.  These are the
-//                          raw (possibly overlapping) occupied extents before merging.
+//     Lane segments        Up to two segments per currently enabled lane in the
+//                          arena, each clipped (and split at the seam if needed)
+//                          to the arena's current angular span.  These are the raw
+//                          (possibly overlapping) occupied extents before merging.
+//                          Most lanes produce one segment; a lane that crosses the
+//                          current arena seam produces two.
 //
-//     Occupied union       The sorted, merged union of all lane intervals.
-//                          Overlapping or adjacent lanes are unified so the occupied
+//     Occupied union       The sorted, merged union of all lane segments.
+//                          Overlapping or adjacent segments are unified so the occupied
 //                          set is non-overlapping and exactly covers the lane footprint.
 //
 //     Fill intervals       The complement of the occupied union within the arena span:
@@ -33,13 +36,43 @@
 //   into those pre-allocated arrays — zero heap allocation per call.  Safe to call
 //   every frame on the Unity main thread.
 //
-// ── Limitations / deferred ────────────────────────────────────────────────────
+// ── Arena-local angular domain ────────────────────────────────────────────────
 //
-//   Wrap-around seam: lanes that straddle the 0°/360° seam of a full-circle arena
-//   are not split into two intervals here.  CenterDeg is normalised to [0, 360) by
-//   ChartRuntimeEvaluator; lanes near the seam may clamp incorrectly when the arena
-//   ArcStartDeg is near 0° and ArcSweepDeg ≈ 360°.  This is the same limitation
-//   present in ArenaSurfaceRenderer and LaneSurfaceRenderer and is deferred.
+//   All occupancy computation is performed in arena-local angular space:
+//
+//     local 0°    = current arena ArcStartDeg (the seam, in global degrees)
+//     local sweep = ArcSweepDeg (the arena's total angular span)
+//
+//   Why this is required:
+//
+//   (1) Rotating arenas: the arena's ArcStartDeg animates each frame, so the
+//       global position of the seam changes.  A lane that is "near the seam" in
+//       local terms stays near the seam regardless of where the arena is pointing.
+//       Naive global-degree clamping to [ArcStartDeg, ArcStartDeg + ArcSweep] fails
+//       because it treats e.g. lane CenterDeg=180 as "far from" arena-start=350
+//       even when the arena sweep covers that global angle via wrap.
+//
+//   (2) Full-circle arenas: when ArcSweepDeg = 360, the arena is a full ring.
+//       A lane at CenterDeg=5 when arenaStart=350 has localCenter=15 — clearly
+//       inside the ring — but globalInterval=[−9, 19] does not overlap with the
+//       global range [350, 710] without modular arithmetic.  Arena-local conversion
+//       normalises the center first (15°), so the clip/split is applied in
+//       [0, 360] local space where the arithmetic is straightforward.
+//
+//   Conversion: localCenter = Mathf.Repeat(laneCenterDeg − arenaStartDeg, 360)
+//
+//   For partial arenas (ArcSweep < 360), the local domain is [0, arcSweep] with
+//   hard boundaries — lanes that extend beyond are simply clipped; no seam wrap.
+//
+//   For full-circle arenas (ArcSweep ≥ 360), local [0, 360] is a cyclic ring.
+//   A lane whose local interval [localCenter − halfWidth, localCenter + halfWidth]
+//   crosses local 0°/360° is split into two segments so both visible portions are
+//   represented and rendered individually.
+//
+//   All returned intervals (lane segments, occupied, fill) are in global-extended
+//   degrees: [ArcStartDeg + localStart, ArcStartDeg + localEnd].  Values above 360
+//   are valid (e.g. 380°) — Unity's Mathf.Cos/Sin accept them unchanged, and the
+//   renderers lerp across start→end which produces correct geometry.
 //
 // ── Usage ─────────────────────────────────────────────────────────────────────
 //
@@ -137,35 +170,35 @@ namespace RhythmicFlow.Shared
         // Pre-allocated scratch arrays (zero GC per Compute() call)
         // -------------------------------------------------------------------
 
-        // Raw lane intervals collected for the current arena.
-        // One entry per enabled lane in the arena, clamped to the arena span.
-        // Sorted by left edge before merging.
+        // Raw lane segments collected for the current arena.
+        // Each enabled lane contributes 0, 1, or 2 segments (2 when it crosses the seam
+        // of a full-circle arena).  Capacity = 2 × maxLanesPerArena.
+        // Sorted by left edge (in global-extended degrees) before merging.
         //
         // _laneEvalIndex[i] stores the ChartRuntimeEvaluator lane array index that
-        // produced interval i.  It is sorted in parallel with _laneLeft/_laneRight so
-        // that callers can perform identity-stable lookups via TryGetLaneInterval().
+        // produced segment i.  It is sorted in parallel with _laneLeft/_laneRight so
+        // that callers can perform identity-stable lookups via GetLaneVisibleSegments().
         //
         // Why track this separately from the sort key?
         //   Sorting is required for the merge step (MergeIntervals needs sorted input).
         //   But sorted spatial order is NOT a stable identity: when two lanes cross,
         //   their left-edge order swaps, and any code that indexed by sort position
         //   would silently reassign which authored-lane body each slot represents.
-        //   Storing the evaluator index in parallel lets consumers (LaneSurfaceRenderer)
-        //   ask "give me the interval for the lane at evaluator index N" rather than
-        //   "give me the Nth spatially sorted interval".
+        //   One evalIndex can appear up to twice (seam-split lane).  Storing the index
+        //   in parallel lets GetLaneVisibleSegments() collect all segments for a lane.
         private readonly float[] _laneLeft;
         private readonly float[] _laneRight;
-        private readonly int[]   _laneEvalIndex;  // evaluator lane index per sorted interval
-        private          int     _laneCount;
+        private readonly int[]   _laneEvalIndex;  // evaluator lane index per sorted segment
+        private          int     _laneCount;       // total raw segments (not lanes)
 
-        // Merged occupied intervals — sorted, non-overlapping union of all lane intervals.
-        // At most _laneLeft.Length entries (one per lane in the degenerate non-overlapping case).
+        // Merged occupied intervals — sorted, non-overlapping union of all lane segments.
+        // Capacity = _laneLeft.Length (upper bound when no merging occurs).
         private readonly float[] _occupiedLeft;
         private readonly float[] _occupiedRight;
         private          int     _occupiedCount;
 
         // Fill intervals — complement of occupied union within the arena span.
-        // At most (_laneLeft.Length + 1) entries:
+        // Capacity = _laneLeft.Length + 1:
         //   one gap before the first occupied interval,
         //   one gap between each pair of adjacent occupied intervals,
         //   one gap after the last occupied interval.
@@ -226,19 +259,23 @@ namespace RhythmicFlow.Shared
         /// </param>
         public ArenaOccupancyEvaluator(int maxLanesPerArena = DefaultMaxLanes)
         {
-            int cap = Mathf.Max(1, maxLanesPerArena);
+            int cap    = Mathf.Max(1, maxLanesPerArena);
+            // Each lane can produce up to 2 segments (seam-split full-circle case),
+            // so the raw lane arrays need 2× the authored lane capacity.
+            int rawCap = cap * 2;
 
-            _laneLeft      = new float[cap];
-            _laneRight     = new float[cap];
-            _laneEvalIndex = new int[cap];
+            _laneLeft      = new float[rawCap];
+            _laneRight     = new float[rawCap];
+            _laneEvalIndex = new int[rawCap];
 
-            _occupiedLeft  = new float[cap];
-            _occupiedRight = new float[cap];
+            // Occupied and fill arrays are bounded by the raw segment count.
+            _occupiedLeft  = new float[rawCap];
+            _occupiedRight = new float[rawCap];
 
             // The complement of N non-overlapping intervals in a span has at most
             // N + 1 gaps (one leading, one between each pair, one trailing).
-            _fillLeft  = new float[cap + 1];
-            _fillRight = new float[cap + 1];
+            _fillLeft  = new float[rawCap + 1];
+            _fillRight = new float[rawCap + 1];
         }
 
         // -------------------------------------------------------------------
@@ -278,14 +315,27 @@ namespace RhythmicFlow.Shared
             _arenaStartDeg = arena.ArcStartDeg;
             _arenaEndDeg   = arena.ArcStartDeg + arcSweep;
 
-            // ── Step 1: Collect enabled lane intervals for this arena ─────────────
+            // ── Step 1: Collect enabled lane segments in arena-local space ──────────
             //
-            // For each enabled lane that belongs to this arena, compute its angular
-            // interval [leftDeg, rightDeg] and clamp it to the arena's span.
-            // Intervals that collapse to zero width after clamping are discarded.
+            // All lane coverage is computed in arena-local angular space:
             //
-            // Deferred: lanes that straddle the 0°/360° seam of a full-circle arena
-            // are not split — see file header for details.
+            //   localCenter = Mathf.Repeat(laneCenterDeg − arenaStartDeg, 360)
+            //
+            // This converts any global lane center to its position relative to the
+            // arena seam (local 0°), correctly handling both wrapped arenas and
+            // rotating arenas whose seam moves frame-to-frame.
+            //
+            // Partial arenas (arcSweep < 360): clip local interval to [0, arcSweep].
+            // Full-circle arenas (arcSweep ≥ 360): the local domain is [0, 360].
+            //   A lane whose local interval straddles local 0°/360° is split into
+            //   two segments so both visible halves are represented and rendered.
+            //
+            // All stored intervals are returned in global-extended degrees:
+            //   globalStart = arenaStartDeg + localStart
+            //   globalEnd   = arenaStartDeg + localEnd
+            // Values > 360° are valid — Mathf.Cos/Sin accept them, renderers lerp.
+            bool isFull = (arcSweep >= 360f);
+
             for (int l = 0; l < evaluator.LaneCount; l++)
             {
                 EvaluatedLane lane = evaluator.GetLane(l);
@@ -293,25 +343,97 @@ namespace RhythmicFlow.Shared
                 // Only collect lanes that belong to this arena and are currently enabled.
                 if (!lane.EnabledBool || lane.ArenaId != arena.ArenaId) { continue; }
 
-                // Silently ignore lanes beyond the pre-allocated capacity.
+                // Stop if raw segment capacity is exhausted (2× maxLanes — never hit
+                // in practice, but guards against degenerate charts).
                 if (_laneCount >= _laneLeft.Length) { break; }
 
-                float laneLeft  = lane.CenterDeg - lane.WidthDeg * 0.5f;
-                float laneRight = lane.CenterDeg + lane.WidthDeg * 0.5f;
+                float halfWidth   = lane.WidthDeg * 0.5f;
+                // Convert global lane center to arena-local: always in [0, 360).
+                float localCenter = Mathf.Repeat(lane.CenterDeg - _arenaStartDeg, 360f);
+                float localLeft   = localCenter - halfWidth;
+                float localRight  = localCenter + halfWidth;
 
-                // Clamp to the arena's angular span so lane sectors never extend
-                // outside the arena boundary.
-                laneLeft  = Mathf.Max(laneLeft,  _arenaStartDeg);
-                laneRight = Mathf.Min(laneRight, _arenaEndDeg);
+                if (isFull)
+                {
+                    // ── Full-circle arena: seam-aware segment collection ─────────────
+                    //
+                    // The local domain is [0, 360] (cyclic).  A lane that crosses
+                    // local 0° or local 360° (the same seam) is split into two segments:
+                    //   Lower-seam crossing (localLeft < 0):
+                    //     Seg A: local [0, localRight]          → "right" side of seam
+                    //     Seg B: local [360+localLeft, 360]     → "left"  side of seam
+                    //   Upper-seam crossing (localRight > 360):
+                    //     Seg A: local [localLeft, 360]         → "left"  side of seam
+                    //     Seg B: local [0, localRight−360]      → "right" side of seam
+                    //   No crossing:
+                    //     Seg A: local [localLeft, localRight]  → one segment
+                    //
+                    // Each seg stored in global-extended = arenaStartDeg + local.
+                    if (localLeft < 0f)
+                    {
+                        // Seg A — right side (from local 0 to localRight)
+                        if (localRight > 0f && _laneCount < _laneLeft.Length)
+                        {
+                            _laneLeft[_laneCount]      = _arenaStartDeg;
+                            _laneRight[_laneCount]     = _arenaStartDeg + Mathf.Min(localRight, 360f);
+                            _laneEvalIndex[_laneCount] = l;
+                            _laneCount++;
+                        }
+                        // Seg B — left side (from 360+localLeft to 360)
+                        if (_laneCount < _laneLeft.Length)
+                        {
+                            _laneLeft[_laneCount]      = _arenaStartDeg + 360f + localLeft;
+                            _laneRight[_laneCount]     = _arenaStartDeg + 360f;
+                            _laneEvalIndex[_laneCount] = l;
+                            _laneCount++;
+                        }
+                    }
+                    else if (localRight > 360f)
+                    {
+                        // Seg A — left side (from localLeft to 360)
+                        if (_laneCount < _laneLeft.Length)
+                        {
+                            _laneLeft[_laneCount]      = _arenaStartDeg + localLeft;
+                            _laneRight[_laneCount]     = _arenaStartDeg + 360f;
+                            _laneEvalIndex[_laneCount] = l;
+                            _laneCount++;
+                        }
+                        // Seg B — right side (overflow mapped back to beginning)
+                        float overflow = localRight - 360f;
+                        if (overflow > 0f && _laneCount < _laneLeft.Length)
+                        {
+                            _laneLeft[_laneCount]      = _arenaStartDeg;
+                            _laneRight[_laneCount]     = _arenaStartDeg + overflow;
+                            _laneEvalIndex[_laneCount] = l;
+                            _laneCount++;
+                        }
+                    }
+                    else
+                    {
+                        // No seam crossing — single segment.
+                        _laneLeft[_laneCount]      = _arenaStartDeg + localLeft;
+                        _laneRight[_laneCount]     = _arenaStartDeg + localRight;
+                        _laneEvalIndex[_laneCount] = l;
+                        _laneCount++;
+                    }
+                }
+                else
+                {
+                    // ── Partial arena: clip local interval to [0, arcSweep] ─────────
+                    //
+                    // No seam wrapping: the local domain has hard boundaries at 0 and
+                    // arcSweep.  A lane extending past either boundary is simply clipped.
+                    float clampedLeft  = Mathf.Max(localLeft,  0f);
+                    float clampedRight = Mathf.Min(localRight, arcSweep);
 
-                // Discard intervals that collapsed to zero or negative width after clamping
-                // (happens when a lane is entirely outside the arena's angular span).
-                if (laneRight <= laneLeft) { continue; }
+                    // Discard lanes entirely outside the arena's angular span.
+                    if (clampedRight <= clampedLeft) { continue; }
 
-                _laneLeft[_laneCount]      = laneLeft;
-                _laneRight[_laneCount]     = laneRight;
-                _laneEvalIndex[_laneCount] = l;  // record which evaluator lane index this came from
-                _laneCount++;
+                    _laneLeft[_laneCount]      = _arenaStartDeg + clampedLeft;
+                    _laneRight[_laneCount]     = _arenaStartDeg + clampedRight;
+                    _laneEvalIndex[_laneCount] = l;
+                    _laneCount++;
+                }
             }
 
             // ── Step 2: Sort lane intervals by left edge ──────────────────────────
@@ -373,44 +495,69 @@ namespace RhythmicFlow.Shared
         public int GetLaneEvalIndex(int i) => _laneEvalIndex[i];
 
         /// <summary>
-        /// Looks up the visible interval for the lane at evaluator array index
-        /// <paramref name="evalIndex"/> from the last <see cref="Compute"/> call.
+        /// Returns the number of visible segments (0, 1, or 2) for the lane at evaluator
+        /// array index <paramref name="evalIndex"/> from the last <see cref="Compute"/> call,
+        /// and fills <paramref name="seg0"/> / <paramref name="seg1"/> with the segment data.
         ///
-        /// <para>Returns <c>true</c> and sets <paramref name="interval"/> when the lane
-        /// produced a non-degenerate clamped interval in this arena.  Returns <c>false</c>
-        /// when the lane was absent from the results — it was not enabled, does not belong
-        /// to this arena, or its clamped interval collapsed to zero width (entirely outside
-        /// the arena's angular span).</para>
+        /// <para><strong>0 segments</strong> — the lane is disabled, not in this arena, or
+        /// its entire angular extent is outside the arena span.</para>
+        ///
+        /// <para><strong>1 segment</strong> — the normal case.  The lane is fully inside the
+        /// arena or clipped to one contiguous piece at a partial-arena boundary.</para>
+        ///
+        /// <para><strong>2 segments</strong> — the lane crosses the current arena seam in a
+        /// full-circle (ArcSweep ≥ 360) arena.  Both halves must be drawn independently
+        /// to avoid a visual gap at the seam.</para>
+        ///
+        /// <para>All interval angles are in global-extended degrees
+        /// [<c>ArenaStartDeg</c>, <c>ArenaEndDeg</c>]; values above 360° are valid.</para>
         ///
         /// <para><strong>Why not index by spatial sort position?</strong>  Sorted spatial
-        /// order is necessary for the merge/complement math (fill-interval computation
-        /// requires sorted, non-overlapping input).  However it is not a stable per-lane
-        /// identity: when two lanes cross and their angular positions swap, the sorted
-        /// index assignment silently changes which authored lane body each slot represents.
-        /// This method bypasses spatial ordering and provides a stable, identity-keyed
-        /// lookup so each authored lane always renders its own interval regardless of
-        /// whether its neighbours have moved past it.</para>
+        /// order is required for the merge/complement math, but is not a stable per-lane
+        /// identity.  When lanes cross, the sort index assignment changes.  This method
+        /// bypasses spatial ordering and provides an identity-keyed lookup.</para>
         /// </summary>
         /// <param name="evalIndex">
         /// The lane array index from <see cref="ChartRuntimeEvaluator"/> — i.e., the value
         /// of <c>i</c> passed to <c>evaluator.GetLane(i)</c>.
         /// </param>
-        /// <param name="interval">
-        /// Set to the clamped lane interval on success; <c>default</c> on failure.
-        /// </param>
-        public bool TryGetLaneInterval(int evalIndex, out AngularInterval interval)
+        /// <param name="seg0">First segment on success; <c>default</c> otherwise.</param>
+        /// <param name="seg1">Second segment if count == 2; <c>default</c> otherwise.</param>
+        /// <returns>0, 1, or 2.</returns>
+        public int GetLaneVisibleSegments(int evalIndex,
+                                          out AngularInterval seg0,
+                                          out AngularInterval seg1)
         {
-            // Linear scan over _laneCount (2–8 in practice) — O(N), zero allocation.
+            // Linear scan over _laneCount (up to 2× authored lane count, still tiny).
+            // O(N), zero allocation.
+            int count = 0;
+            seg0 = default;
+            seg1 = default;
             for (int i = 0; i < _laneCount; i++)
             {
                 if (_laneEvalIndex[i] == evalIndex)
                 {
-                    interval = new AngularInterval(_laneLeft[i], _laneRight[i]);
-                    return true;
+                    if (count == 0) { seg0 = new AngularInterval(_laneLeft[i], _laneRight[i]); }
+                    else            { seg1 = new AngularInterval(_laneLeft[i], _laneRight[i]); }
+                    count++;
+                    if (count == 2) { break; } // at most 2 segments per lane
                 }
             }
-            interval = default;
-            return false;
+            return count;
+        }
+
+        /// <summary>
+        /// Looks up the first visible segment for the lane at evaluator array index
+        /// <paramref name="evalIndex"/> from the last <see cref="Compute"/> call.
+        ///
+        /// <para>Returns <c>true</c> when at least one segment exists.  For seam-split
+        /// lanes (full-circle arenas) the second segment is silently ignored — use
+        /// <see cref="GetLaneVisibleSegments"/> to retrieve both.</para>
+        /// </summary>
+        public bool TryGetLaneInterval(int evalIndex, out AngularInterval interval)
+        {
+            AngularInterval dummy;
+            return GetLaneVisibleSegments(evalIndex, out interval, out dummy) > 0;
         }
 
         /// <summary>
