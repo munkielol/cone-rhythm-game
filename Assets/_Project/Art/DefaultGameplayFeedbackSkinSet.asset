@@ -24,33 +24,49 @@ MonoBehaviour:
     overlayHeightLocal: 0.1
     fadeInDuration: 0.05
     fadeOutDuration: 0.12
-  perfect:
+  useSeparatePerfectPlusVisual: 0
+  perfectPlus:
     enabled: 1
     material: {fileID: 0}
+    texture: {fileID: 0}
+    tint: {r: 1, g: 1, b: 1, a: 1}
+    opacity: 1
+    sizeLocal: 0.07
+    surfaceOffsetLocal: 0.004
+    lifetime: 0.55
+    fadeOutDuration: 0.28
+    driftSpeedLocal: 0.06
+  perfect:
+    enabled: 1
+    material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
     tint: {r: 1, g: 0.92, b: 0.4, a: 1}
     opacity: 1
-    sizeLocal: 0.06
-    surfaceOffsetLocal: 0.004
-    lifetime: 0.5
-    fadeOutDuration: 0.25
+    sizeLocal: 1
+    surfaceOffsetLocal: 1
+    lifetime: 1
+    fadeOutDuration: 0.5
+    driftSpeedLocal: 0.05
   great:
     enabled: 1
-    material: {fileID: 0}
+    material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
     tint: {r: 0.5, g: 0.8, b: 1, a: 1}
     opacity: 1
-    sizeLocal: 0.05
-    surfaceOffsetLocal: 0.004
-    lifetime: 0.35
-    fadeOutDuration: 0.2
+    sizeLocal: 1
+    surfaceOffsetLocal: 1
+    lifetime: 1
+    fadeOutDuration: 0.5
+    driftSpeedLocal: 0.05
   miss:
-    enabled: 0
-    material: {fileID: 0}
+    enabled: 1
+    material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
-    tint: {r: 0.55, g: 0.55, b: 0.55, a: 0.7}
-    opacity: 0.7
-    sizeLocal: 0.04
-    surfaceOffsetLocal: 0.004
-    lifetime: 0.25
-    fadeOutDuration: 0.15
+    tint: {r: 1, g: 0.13679248, b: 0.13679248, a: 0.7}
+    opacity: 1
+    sizeLocal: 1
+    surfaceOffsetLocal: 1
+    lifetime: 1
+    fadeOutDuration: 0.5
+    driftSpeedLocal: 0.05
+  stackPolicy: 0
