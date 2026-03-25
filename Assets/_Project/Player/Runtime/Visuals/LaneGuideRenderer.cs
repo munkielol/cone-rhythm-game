@@ -1,17 +1,57 @@
 // LaneGuideRenderer.cs
 // Production lane guide renderer (spec §5.6 lane visuals).
 //
-// Draws three thin radial lines per active lane via Graphics.DrawMesh:
-//   – left edge  at lane.CenterDeg − lane.WidthDeg × 0.5
-//   – center     at lane.CenterDeg
-//   – right edge at lane.CenterDeg + lane.WidthDeg × 0.5
+// Draws two thin radial lines per visible lane segment via Graphics.DrawMesh:
+//   – left edge  at segment.StartDeg  (the seam-aware clamped left boundary)
+//   – right edge at segment.EndDeg    (the seam-aware clamped right boundary)
 //
-// Each line spans innerLocal → visualOuterLocal along its angle, lifted onto the
-// frustum cone surface using PlayfieldFrustumProfile.
+// The center guide has been intentionally removed: only left and right edge
+// guides are drawn.  This keeps the playfield uncluttered and makes lane
+// boundaries the only visual cue.
 //
-// Rendering pattern is identical to JudgementRingRenderer and ArenaBandRenderer:
-//   – pre-allocated Mesh pool, vertices written in-place every LateUpdate
-//   – Graphics.DrawMesh — works in Game view without Gizmos, no child GOs required
+// ── Interval source ───────────────────────────────────────────────────────────
+//
+//   Guide edge angles are sourced from ArenaOccupancyEvaluator.GetLaneVisibleSegments()
+//   — the same seam-aware, arena-clamped intervals used by LaneSurfaceRenderer.
+//   This guarantees that guide edges land exactly on the edges of the drawn lane
+//   surface, even when the arena is rotating, the lane crosses the arena seam, or
+//   the lane is clipped to the arena's angular span.
+//
+//   A seam-split lane (one that straddles a full-circle arena's seam) produces two
+//   segments from GetLaneVisibleSegments(); both receive their own pair of guides.
+//
+// ── Loop structure ────────────────────────────────────────────────────────────
+//
+//   Mirrors LaneSurfaceRenderer:
+//     Outer loop: arenas — calls ArenaOccupancyEvaluator.Compute() once per arena.
+//     Inner loop: evaluator lanes filtered to this arena — one mesh per visible
+//                 segment (0, 1, or 2 per lane).
+//
+// ── Z layering ────────────────────────────────────────────────────────────────
+//
+//   Visual layering from bottom (+Z = toward camera):
+//     Arena surface    — FrustumZAtRadius (base)
+//     Lane surface     — FrustumZAtRadius + 0.005  (LaneSurfaceRenderer.liftLocal)
+//     Lane guides      — FrustumZAtRadius + 0.008  (surfaceOffsetLocal default)
+//     Notes            — FrustumZAtRadius + 0.010  (NoteLayerZLift)
+//
+//   surfaceOffsetLocal must remain greater than LaneSurfaceRenderer.liftLocal (0.005)
+//   so that guides are always visible above the lane surface body.
+//
+// ── Mesh layout per segment ────────────────────────────────────────────────────
+//
+//   Each visible segment generates one mesh with 2 quads:
+//     Quad 0 (verts 0–3):  left-edge radial line at segment.StartDeg
+//     Quad 1 (verts 4–7):  right-edge radial line at segment.EndDeg
+//
+//   Each line spans innerLocal → visualOuterLocal along its angle, lifted onto the
+//   frustum cone surface using PlayfieldFrustumProfile + surfaceOffsetLocal.
+//
+// ── Rendering pattern ─────────────────────────────────────────────────────────
+//
+//   Identical to JudgementRingRenderer and ArenaBandRenderer:
+//     – pre-allocated Mesh pool, vertices written in-place every LateUpdate
+//     – Graphics.DrawMesh — works in Game view without Gizmos, no child GOs required
 //
 // No dependency on PlayerDebugRenderer or PlayerDebugArenaSurface.
 //
@@ -25,8 +65,12 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Production lane guide renderer.  Draws left-edge, center, and right-edge radial
-    /// line strips for each active lane.
+    /// Production lane guide renderer.  Draws left-edge and right-edge radial
+    /// line strips for each visible lane segment (seam-aware, arena-clamped).
+    ///
+    /// <para>Guide angles are sourced from <see cref="ArenaOccupancyEvaluator"/> —
+    /// the same intervals used by <see cref="LaneSurfaceRenderer"/> — so guide edges
+    /// are always aligned with the drawn lane surface.</para>
     ///
     /// <para>Attach to any GO in the Player scene.  Assign
     /// <see cref="playerAppController"/>, <see cref="guideMaterial"/>, and
@@ -57,34 +101,46 @@ namespace RhythmicFlow.Player
         [Tooltip("Tangential half-thickness of each radial line in PlayfieldLocal units.  Default: 0.003.")]
         [SerializeField] private float lineHalfThicknessLocal = 0.003f;
 
-        [Tooltip("Local Z offset added to every guide line vertex to lift guides above the arena surface.\n\n" +
-                 "Prevents Z-fighting with ArenaSurfaceRenderer layers when arena surface opacity is 1.\n" +
-                 "Should be small (e.g. 0.003) to stay visually flush with the surface.\n" +
-                 "Default: 0.003")]
+        [Tooltip("Local Z offset added to every guide line vertex (PlayfieldLocal units).\n\n" +
+                 "This lifts guides above the lane surface body so they remain visible.\n\n" +
+                 "Z layering (bottom → top):\n" +
+                 "  Lane surface  =  FrustumZAtRadius + 0.005  (LaneSurfaceRenderer.liftLocal)\n" +
+                 "  Lane guides   =  FrustumZAtRadius + surfaceOffsetLocal  ← this field\n" +
+                 "  Notes         =  FrustumZAtRadius + 0.010\n\n" +
+                 "MUST remain above LaneSurfaceRenderer.liftLocal (0.005) or guides will be\n" +
+                 "occluded by the lane body.  Keep below 0.010 to stay under notes.\n" +
+                 "Default: 0.008")]
         [Min(0f)]
-        [SerializeField] private float surfaceOffsetLocal = 0.003f;
+        [SerializeField] private float surfaceOffsetLocal = 0.008f;
 
         // -------------------------------------------------------------------
         // Internals
         // -------------------------------------------------------------------
 
-        // One mesh per active lane slot.  Pre-allocated in Awake.
+        // Maximum number of guide meshes drawn per frame across all arenas.
+        // One mesh per visible lane segment; a seam-split lane produces 2 segments,
+        // so this is a segment count, not a lane count.
         private const int MaxLanePool = 64;
 
-        // Each lane mesh = 3 quads (left edge + center + right edge).
-        // 3 quads × 4 separate verts = 12 verts.
-        // 3 quads × 2 tris × 3 indices = 18 tri indices.
-        private const int QuadsPerLane = 3;
-        private const int VertsPerLane = QuadsPerLane * 4;  // 12
-        private const int TrisPerLane  = QuadsPerLane * 6;  // 18
+        // Each segment mesh = 2 quads: left-edge guide + right-edge guide.
+        // Center guide is intentionally omitted.
+        // 2 quads × 4 separate verts = 8 verts.
+        // 2 quads × 2 tris × 3 indices = 12 tri indices.
+        private const int QuadsPerLane = 2;
+        private const int VertsPerLane = QuadsPerLane * 4;  // 8
+        private const int TrisPerLane  = QuadsPerLane * 6;  // 12
 
         private Mesh[] _meshPool;
         private int    _poolUsed;
 
-        // Vertex scratch: 3 quads × 4 verts.  Filled in-place each LateUpdate.
+        // Vertex scratch: 2 quads × 4 verts = 8 verts.  Filled in-place each LateUpdate.
         private Vector3[] _vertScratch;
 
         private MaterialPropertyBlock _propBlock;
+
+        // Shared occupancy evaluator — provides seam-aware, arena-clamped lane intervals.
+        // Mirrors the evaluator in LaneSurfaceRenderer so guide edges align with surface edges.
+        private ArenaOccupancyEvaluator _occupancy;
 
         // -------------------------------------------------------------------
         // Unity lifecycle
@@ -121,6 +177,10 @@ namespace RhythmicFlow.Player
 
             _propBlock = new MaterialPropertyBlock();
             _propBlock.SetColor("_Color", guideColor);
+
+            // Shared occupancy evaluator — same capacity as LaneSurfaceRenderer so both
+            // renderers process the same set of lanes per arena.
+            _occupancy = new ArenaOccupancyEvaluator(MaxLanePool);
         }
 
         private void OnDestroy()
@@ -153,70 +213,100 @@ namespace RhythmicFlow.Player
 
             _poolUsed = 0;
 
-            for (int laneIdx = 0; laneIdx < evaluator.LaneCount; laneIdx++)
+            // ── Outer loop: arenas ────────────────────────────────────────────────
+            //
+            // We iterate arenas rather than lanes so that ArenaOccupancyEvaluator.Compute()
+            // is called once per arena and its results consumed immediately — same
+            // structure as LaneSurfaceRenderer.  This ensures guide edges are sourced
+            // from the same seam-aware intervals as the lane surface, keeping them aligned.
+            for (int arenaIdx = 0; arenaIdx < evaluator.ArenaCount; arenaIdx++)
             {
                 if (_poolUsed >= MaxLanePool) { break; }
 
-                EvaluatedLane lane = evaluator.GetLane(laneIdx);
-                if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
+                EvaluatedArena arena = evaluator.GetArena(arenaIdx);
+                if (string.IsNullOrEmpty(arena.ArenaId) || !arena.EnabledBool) { continue; }
 
-                // ── Find parent arena ─────────────────────────────────────────────
-                // Linear scan: arena count is small (1-8 typical) so this is cheap.
-                EvaluatedArena arena  = default;
-                bool           found  = false;
-                for (int a = 0; a < evaluator.ArenaCount; a++)
-                {
-                    EvaluatedArena candidate = evaluator.GetArena(a);
-                    if (candidate.EnabledBool && candidate.ArenaId == lane.ArenaId)
-                    {
-                        arena = candidate;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) { continue; }
-
-                // ── Arena-derived geometry ────────────────────────────────────────
+                // ── Arena geometry in PlayfieldLocal units ─────────────────────────
                 float outerLocal = pfT.NormRadiusToLocal(arena.OuterRadiusNorm);
                 float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
 
-                // Guide lines extend to the visual outer edge, matching the arena outline.
+                // Guide lines extend to the visual outer edge, matching LaneSurfaceRenderer.
                 float visualOuterLocal = outerLocal
                     + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
+
+                // Skip degenerate geometry (band collapsed or inverted).
+                if (visualOuterLocal <= innerLocal || innerLocal < 0f) { continue; }
 
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // ── Lane edge angles ──────────────────────────────────────────────
-                float halfWidth = lane.WidthDeg * 0.5f;
-                float leftDeg   = lane.CenterDeg - halfWidth;
-                float rightDeg  = lane.CenterDeg + halfWidth;
+                // ── Compute seam-aware lane intervals ──────────────────────────────
+                //
+                // Compute() fills the occupancy evaluator with all enabled lanes for this
+                // arena, sorted and seam-split as needed.  Returns false for disabled or
+                // degenerate arenas (both already guarded above).
+                if (!_occupancy.Compute(arena, evaluator)) { continue; }
 
-                // ── Fill 3 radial line quads into scratch ──────────────────────────
-                // Quad 0: left edge
-                FillRadialLineVerts(_vertScratch, 0, leftDeg, center,
-                    innerLocal, visualOuterLocal,
-                    innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal, surfaceOffsetLocal);
+                // ── Inner loop: authored lanes (identity-stable) ───────────────────
+                //
+                // Iterate by evaluator lane index so each authored lane always draws its
+                // own guide regardless of whether crossing lanes have swapped their
+                // sorted positions (same reasoning as LaneSurfaceRenderer).
+                for (int laneIdx = 0; laneIdx < evaluator.LaneCount; laneIdx++)
+                {
+                    if (_poolUsed >= MaxLanePool) { break; }
 
-                // Quad 1: center line
-                FillRadialLineVerts(_vertScratch, 4, lane.CenterDeg, center,
-                    innerLocal, visualOuterLocal,
-                    innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal, surfaceOffsetLocal);
+                    EvaluatedLane lane = evaluator.GetLane(laneIdx);
 
-                // Quad 2: right edge
-                FillRadialLineVerts(_vertScratch, 8, rightDeg, center,
-                    innerLocal, visualOuterLocal,
-                    innerLocal, outerLocal, hInner, hOuter,
-                    lineHalfThicknessLocal, surfaceOffsetLocal);
+                    // Skip lanes outside this arena or currently disabled.
+                    if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
+                    if (lane.ArenaId != arena.ArenaId) { continue; }
 
-                int slot = _poolUsed++;
-                _meshPool[slot].vertices = _vertScratch;
-                _meshPool[slot].RecalculateBounds();
-                Graphics.DrawMesh(_meshPool[slot], localToWorld, guideMaterial,
-                    gameObject.layer, null, 0, _propBlock);
+                    // Look up this lane's seam-aware visible segment(s).
+                    //   0 segments → lane is outside the arena span (clipped to empty)
+                    //   1 segment  → the normal case
+                    //   2 segments → lane crosses the arena seam in a full-circle arena
+                    int segCount = _occupancy.GetLaneVisibleSegments(
+                        laneIdx, out AngularInterval seg0, out AngularInterval seg1);
+
+                    if (segCount == 0) { continue; }
+
+                    // ── Draw guides for each visible segment ───────────────────────
+                    //
+                    // Each segment produces one mesh containing:
+                    //   Quad 0: left-edge guide at segment.StartDeg
+                    //   Quad 1: right-edge guide at segment.EndDeg
+                    //
+                    // No center guide is drawn (intentionally removed).
+                    //
+                    // Segment angles are in global-extended degrees; FillRadialLineVerts
+                    // uses Mathf.Cos/Sin which handle values outside [0, 360) correctly.
+                    for (int s = 0; s < segCount; s++)
+                    {
+                        if (_poolUsed >= MaxLanePool) { break; }
+
+                        AngularInterval seg = (s == 0) ? seg0 : seg1;
+
+                        // Quad 0: left guide at the left boundary of this segment.
+                        FillRadialLineVerts(_vertScratch, 0, seg.StartDeg, center,
+                            innerLocal, visualOuterLocal,
+                            innerLocal, outerLocal, hInner, hOuter,
+                            lineHalfThicknessLocal, surfaceOffsetLocal);
+
+                        // Quad 1: right guide at the right boundary of this segment.
+                        FillRadialLineVerts(_vertScratch, 4, seg.EndDeg, center,
+                            innerLocal, visualOuterLocal,
+                            innerLocal, outerLocal, hInner, hOuter,
+                            lineHalfThicknessLocal, surfaceOffsetLocal);
+
+                        int slot = _poolUsed++;
+                        _meshPool[slot].vertices = _vertScratch;
+                        _meshPool[slot].RecalculateBounds();
+                        Graphics.DrawMesh(_meshPool[slot], localToWorld, guideMaterial,
+                            gameObject.layer, null, 0, _propBlock);
+                    }
+                }
             }
         }
 
