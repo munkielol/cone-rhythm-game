@@ -1,31 +1,38 @@
 // LaneGuideRenderer.cs
 // Production lane guide renderer (spec §5.6 lane visuals).
 //
-// Draws two thin radial lines per visible lane segment via Graphics.DrawMesh:
-//   – left edge  at segment.StartDeg  (the seam-aware clamped left boundary)
-//   – right edge at segment.EndDeg    (the seam-aware clamped right boundary)
+// Draws exactly two thin radial lines per logical lane via Graphics.DrawMesh:
+//   – left edge  at the lane's true left logical boundary
+//   – right edge at the lane's true right logical boundary
 //
 // The center guide has been intentionally removed: only left and right edge
 // guides are drawn.  This keeps the playfield uncluttered and makes lane
 // boundaries the only visual cue.
 //
+// ── Body segments vs. guide boundaries ───────────────────────────────────────
+//
+//   Body segments (used by LaneSurfaceRenderer) may split at the arena seam.
+//   Guide boundaries do not split — they represent the lane's actual angular
+//   extent.  See ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries for the
+//   derivation of how the two true boundaries are recovered from segments.
+//
+//   A seam-split lane (one that straddles a full-circle arena's seam) produces:
+//     LaneSurfaceRenderer:  two body meshes  (one per segment, seam-aware)
+//     LaneGuideRenderer:    one mesh         (two guides at real left/right only)
+//
 // ── Interval source ───────────────────────────────────────────────────────────
 //
-//   Guide edge angles are sourced from ArenaOccupancyEvaluator.GetLaneVisibleSegments()
-//   — the same seam-aware, arena-clamped intervals used by LaneSurfaceRenderer.
-//   This guarantees that guide edges land exactly on the edges of the drawn lane
-//   surface, even when the arena is rotating, the lane crosses the arena seam, or
-//   the lane is clipped to the arena's angular span.
-//
-//   A seam-split lane (one that straddles a full-circle arena's seam) produces two
-//   segments from GetLaneVisibleSegments(); both receive their own pair of guides.
+//   Guide edge angles are sourced from ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries()
+//   — which recovers the two logical boundaries from the same seam-aware data as
+//   LaneSurfaceRenderer.  This guarantees that guide edges land on the actual lane
+//   boundaries even for rotating arenas and seam-crossing lanes.
 //
 // ── Loop structure ────────────────────────────────────────────────────────────
 //
-//   Mirrors LaneSurfaceRenderer:
+//   Mirrors LaneSurfaceRenderer outer structure:
 //     Outer loop: arenas — calls ArenaOccupancyEvaluator.Compute() once per arena.
-//     Inner loop: evaluator lanes filtered to this arena — one mesh per visible
-//                 segment (0, 1, or 2 per lane).
+//     Inner loop: evaluator lanes filtered to this arena — one mesh per logical lane
+//                 (exactly two guides per lane, regardless of seam-split state).
 //
 // ── Z layering ────────────────────────────────────────────────────────────────
 //
@@ -263,49 +270,47 @@ namespace RhythmicFlow.Player
                     if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
                     if (lane.ArenaId != arena.ArenaId) { continue; }
 
-                    // Look up this lane's seam-aware visible segment(s).
-                    //   0 segments → lane is outside the arena span (clipped to empty)
-                    //   1 segment  → the normal case
-                    //   2 segments → lane crosses the arena seam in a full-circle arena
-                    int segCount = _occupancy.GetLaneVisibleSegments(
-                        laneIdx, out AngularInterval seg0, out AngularInterval seg1);
+                    // ── Look up logical guide boundaries ──────────────────────────
+                    //
+                    // TryGetLaneGuideBoundaries returns exactly two boundary angles
+                    // (left and right) for this lane, regardless of how many body
+                    // segments the seam-aware evaluator produced.
+                    //
+                    // For a seam-split lane (lane crossing the full-circle arena seam),
+                    // LaneSurfaceRenderer draws two body meshes but we still draw only
+                    // two guides — at the lane's actual left and right edges, not at
+                    // the seam.  See ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries
+                    // for the full derivation.
+                    //
+                    // Returns false only when the lane has no visible segments (entirely
+                    // outside the arena span, or disabled — already filtered above, but
+                    // guard for safety).
+                    if (!_occupancy.TryGetLaneGuideBoundaries(
+                        laneIdx, out float leftDeg, out float rightDeg)) { continue; }
 
-                    if (segCount == 0) { continue; }
-
-                    // ── Draw guides for each visible segment ───────────────────────
+                    // ── Draw exactly two guides per logical lane ───────────────────
                     //
-                    // Each segment produces one mesh containing:
-                    //   Quad 0: left-edge guide at segment.StartDeg
-                    //   Quad 1: right-edge guide at segment.EndDeg
+                    // Quad 0: left-edge guide at the lane's true left logical boundary.
+                    // Quad 1: right-edge guide at the lane's true right logical boundary.
                     //
-                    // No center guide is drawn (intentionally removed).
-                    //
-                    // Segment angles are in global-extended degrees; FillRadialLineVerts
+                    // Boundary angles are in global-extended degrees; FillRadialLineVerts
                     // uses Mathf.Cos/Sin which handle values outside [0, 360) correctly.
-                    for (int s = 0; s < segCount; s++)
-                    {
-                        if (_poolUsed >= MaxLanePool) { break; }
 
-                        AngularInterval seg = (s == 0) ? seg0 : seg1;
+                    FillRadialLineVerts(_vertScratch, 0, leftDeg, center,
+                        innerLocal, visualOuterLocal,
+                        innerLocal, outerLocal, hInner, hOuter,
+                        lineHalfThicknessLocal, surfaceOffsetLocal);
 
-                        // Quad 0: left guide at the left boundary of this segment.
-                        FillRadialLineVerts(_vertScratch, 0, seg.StartDeg, center,
-                            innerLocal, visualOuterLocal,
-                            innerLocal, outerLocal, hInner, hOuter,
-                            lineHalfThicknessLocal, surfaceOffsetLocal);
+                    FillRadialLineVerts(_vertScratch, 4, rightDeg, center,
+                        innerLocal, visualOuterLocal,
+                        innerLocal, outerLocal, hInner, hOuter,
+                        lineHalfThicknessLocal, surfaceOffsetLocal);
 
-                        // Quad 1: right guide at the right boundary of this segment.
-                        FillRadialLineVerts(_vertScratch, 4, seg.EndDeg, center,
-                            innerLocal, visualOuterLocal,
-                            innerLocal, outerLocal, hInner, hOuter,
-                            lineHalfThicknessLocal, surfaceOffsetLocal);
-
-                        int slot = _poolUsed++;
-                        _meshPool[slot].vertices = _vertScratch;
-                        _meshPool[slot].RecalculateBounds();
-                        Graphics.DrawMesh(_meshPool[slot], localToWorld, guideMaterial,
-                            gameObject.layer, null, 0, _propBlock);
-                    }
+                    int slot = _poolUsed++;
+                    _meshPool[slot].vertices = _vertScratch;
+                    _meshPool[slot].RecalculateBounds();
+                    Graphics.DrawMesh(_meshPool[slot], localToWorld, guideMaterial,
+                        gameObject.layer, null, 0, _propBlock);
                 }
             }
         }

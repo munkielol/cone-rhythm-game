@@ -561,6 +561,90 @@ namespace RhythmicFlow.Shared
         }
 
         /// <summary>
+        /// Returns the two logical guide boundary angles (left and right) for the lane at
+        /// evaluator array index <paramref name="evalIndex"/> from the last
+        /// <see cref="Compute"/> call.
+        ///
+        /// <para>
+        /// <strong>Why this is different from <see cref="GetLaneVisibleSegments"/>:</strong>
+        /// Body segments split at the arena seam so both halves can be rendered as
+        /// separate meshes.  Guide boundaries do not split — they represent the lane's
+        /// actual angular extent and must never appear at the seam itself.
+        /// </para>
+        ///
+        /// <para>
+        /// A seam-split lane (full-circle arena, lane crossing the seam) produces two body
+        /// segments from <see cref="GetLaneVisibleSegments"/>, but still has only two
+        /// logical boundaries (left edge and right edge).  This method always returns those
+        /// two logical angles regardless of how many body segments exist.
+        /// </para>
+        ///
+        /// <para>
+        /// After <see cref="Compute"/> sorts segments by <c>StartDeg</c>, the two segments
+        /// of a seam-split lane are always ordered so that:
+        /// <list type="bullet">
+        ///   <item><c>seg0.StartDeg</c> == arena seam lower end — artificial, NOT a boundary</item>
+        ///   <item><c>seg1.EndDeg</c>   == arena seam upper end — artificial, NOT a boundary</item>
+        ///   <item><c>seg1.StartDeg</c> == true left  boundary (returned as <paramref name="leftBoundaryDeg"/>)</item>
+        ///   <item><c>seg0.EndDeg</c>   == true right boundary (returned as <paramref name="rightBoundaryDeg"/>)</item>
+        /// </list>
+        /// For a non-seam-split lane (1 segment) the boundaries are trivially
+        /// <c>seg0.StartDeg</c> and <c>seg0.EndDeg</c>.
+        /// </para>
+        ///
+        /// <para>Returns <c>false</c> when the lane has no visible segments (disabled,
+        /// or entirely outside the arena span after clamping).</para>
+        /// </summary>
+        /// <param name="evalIndex">
+        /// The lane array index from <see cref="ChartRuntimeEvaluator"/> — the value of
+        /// <c>i</c> passed to <c>evaluator.GetLane(i)</c>.
+        /// </param>
+        /// <param name="leftBoundaryDeg">
+        /// Left guide angle in global-extended degrees on success; 0 otherwise.
+        /// </param>
+        /// <param name="rightBoundaryDeg">
+        /// Right guide angle in global-extended degrees on success; 0 otherwise.
+        /// </param>
+        /// <returns><c>true</c> when at least one segment exists; <c>false</c> otherwise.</returns>
+        public bool TryGetLaneGuideBoundaries(
+            int evalIndex, out float leftBoundaryDeg, out float rightBoundaryDeg)
+        {
+            int segCount = GetLaneVisibleSegments(
+                evalIndex, out AngularInterval seg0, out AngularInterval seg1);
+
+            if (segCount == 0)
+            {
+                leftBoundaryDeg  = 0f;
+                rightBoundaryDeg = 0f;
+                return false;
+            }
+
+            if (segCount == 1)
+            {
+                // Normal case: one contiguous visible body.
+                // Left boundary = segment start, right boundary = segment end.
+                leftBoundaryDeg  = seg0.StartDeg;
+                rightBoundaryDeg = seg0.EndDeg;
+                return true;
+            }
+
+            // segCount == 2: seam-split lane in a full-circle arena.
+            //
+            // After sorting by StartDeg, the two segments are ordered so that:
+            //   seg0.StartDeg == arena seam lower end (_arenaStartDeg)  — NOT a guide edge
+            //   seg1.EndDeg   == arena seam upper end (_arenaEndDeg)    — NOT a guide edge
+            //   seg1.StartDeg == true left  boundary of the lane
+            //   seg0.EndDeg   == true right boundary of the lane
+            //
+            // The body renderer draws both halves separately so the lane body spans the
+            // seam without a gap.  Guides represent the logical lane — two lines total,
+            // neither of which appears at the seam.
+            leftBoundaryDeg  = seg1.StartDeg;
+            rightBoundaryDeg = seg0.EndDeg;
+            return true;
+        }
+
+        /// <summary>
         /// Returns the i-th merged occupied interval (0 ≤ i &lt; <see cref="OccupiedIntervalCount"/>).
         /// Overlapping and adjacent lanes have been unified — no two occupied intervals overlap.
         /// These represent the angular extents currently covered by at least one enabled lane.
