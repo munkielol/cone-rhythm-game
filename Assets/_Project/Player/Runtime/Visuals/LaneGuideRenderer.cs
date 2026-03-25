@@ -1,13 +1,45 @@
 // LaneGuideRenderer.cs
 // Production lane guide renderer (spec §5.6 lane visuals).
 //
-// Draws exactly two thin radial lines per logical lane via Graphics.DrawMesh:
-//   – left edge  at the lane's true left logical boundary
-//   – right edge at the lane's true right logical boundary
+// Draws exactly two thin 3D edge rails per logical lane via Graphics.DrawMesh:
+//   – left rail   at the lane's true left logical boundary
+//   – right rail  at the lane's true right logical boundary
 //
-// The center guide has been intentionally removed: only left and right edge
-// guides are drawn.  This keeps the playfield uncluttered and makes lane
-// boundaries the only visual cue.
+// The center guide is intentionally omitted.
+//
+// ── 3D rail shape ─────────────────────────────────────────────────────────────
+//
+//   Each rail is a low-poly open tube (no end caps) running radially along a
+//   lane-boundary angle from innerLocal to visualOuterLocal, conforming to the
+//   frustum cone surface.
+//
+//   Tube parameters (baked constants):
+//     RailRadialSegs   = 3  →  4 rings along the rail
+//     RailProfileSides = 4  →  square cross-section (diamond orientation)
+//
+//   Per-rail geometry:
+//     Verts   = RailRingCount * RailProfileSides = 4 × 4 = 16
+//     Indices = RailRadialSegs * RailProfileSides * 2 * 3 = 3 × 4 × 6 = 72
+//
+//   Per-lane mesh (2 rails):
+//     Verts   = 2 × 16 = 32
+//     Indices = 2 × 72 = 144
+//
+// ── Tube frame construction ───────────────────────────────────────────────────
+//
+//   The tube cross-section is oriented in the plane perpendicular to the rail axis:
+//
+//     T (axis tangent)   = (cosA, sinA, slopeZ)  — radial direction + cone slope
+//     N (tangential)     = (−sinA, cosA, 0)      — always ⊥ to T in XY
+//     B (binormal)       = normalize(T_unnorm × N)
+//                        = normalize(−slopeZ·cosA, −slopeZ·sinA, 1)
+//                        ≈ (0, 0, 1) for a flat arena
+//
+//   Ring vertex p:  centre_at_r + railRadius × (cos(φ_p)·N + sin(φ_p)·B)
+//     where φ_p = p × 2π / RailProfileSides
+//
+//   The slopeZ of the frustum cone is computed once per arena:
+//     slopeZ = (hOuter − hInner) / (outerLocal − innerLocal)
 //
 // ── Body segments vs. guide boundaries ───────────────────────────────────────
 //
@@ -18,13 +50,13 @@
 //
 //   A seam-split lane (one that straddles a full-circle arena's seam) produces:
 //     LaneSurfaceRenderer:  two body meshes  (one per segment, seam-aware)
-//     LaneGuideRenderer:    one mesh         (two guides at real left/right only)
+//     LaneGuideRenderer:    one mesh         (two rails at real left/right only)
 //
 // ── Interval source ───────────────────────────────────────────────────────────
 //
-//   Guide edge angles are sourced from ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries()
+//   Rail edge angles are sourced from ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries()
 //   — which recovers the two logical boundaries from the same seam-aware data as
-//   LaneSurfaceRenderer.  This guarantees that guide edges land on the actual lane
+//   LaneSurfaceRenderer.  This guarantees rail edges land on the actual lane
 //   boundaries even for rotating arenas and seam-crossing lanes.
 //
 // ── Loop structure ────────────────────────────────────────────────────────────
@@ -32,31 +64,22 @@
 //   Mirrors LaneSurfaceRenderer outer structure:
 //     Outer loop: arenas — calls ArenaOccupancyEvaluator.Compute() once per arena.
 //     Inner loop: evaluator lanes filtered to this arena — one mesh per logical lane
-//                 (exactly two guides per lane, regardless of seam-split state).
+//                 (exactly two rails per lane, regardless of seam-split state).
 //
 // ── Z layering ────────────────────────────────────────────────────────────────
 //
 //   Visual layering from bottom (+Z = toward camera):
 //     Arena surface    — FrustumZAtRadius (base)
 //     Lane surface     — FrustumZAtRadius + 0.005  (LaneSurfaceRenderer.liftLocal)
-//     Lane guides      — FrustumZAtRadius + 0.008  (surfaceOffsetLocal default)
+//     Lane rails       — FrustumZAtRadius + 0.008  (surfaceOffsetLocal default)
 //     Notes            — FrustumZAtRadius + 0.010  (NoteLayerZLift)
 //
 //   surfaceOffsetLocal must remain greater than LaneSurfaceRenderer.liftLocal (0.005)
-//   so that guides are always visible above the lane surface body.
-//
-// ── Mesh layout per segment ────────────────────────────────────────────────────
-//
-//   Each visible segment generates one mesh with 2 quads:
-//     Quad 0 (verts 0–3):  left-edge radial line at segment.StartDeg
-//     Quad 1 (verts 4–7):  right-edge radial line at segment.EndDeg
-//
-//   Each line spans innerLocal → visualOuterLocal along its angle, lifted onto the
-//   frustum cone surface using PlayfieldFrustumProfile + surfaceOffsetLocal.
+//   so that rails are always visible above the lane surface body.
 //
 // ── Rendering pattern ─────────────────────────────────────────────────────────
 //
-//   Identical to JudgementRingRenderer and ArenaBandRenderer:
+//   Identical to LaneSurfaceRenderer and ArenaSurfaceRenderer:
 //     – pre-allocated Mesh pool, vertices written in-place every LateUpdate
 //     – Graphics.DrawMesh — works in Game view without Gizmos, no child GOs required
 //
@@ -65,6 +88,8 @@
 // Wiring:
 //   1. Attach to any GO in the Player scene.
 //   2. Assign playerAppController, guideMaterial, frustumProfile in the Inspector.
+//   3. guideMaterial should use an unlit shader with _Color support; two-sided
+//      rendering is recommended since the tube interior may be visible at grazing angles.
 
 using UnityEngine;
 using RhythmicFlow.Shared;
@@ -72,12 +97,12 @@ using RhythmicFlow.Shared;
 namespace RhythmicFlow.Player
 {
     /// <summary>
-    /// Production lane guide renderer.  Draws left-edge and right-edge radial
-    /// line strips for each visible lane segment (seam-aware, arena-clamped).
+    /// Production lane guide renderer.  Draws left-edge and right-edge thin 3D
+    /// tube rails for each visible logical lane (seam-aware, arena-clamped).
     ///
-    /// <para>Guide angles are sourced from <see cref="ArenaOccupancyEvaluator"/> —
-    /// the same intervals used by <see cref="LaneSurfaceRenderer"/> — so guide edges
-    /// are always aligned with the drawn lane surface.</para>
+    /// <para>Rail boundary angles are sourced from <see cref="ArenaOccupancyEvaluator"/> —
+    /// the same intervals used by <see cref="LaneSurfaceRenderer"/> — so rail edges
+    /// are always aligned with the drawn lane surface edges.</para>
     ///
     /// <para>Attach to any GO in the Player scene.  Assign
     /// <see cref="playerAppController"/>, <see cref="guideMaterial"/>, and
@@ -94,7 +119,8 @@ namespace RhythmicFlow.Player
         [Tooltip("PlayerAppController providing evaluated lane and arena geometry.")]
         [SerializeField] private PlayerAppController playerAppController;
 
-        [Tooltip("Material for the lane guide lines.  Use an unlit shader with _Color support.")]
+        [Tooltip("Material for the lane guide rails.  Use an unlit shader with _Color support.\n" +
+                 "Two-sided rendering is recommended to avoid interior-face artefacts.")]
         [SerializeField] private Material guideMaterial;
 
         [Header("Frustum Surface Alignment")]
@@ -102,51 +128,63 @@ namespace RhythmicFlow.Player
         [SerializeField] private PlayfieldFrustumProfile frustumProfile;
 
         [Header("Appearance")]
-        [Tooltip("Color applied to all lane guide lines via MaterialPropertyBlock._Color.")]
+        [Tooltip("Color applied to all lane guide rails via MaterialPropertyBlock._Color.")]
         [SerializeField] private Color guideColor = new Color(1.0f, 0.75f, 0.3f, 0.8f);
 
-        [Tooltip("Tangential half-thickness of each radial line in PlayfieldLocal units.  Default: 0.003.")]
-        [SerializeField] private float lineHalfThicknessLocal = 0.003f;
+        [Tooltip("Radius of the tube cross-section in PlayfieldLocal units.\n\n" +
+                 "Controls how thick the 3D rail appears.  Smaller values = finer rail.\n" +
+                 "Default: 0.003")]
+        [Min(0.0001f)]
+        [SerializeField] private float railRadiusLocal = 0.003f;
 
-        [Tooltip("Local Z offset added to every guide line vertex (PlayfieldLocal units).\n\n" +
-                 "This lifts guides above the lane surface body so they remain visible.\n\n" +
+        [Tooltip("Local Z offset added to every rail vertex centre (PlayfieldLocal units).\n\n" +
+                 "This lifts rails above the lane surface body so they remain visible.\n\n" +
                  "Z layering (bottom → top):\n" +
                  "  Lane surface  =  FrustumZAtRadius + 0.005  (LaneSurfaceRenderer.liftLocal)\n" +
-                 "  Lane guides   =  FrustumZAtRadius + surfaceOffsetLocal  ← this field\n" +
+                 "  Lane rails    =  FrustumZAtRadius + surfaceOffsetLocal  ← this field\n" +
                  "  Notes         =  FrustumZAtRadius + 0.010\n\n" +
-                 "MUST remain above LaneSurfaceRenderer.liftLocal (0.005) or guides will be\n" +
+                 "MUST remain above LaneSurfaceRenderer.liftLocal (0.005) or rails will be\n" +
                  "occluded by the lane body.  Keep below 0.010 to stay under notes.\n" +
                  "Default: 0.008")]
         [Min(0f)]
         [SerializeField] private float surfaceOffsetLocal = 0.008f;
 
         // -------------------------------------------------------------------
-        // Internals
+        // Tube geometry constants
+        // -------------------------------------------------------------------
+
+        // Two rails per logical lane: left boundary + right boundary.
+        private const int RailsPerLane = 2;
+
+        // Rail tube shape: 4-ring open tube with a square cross-section.
+        // Changing either value requires rebuilding all pool meshes (Awake only).
+        private const int RailRadialSegs   = 3;  // segments along rail length  → 4 rings
+        private const int RailProfileSides = 4;  // sides around cross-section  → square
+
+        // Derived counts (constant at runtime after Awake).
+        private const int RailRingCount   = RailRadialSegs + 1;                        // 4
+        private const int VertsPerRail    = RailRingCount * RailProfileSides;          // 16
+        private const int IndicesPerRail  = RailRadialSegs * RailProfileSides * 2 * 3; // 72
+        private const int VertsPerLane    = RailsPerLane * VertsPerRail;               // 32
+        private const int IndicesPerLane  = RailsPerLane * IndicesPerRail;             // 144
+
+        // -------------------------------------------------------------------
+        // Pool and scratch
         // -------------------------------------------------------------------
 
         // Maximum number of guide meshes drawn per frame across all arenas.
-        // One mesh per visible lane segment; a seam-split lane produces 2 segments,
-        // so this is a segment count, not a lane count.
+        // One mesh per logical lane (two rails packed together per mesh).
         private const int MaxLanePool = 64;
 
-        // Each segment mesh = 2 quads: left-edge guide + right-edge guide.
-        // Center guide is intentionally omitted.
-        // 2 quads × 4 separate verts = 8 verts.
-        // 2 quads × 2 tris × 3 indices = 12 tri indices.
-        private const int QuadsPerLane = 2;
-        private const int VertsPerLane = QuadsPerLane * 4;  // 8
-        private const int TrisPerLane  = QuadsPerLane * 6;  // 12
+        private Mesh[]    _meshPool;
+        private int       _poolUsed;
 
-        private Mesh[] _meshPool;
-        private int    _poolUsed;
-
-        // Vertex scratch: 2 quads × 4 verts = 8 verts.  Filled in-place each LateUpdate.
+        // Vertex scratch array: 2 rails × 16 verts = 32 entries.  Written each LateUpdate.
         private Vector3[] _vertScratch;
 
         private MaterialPropertyBlock _propBlock;
 
         // Shared occupancy evaluator — provides seam-aware, arena-clamped lane intervals.
-        // Mirrors the evaluator in LaneSurfaceRenderer so guide edges align with surface edges.
         private ArenaOccupancyEvaluator _occupancy;
 
         // -------------------------------------------------------------------
@@ -157,27 +195,49 @@ namespace RhythmicFlow.Player
         {
             _vertScratch = new Vector3[VertsPerLane];
 
-            // Triangle index pattern — same for every lane mesh, set once here.
-            // Each quad: [v+0]=r0-left, [v+1]=r1-left, [v+2]=r1-right, [v+3]=r0-right
-            var triPattern = new int[TrisPerLane];
-            for (int q = 0; q < QuadsPerLane; q++)
+            // ── Triangle index pattern ─────────────────────────────────────────────
+            //
+            // Side faces of each open tube rail:
+            //   For each radial segment s (ring s → ring s+1):
+            //     For each side p (around profile):
+            //       Quad = {v00, v01, v11, v10} where vNext = (p+1) % RailProfileSides
+            //       Two CCW tris (outward normal): v00,v01,v11  and  v00,v11,v10
+            //
+            // Rail 0 uses verts [0..15]; Rail 1 uses verts [16..31].
+            var triPattern = new int[IndicesPerLane];
+            int t = 0;
+            for (int rail = 0; rail < RailsPerLane; rail++)
             {
-                int v = q * 4;
-                int t = q * 6;
-                triPattern[t + 0] = v;
-                triPattern[t + 1] = v + 1;
-                triPattern[t + 2] = v + 2;
-                triPattern[t + 3] = v;
-                triPattern[t + 4] = v + 2;
-                triPattern[t + 5] = v + 3;
+                int vBase = rail * VertsPerRail;
+                for (int s = 0; s < RailRadialSegs; s++)
+                {
+                    for (int p = 0; p < RailProfileSides; p++)
+                    {
+                        int vNext = (p + 1) % RailProfileSides;
+                        int v00   = vBase + s * RailProfileSides + p;
+                        int v01   = vBase + s * RailProfileSides + vNext;
+                        int v10   = vBase + (s + 1) * RailProfileSides + p;
+                        int v11   = vBase + (s + 1) * RailProfileSides + vNext;
+
+                        // Outward-facing CCW winding (normal points away from tube axis).
+                        triPattern[t++] = v00;
+                        triPattern[t++] = v01;
+                        triPattern[t++] = v11;
+
+                        triPattern[t++] = v00;
+                        triPattern[t++] = v11;
+                        triPattern[t++] = v10;
+                    }
+                }
             }
 
+            // ── Pre-allocate mesh pool ──────────────────────────────────────────────
             _meshPool = new Mesh[MaxLanePool];
             for (int i = 0; i < MaxLanePool; i++)
             {
-                var m = new Mesh { name = "LaneGuide" };
-                m.vertices  = new Vector3[VertsPerLane]; // zero-filled placeholder
-                m.triangles = triPattern;                // Unity copies internally
+                var m = new Mesh { name = "LaneGuideRail" };
+                m.vertices  = new Vector3[VertsPerLane];  // zero-filled placeholder
+                m.triangles = triPattern;                  // Unity copies internally
                 m.RecalculateBounds();
                 _meshPool[i] = m;
             }
@@ -185,8 +245,6 @@ namespace RhythmicFlow.Player
             _propBlock = new MaterialPropertyBlock();
             _propBlock.SetColor("_Color", guideColor);
 
-            // Shared occupancy evaluator — same capacity as LaneSurfaceRenderer so both
-            // renderers process the same set of lanes per arena.
             _occupancy = new ArenaOccupancyEvaluator(MaxLanePool);
         }
 
@@ -221,11 +279,6 @@ namespace RhythmicFlow.Player
             _poolUsed = 0;
 
             // ── Outer loop: arenas ────────────────────────────────────────────────
-            //
-            // We iterate arenas rather than lanes so that ArenaOccupancyEvaluator.Compute()
-            // is called once per arena and its results consumed immediately — same
-            // structure as LaneSurfaceRenderer.  This ensures guide edges are sourced
-            // from the same seam-aware intervals as the lane surface, keeping them aligned.
             for (int arenaIdx = 0; arenaIdx < evaluator.ArenaCount; arenaIdx++)
             {
                 if (_poolUsed >= MaxLanePool) { break; }
@@ -238,73 +291,73 @@ namespace RhythmicFlow.Player
                 float bandLocal  = pfT.NormRadiusToLocal(arena.BandThicknessNorm);
                 float innerLocal = outerLocal - bandLocal;
 
-                // Guide lines extend to the visual outer edge, matching LaneSurfaceRenderer.
+                // Rails extend to the visual outer edge, matching LaneSurfaceRenderer.
                 float visualOuterLocal = outerLocal
                     + PlayerSettingsStore.VisualOuterExpandNorm * pfT.MinDimLocal;
 
-                // Skip degenerate geometry (band collapsed or inverted).
+                // Skip degenerate geometry.
                 if (visualOuterLocal <= innerLocal || innerLocal < 0f) { continue; }
 
                 Vector2 center = pfT.NormalizedToLocal(
                     new Vector2(arena.CenterXNorm, arena.CenterYNorm));
 
-                // ── Compute seam-aware lane intervals ──────────────────────────────
+                // ── Frustum cone slope ─────────────────────────────────────────────
                 //
-                // Compute() fills the occupancy evaluator with all enabled lanes for this
-                // arena, sorted and seam-split as needed.  Returns false for disabled or
-                // degenerate arenas (both already guarded above).
+                // The tube frame construction needs dZ/dr (the rate of change of the
+                // frustum Z with respect to radius) so the tube cross-section ring is
+                // perpendicular to the actual 3D rail axis rather than to the XY plane.
+                //
+                // slopeZ = (hOuter − hInner) / (outerLocal − innerLocal)
+                //
+                // When frustumProfile is absent or disabled, hInner ≈ hOuter ≈ 0,
+                // so slopeZ ≈ 0 (flat arena) and the frame degenerates to N=(tangential)
+                // and B=(0,0,1).
+                float slopeZ = (outerLocal > innerLocal)
+                    ? (hOuter - hInner) / (outerLocal - innerLocal)
+                    : 0f;
+
+                // ── Compute seam-aware lane intervals ──────────────────────────────
                 if (!_occupancy.Compute(arena, evaluator)) { continue; }
 
                 // ── Inner loop: authored lanes (identity-stable) ───────────────────
                 //
                 // Iterate by evaluator lane index so each authored lane always draws its
-                // own guide regardless of whether crossing lanes have swapped their
-                // sorted positions (same reasoning as LaneSurfaceRenderer).
+                // own rail regardless of whether crossing lanes have swapped sorted positions.
                 for (int laneIdx = 0; laneIdx < evaluator.LaneCount; laneIdx++)
                 {
                     if (_poolUsed >= MaxLanePool) { break; }
 
                     EvaluatedLane lane = evaluator.GetLane(laneIdx);
 
-                    // Skip lanes outside this arena or currently disabled.
                     if (string.IsNullOrEmpty(lane.LaneId) || !lane.EnabledBool) { continue; }
                     if (lane.ArenaId != arena.ArenaId) { continue; }
 
-                    // ── Look up logical guide boundaries ──────────────────────────
+                    // ── Look up logical rail boundary angles ───────────────────────
                     //
-                    // TryGetLaneGuideBoundaries returns exactly two boundary angles
-                    // (left and right) for this lane, regardless of how many body
-                    // segments the seam-aware evaluator produced.
-                    //
-                    // For a seam-split lane (lane crossing the full-circle arena seam),
-                    // LaneSurfaceRenderer draws two body meshes but we still draw only
-                    // two guides — at the lane's actual left and right edges, not at
-                    // the seam.  See ArenaOccupancyEvaluator.TryGetLaneGuideBoundaries
-                    // for the full derivation.
-                    //
-                    // Returns false only when the lane has no visible segments (entirely
-                    // outside the arena span, or disabled — already filtered above, but
-                    // guard for safety).
+                    // Returns exactly two boundary angles (left and right) for this
+                    // logical lane regardless of seam-split state.  For a seam-split
+                    // lane LaneSurfaceRenderer draws two body meshes but we draw only
+                    // two rails — at the lane's actual left and right edges.
                     if (!_occupancy.TryGetLaneGuideBoundaries(
                         laneIdx, out float leftDeg, out float rightDeg)) { continue; }
 
-                    // ── Draw exactly two guides per logical lane ───────────────────
-                    //
-                    // Quad 0: left-edge guide at the lane's true left logical boundary.
-                    // Quad 1: right-edge guide at the lane's true right logical boundary.
-                    //
-                    // Boundary angles are in global-extended degrees; FillRadialLineVerts
-                    // uses Mathf.Cos/Sin which handle values outside [0, 360) correctly.
-
-                    FillRadialLineVerts(_vertScratch, 0, leftDeg, center,
+                    // ── Fill rail 0 (left boundary) ───────────────────────────────
+                    FillRailVerts(
+                        _vertScratch, 0,
+                        leftDeg, center,
                         innerLocal, visualOuterLocal,
-                        innerLocal, outerLocal, hInner, hOuter,
-                        lineHalfThicknessLocal, surfaceOffsetLocal);
+                        innerLocal, outerLocal,
+                        hInner, hOuter,
+                        slopeZ, railRadiusLocal, surfaceOffsetLocal);
 
-                    FillRadialLineVerts(_vertScratch, 4, rightDeg, center,
+                    // ── Fill rail 1 (right boundary) ──────────────────────────────
+                    FillRailVerts(
+                        _vertScratch, VertsPerRail,
+                        rightDeg, center,
                         innerLocal, visualOuterLocal,
-                        innerLocal, outerLocal, hInner, hOuter,
-                        lineHalfThicknessLocal, surfaceOffsetLocal);
+                        innerLocal, outerLocal,
+                        hInner, hOuter,
+                        slopeZ, railRadiusLocal, surfaceOffsetLocal);
 
                     int slot = _poolUsed++;
                     _meshPool[slot].vertices = _vertScratch;
@@ -315,50 +368,93 @@ namespace RhythmicFlow.Player
             }
         }
 
-        // Fills 4 vertices starting at baseVert for one thin radial line quad.
+        // -------------------------------------------------------------------
+        // Rail tube geometry filler
+        // -------------------------------------------------------------------
+
+        // Fills VertsPerRail vertices (= RailRingCount × RailProfileSides = 16) for
+        // one open-tube rail running radially from r0 to r1 at angleDeg.
         //
-        // The line spans radius [r0, r1] along angleDeg with tangential half-width halfThick.
-        // Vertices are in pfRoot local XY space; the DrawMesh localToWorld matrix converts to world.
+        // Frame:
+        //   The rail axis tangent in 3D is T = (cosA, sinA, slopeZ).
+        //   N  = (−sinA, cosA, 0)           — tangential in XY, always ⊥ to T
+        //   B  = normalize(T_unnorm × N)
+        //      = normalize(−slopeZ·cosA, −slopeZ·sinA, 1)
         //
-        // dir_radial  = ( cos(angleDeg),  sin(angleDeg) )
-        // dir_tangent = (-sin(angleDeg),  cos(angleDeg) )  — 90° CCW from radial
+        // Ring p vertex:  centre_at_ring + railRadius × (cos(φ_p)·N + sin(φ_p)·B)
+        //   φ_p = p × 2π / RailProfileSides
         //
-        // Vertex layout:
-        //   [baseVert+0] = r0, left tangent side,  Z at r0
-        //   [baseVert+1] = r1, left tangent side,  Z at r1
-        //   [baseVert+2] = r1, right tangent side, Z at r1
-        //   [baseVert+3] = r0, right tangent side, Z at r0
-        private static void FillRadialLineVerts(
+        // Parameters:
+        //   verts            — scratch array (length ≥ baseVert + VertsPerRail).
+        //   baseVert         — first index to write into verts[].
+        //   angleDeg         — radial angle of the lane boundary in degrees.
+        //   center           — XY arena centre in PlayfieldLocal.
+        //   r0, r1           — inner/outer rail radii (PlayfieldLocal).
+        //   arenaInnerLocal,
+        //   arenaOuterLocal  — reference radii for FrustumZAtRadius interpolation.
+        //   hInner, hOuter   — frustum cone heights at arena inner/outer radii.
+        //   slopeZ           — dZ/dr of frustum cone surface (pre-computed per arena).
+        //   railRadius       — tube cross-section radius (PlayfieldLocal).
+        //   zOffset          — base Z lift above the frustum cone surface.
+        private static void FillRailVerts(
             Vector3[] verts, int baseVert,
             float angleDeg, Vector2 center,
             float r0, float r1,
             float arenaInnerLocal, float arenaOuterLocal,
             float hInner, float hOuter,
-            float halfThick, float zOffset = 0f)
+            float slopeZ,
+            float railRadius, float zOffset)
         {
             float rad  = angleDeg * Mathf.Deg2Rad;
             float cosA = Mathf.Cos(rad);
             float sinA = Mathf.Sin(rad);
 
-            // Tangential direction perpendicular to radial (rotate radial 90° CCW).
-            float tanX = -sinA;
-            float tanY =  cosA;
+            // N: tangential direction in XY — always perpendicular to the radial axis.
+            float nX = -sinA;
+            float nY =  cosA;
+            // nZ = 0 (implicit)
 
-            float z0 = NoteApproachMath.FrustumZAtRadius(
-                r0, arenaInnerLocal, arenaOuterLocal, hInner, hOuter) + zOffset;
-            float z1 = NoteApproachMath.FrustumZAtRadius(
-                r1, arenaInnerLocal, arenaOuterLocal, hInner, hOuter) + zOffset;
+            // B: adjust for cone slope so the ring is perpendicular to the 3D rail axis.
+            //   B_unnorm = T_unnorm × N = (−slopeZ·cosA, −slopeZ·sinA, cos²A + sin²A)
+            //                           = (−slopeZ·cosA, −slopeZ·sinA, 1)
+            float bXu = -slopeZ * cosA;
+            float bYu = -slopeZ * sinA;
+            // bZu = 1 (implicit)
+            float bLen = Mathf.Sqrt(bXu * bXu + bYu * bYu + 1f);
+            float bX =  bXu / bLen;
+            float bY =  bYu / bLen;
+            float bZ =  1f  / bLen;
 
-            // Radial center positions at r0 and r1.
-            float cx0 = center.x + cosA * r0;
-            float cy0 = center.y + sinA * r0;
-            float cx1 = center.x + cosA * r1;
-            float cy1 = center.y + sinA * r1;
+            // Pre-compute cosine/sine for each profile step.
+            // phi_p = p × 2π / RailProfileSides
+            for (int ring = 0; ring <= RailRadialSegs; ring++)
+            {
+                float tParam = (float)ring / RailRadialSegs;
+                float r      = Mathf.Lerp(r0, r1, tParam);
 
-            verts[baseVert + 0] = new Vector3(cx0 - tanX * halfThick, cy0 - tanY * halfThick, z0);
-            verts[baseVert + 1] = new Vector3(cx1 - tanX * halfThick, cy1 - tanY * halfThick, z1);
-            verts[baseVert + 2] = new Vector3(cx1 + tanX * halfThick, cy1 + tanY * halfThick, z1);
-            verts[baseVert + 3] = new Vector3(cx0 + tanX * halfThick, cy0 + tanY * halfThick, z0);
+                // Centre of this ring on the frustum cone surface.
+                float cx = center.x + cosA * r;
+                float cy = center.y + sinA * r;
+                float cz = NoteApproachMath.FrustumZAtRadius(
+                    r, arenaInnerLocal, arenaOuterLocal, hInner, hOuter) + zOffset;
+
+                // Generate RailProfileSides vertices evenly around the cross-section.
+                for (int p = 0; p < RailProfileSides; p++)
+                {
+                    float phi  = p * (2f * Mathf.PI / RailProfileSides);
+                    float cPhi = Mathf.Cos(phi);
+                    float sPhi = Mathf.Sin(phi);
+
+                    // Offset from tube centre in 3D: cPhi·N + sPhi·B_norm
+                    // N.z = 0 is elided.
+                    float ox = railRadius * (cPhi * nX + sPhi * bX);
+                    float oy = railRadius * (cPhi * nY + sPhi * bY);
+                    float oz = railRadius * (               sPhi * bZ);
+
+                    int idx = baseVert + ring * RailProfileSides + p;
+                    verts[idx] = new Vector3(cx + ox, cy + oy, cz + oz);
+                }
+            }
         }
 
         // -------------------------------------------------------------------
