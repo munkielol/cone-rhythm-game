@@ -1,5 +1,5 @@
 // HoldBodyRenderer.cs
-// Scroll-style hold body renderer — behaves like an ArcCreate long note.
+// Hold note body renderer — moving textured object with hold-body-local UV mapping.
 //
 // ══════════════════════════════════════════════════════════════════════
 //  APPROACH FORMULA  (shared with PlayerDebugRenderer §6.1)
@@ -83,11 +83,14 @@
 //   Texture:   NoteSkinSet.GetHoldBodyTexture() → set via _MainTex MPB.
 //   Width UV:  fixed left edge + tiled center + fixed right edge,
 //              using NoteCapGeometryBuilder.ComputeHoldWidthU per column.
-//   Length UV: head-anchored tiling along ribbon length (V axis).
-//              V at the head/judgement end is always 0 (or 1 when flipped),
-//              and V at the tail end extends by segmentLength × holdLengthTileRatePerUnit.
-//              As the hold shrinks, tiles disappear toward the tail while the
-//              visual pattern at the head stays stable.
+//   Length UV: hold-body-local tiling along ribbon length (V axis).
+//              Phase A (approach):  V=0 at the head vertex, V=bodyLength×rate at the tail.
+//                  The UV span is frozen on the hold body — the whole textured
+//                  object moves together, like a tap note.
+//              Phase B (during hold): V at the head advances as the body is consumed
+//                  at the judgement line.  Different parts of the pattern arrive at
+//                  the pinned front over time.  The rate is derived from approach
+//                  geometry; no separate flow-rate parameter is used.
 //   Phase tint: holdColorApproaching / holdColorActive / holdColorReleased
 //              are applied as _Color tint multipliers on top of the texture.
 //
@@ -590,62 +593,46 @@ namespace RhythmicFlow.Player
                 // Degenerate ribbon guard: cap was drawn above; skip ribbon only.
                 if (headR - tailR < 0.0001f) { continue; }
 
-                // ── Length-direction V tiling (hold-local, time-advancing) ───────────────
+                // ── Length-direction V tiling (hold-body-local, two-phase) ─────────────────
                 //
-                // V is computed from the hold's own TIME coordinate, not from absolute
-                // world-space radius.  This makes the texture continuously advance toward
-                // the judgement line as the hold is consumed, creating visible motion.
-                //
-                // SEPARATION OF CONCERNS:
-                //   Geometry clipping: the visible body spans [tailR, headR] in world space
-                //     — headR is clamped to judgementR in Phase B (no overshoot).
-                //   UV mapping: V at any radius r is derived from WHEN that point will
-                //     reach the judgement ring, offset by how much hold time has already
-                //     elapsed.  This is hold-local time, not world position.
-                //
-                // FORMULA:
-                //   holdBandR    = judgementR − spawnR            (arena band, local units)
-                //   holdElapsedR = (chartTimeMs − startTimeMs)    (elapsed ms)
-                //                  × holdBandR / noteLeadTimeMs   (converted to local units)
-                //                  clamped to ≥ 0 (Phase A guard)
-                //
-                //   V(r) = (holdElapsedR + (judgementR − r)) × lengthTileRate
-                //
-                //   holdElapsedR is the radial distance the front of the hold has already
-                //   "consumed" past judgementR.  Adding (judgementR − r) gives the total
-                //   hold-local distance from this vertex back to the hold's current front.
+                // V is assigned in hold-body-local space — the same model as Tap/Catch/Flick:
+                // the texture is fixed to the hold body and moves with it.
                 //
                 // PHASE A (chartTime < startTimeMs):
-                //   holdElapsedR = 0  (clamped).
-                //   V(r) = (judgementR − r) × rate — identical to the previous formula.
-                //   Phase A visual is unchanged; body geometry grows naturally.
+                //   holdElapsedR = 0 (Mathf.Max guard).
+                //   vHead = 0  (head vertex always at V=0 — body-local front).
+                //   vTail = bodyLength × rate  (body-local back — constant while body length is constant).
+                //   The UV span is frozen on the hold body.  The hold advances as one textured object,
+                //   the same way a tap note does — the texture rides with the geometry.
                 //
-                // PHASE B (startTimeMs ≤ chartTime ≤ endTimeMs):
+                // PHASE B (startTimeMs ≤ chartTime):
                 //   holdElapsedR grows as chartTimeMs advances past startTimeMs.
-                //   V(r) at every world position increases over time →
-                //   different UV values arrive at the pinned head each frame ✓.
-                //   Body shrinks geometrically (tailR advances) AND the texture flows.
+                //   vHead = holdElapsedR × rate  (advances from 0 — new UV values arrive at pinned front).
+                //   vTail = (holdElapsedR + bodyLength) × rate  (also advances; bodyLength shrinks as hold is consumed).
+                //   The same textured hold body is consumed at the judgement line: different parts of the
+                //   pattern arrive at the front over time.
                 //
-                // PHASE A→B TRANSITION:
-                //   At the exact moment chartTimeMs = startTimeMs, holdElapsedR = 0 and
-                //   headR = judgementR, so V_head = 0 — a smooth, gap-free join ✓.
+                // SEAMLESS PHASE A→B JOIN:
+                //   At startTimeMs: holdElapsedR=0, headR=judgementR, bodyLength=(judgementR-tailR).
+                //   Phase A gives: vHead=0, vTail=bodyLength×rate.
+                //   Phase B gives: vHead=0, vTail=(0+bodyLength)×rate.  Identical. ✓
                 //
-                // WHY NO FAKE SCROLL PARAMETER:
-                //   The effective flow rate is (holdBandR / noteLeadTimeMs) × lengthTileRate
-                //   — derived entirely from approach geometry and the skin tile rate.
-                //   No independent authored scroll-speed field is introduced.
+                // NO FAKE FLOW-RATE PARAMETER:
+                //   The Phase B advance rate = (holdBandR/noteLeadTimeMs) × lengthTileRate.
+                //   Derived from approach geometry and the skin tile rate only.
+                //   No separate authored scroll-speed setting is introduced.
                 //
                 // HEAD CAP ON OR OFF:
-                //   V computation reads from headR/tailR only — it is independent of
-                //   whether the cap mesh is drawn.  The body reads identically either way.
-                float holdBandR    = judgementR - spawnR;  // arena band size (local units)
+                //   V uses headR/tailR/holdElapsedR only — independent of whether the cap is drawn.
+                float holdBandR    = judgementR - spawnR;  // arena band in local units
                 float holdElapsedR = (noteLeadTimeMs > 0 && holdBandR > 0f)
                     ? Mathf.Max(0f, (float)(chartTimeMs - note.StartTimeMs))
                       * holdBandR / noteLeadTimeMs
                     : 0f;
 
-                float vHeadRaw = (holdElapsedR + (judgementR - headR)) * lengthTileRate;
-                float vTailRaw = (holdElapsedR + (judgementR - tailR)) * lengthTileRate;
+                float bodyLength = headR - tailR;  // > 0 (degenerate guard passed above)
+                float vHeadRaw   = holdElapsedR * lengthTileRate;
+                float vTailRaw   = (holdElapsedR + bodyLength) * lengthTileRate;
 
                 float vHead = flipVertical ? (1f - vHeadRaw) : vHeadRaw;
                 float vTail = flipVertical ? (1f - vTailRaw) : vTailRaw;
