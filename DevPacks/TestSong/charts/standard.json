@@ -60,16 +60,6 @@
             "timeMs": 0,
             "value": 0.42,
             "easing": "hold"
-          },
-          {
-            "timeMs": 4000,
-            "value": 0.48,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 8000,
-            "value": 0.42,
-            "easing": "easeInOut"
           }
         ]
       },
@@ -79,11 +69,6 @@
             "timeMs": 0,
             "value": 0.12,
             "easing": "hold"
-          },
-          {
-            "timeMs": 8000,
-            "value": 0.12,
-            "easing": "hold"
           }
         ]
       },
@@ -91,7 +76,7 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 0,
+            "value": 180,
             "easing": "hold"
           }
         ]
@@ -100,7 +85,7 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 360,
+            "value": 180,
             "easing": "hold"
           }
         ]
@@ -134,28 +119,8 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 359,
+            "value": 270,
             "easing": "hold"
-          },
-          {
-            "timeMs": 2000,
-            "value": 1,
-            "easing": "linear"
-          },
-          {
-            "timeMs": 4000,
-            "value": 359,
-            "easing": "linear"
-          },
-          {
-            "timeMs": 6000,
-            "value": 1,
-            "easing": "linear"
-          },
-          {
-            "timeMs": 8000,
-            "value": 359,
-            "easing": "linear"
           }
         ]
       },
@@ -163,22 +128,7 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 28,
-            "easing": "hold"
-          },
-          {
-            "timeMs": 3000,
-            "value": 45,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 6000,
-            "value": 22,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 8000,
-            "value": 28,
+            "value": 80,
             "easing": "hold"
           }
         ]
@@ -210,43 +160,8 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 180,
+            "value": 270,
             "easing": "hold"
-          },
-          {
-            "timeMs": 2600,
-            "value": 210,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 3400,
-            "value": 140,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 3900,
-            "value": 28,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 4300,
-            "value": 10,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 4700,
-            "value": 24,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 5600,
-            "value": 135,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 8000,
-            "value": 180,
-            "easing": "easeInOut"
           }
         ]
       },
@@ -254,27 +169,7 @@
         "keyframes": [
           {
             "timeMs": 0,
-            "value": 20,
-            "easing": "hold"
-          },
-          {
-            "timeMs": 3200,
-            "value": 24,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 4300,
-            "value": 20,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 5000,
-            "value": 22,
-            "easing": "easeInOut"
-          },
-          {
-            "timeMs": 8000,
-            "value": 20,
+            "value": 40,
             "easing": "hold"
           }
         ]
@@ -290,55 +185,94 @@
       "timeMs": 1200
     },
     {
-      "noteId": "c1",
-      "laneId": "lane-1",
-      "type": "catch",
-      "timeMs": 2200
+      "noteId": "t2",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 1600
     },
     {
-      "noteId": "f1",
+      "noteId": "t3",
       "laneId": "lane-1",
-      "type": "flick",
-      "timeMs": 3200,
-      "direction": "U"
+      "type": "tap",
+      "timeMs": 2000
     },
     {
-      "noteId": "h1",
-      "laneId": "lane-1",
-      "type": "hold",
-      "startTimeMs": 4200,
-      "endTimeMs": 7200,
-      "tickTimesMs": [
-        4600,
-        5000,
-        5400,
-        5800,
-        6200,
-        6600,
-        7000,
-        7200
-      ]
+      "noteId": "t4",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 2400
     },
     {
-      "noteId": "f2",
+      "noteId": "t5",
       "laneId": "lane-1",
-      "type": "flick",
-      "timeMs": 7600,
-      "direction": "D"
+      "type": "tap",
+      "timeMs": 2800
     },
     {
-      "noteId": "f3",
-      "laneId": "lane-1",
-      "type": "flick",
-      "timeMs": 8000,
-      "direction": "L"
+      "noteId": "t6",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 3200
     },
     {
-      "noteId": "f4",
+      "noteId": "t7",
       "laneId": "lane-1",
-      "type": "flick",
-      "timeMs": 8400,
-      "direction": "R"
+      "type": "tap",
+      "timeMs": 3600
+    },
+    {
+      "noteId": "t8",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 4000
+    },
+    {
+      "noteId": "t9",
+      "laneId": "lane-1",
+      "type": "tap",
+      "timeMs": 4400
+    },
+    {
+      "noteId": "t10",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 4800
+    },
+    {
+      "noteId": "t11",
+      "laneId": "lane-1",
+      "type": "tap",
+      "timeMs": 5200
+    },
+    {
+      "noteId": "t12",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 5600
+    },
+    {
+      "noteId": "t13",
+      "laneId": "lane-1",
+      "type": "tap",
+      "timeMs": 6000
+    },
+    {
+      "noteId": "t14",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 6400
+    },
+    {
+      "noteId": "t15",
+      "laneId": "lane-1",
+      "type": "tap",
+      "timeMs": 6800
+    },
+    {
+      "noteId": "t16",
+      "laneId": "lane-2",
+      "type": "tap",
+      "timeMs": 7200
     }
   ]
 }

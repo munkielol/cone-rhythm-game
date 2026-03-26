@@ -29,7 +29,7 @@ MonoBehaviour:
   bodyLeftEdgeLocalWidth: 0.01
   bodyRightEdgeLocalWidth: 0.01
   bodyCenterTileRatePerUnit: 20
-  noteLaneWidthRatio: 0.9
+  noteLaneWidthRatio: 0.95
   noteRadialHalfThicknessLocal: 0.002
   missedTintColor: {r: 0.4, g: 0.4, b: 0.4, a: 0.55}
   flickArrowMaterial: {fileID: 2100000, guid: 3a43b3ff18ac33348b86ae969e480695, type: 2}
@@ -51,5 +51,5 @@ MonoBehaviour:
   holdRightEdgeLocalWidth: 0.01
   holdCenterTileRatePerUnit: 20
   holdLengthTileRatePerUnit: 45
-  holdLaneWidthRatio: 0.9
+  holdLaneWidthRatio: 0.95
   holdFlipVertical: 0
