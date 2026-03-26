@@ -17,7 +17,7 @@ MonoBehaviour:
     enabled: 1
     material: {fileID: 2100000, guid: e0caccb00670ad04eb62337f1a0b2b84, type: 2}
     texture: {fileID: 0}
-    tint: {r: 0.5235849, g: 1, b: 0.9396967, a: 1}
+    tint: {r: 0.5, g: 0.5, b: 0.5, a: 1}
     opacity: 1
     uvScale: {x: 1, y: 1}
     uvScrollSpeed: {x: 0, y: 0}

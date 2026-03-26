@@ -7,6 +7,7 @@
 //   FlickMinDistanceNorm  — minimum playfield-plane distance for flick gesture (spec §8.3)
 //   FlickMinVelocityNormPerSec — minimum velocity for flick gesture (spec §8.3)
 //   FlickMaxGestureTimeMs — maximum gesture duration for flick recognition (spec §8.3)
+//   NoteCapArcSegments   — arc column count for note cap meshes; startup-read, visual quality (spec §8.3.1)
 //
 // Sign convention for UserOffsetMs (locked, spec §3.3):
 //   Positive = judge LATER (notes occur later relative to audio).
@@ -27,6 +28,7 @@ namespace RhythmicFlow.Player
         private const string KeyFlickMinDistNorm       = "rf.FlickMinDistNorm";
         private const string KeyFlickMinVelNormPerSec  = "rf.FlickMinVelNormPerSec";
         private const string KeyFlickMaxGestureTimeMs  = "rf.FlickMaxGestureTimeMs";
+        private const string KeyNoteCapArcSegments     = "rf.NoteCapArcSegments";
 
         // -------------------------------------------------------------------
         // Defaults (locked for v0, spec §8.3)
@@ -42,6 +44,9 @@ namespace RhythmicFlow.Player
         public const float DefaultFlickMinDistanceNorm      = 0.03f;
         public const float DefaultFlickMinVelocityNormPerSec = 0.8f;
         public const int   DefaultFlickMaxGestureTimeMs     = 120;
+
+        // Spec §8.3.1: default arc column count for note caps (v0 shipped default, min 3).
+        public const int   DefaultNoteCapArcSegments        = 5;
 
         // -------------------------------------------------------------------
         // UserOffsetMs  (int, range -1000..+1000 ms in practice; UI clips to -200..+200)
@@ -108,6 +113,57 @@ namespace RhythmicFlow.Player
             set
             {
                 PlayerPrefs.SetInt(KeyFlickMaxGestureTimeMs, Mathf.Max(1, value));
+                PlayerPrefs.Save();
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // Global visual-quality settings  (persisted — startup-read)
+        // -------------------------------------------------------------------
+        // These settings control rendering quality, not gameplay correctness.
+        // They are persisted via PlayerPrefs so the player's preferred quality
+        // level survives between sessions.
+        //
+        // Each renderer reads its value exactly once in Awake and caches it for
+        // the session.  Changing a value at runtime has no effect until the next
+        // scene reload or Play-mode re-entry — there is no live pool rebuild.
+        //
+        // NoteCapArcSegments is the first setting in this section.  Future
+        // visual-quality controls (e.g. hold-ribbon radial segments, arena arc
+        // density) should be added here following the same pattern.
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Visual/quality control for note cap arc smoothness (spec §8.3.1).
+        ///
+        /// Sets the number of angular column quads across each note cap edge.
+        /// Applies equally to Tap, Catch, Flick, and Hold head caps — all four
+        /// use <see cref="NoteCapGeometryBuilder"/> and share this column count.
+        ///
+        /// <b>Startup-only:</b> each note renderer reads this value once in
+        /// Awake and allocates its mesh pool and scratch arrays accordingly.
+        /// Changing this value at runtime has no effect on existing pools — the
+        /// change takes effect only after restarting Play mode or reloading the
+        /// scene.
+        ///
+        /// Values below the minimum of 3 are clamped on both read and write.
+        ///
+        /// Does NOT affect hold body ribbon, arena surface, lane surface,
+        /// judgement ring, or lane guide tessellation — those are controlled
+        /// independently per-component.
+        ///
+        /// Default: <see cref="DefaultNoteCapArcSegments"/> (5).
+        /// Persisted via PlayerPrefs (key "rf.NoteCapArcSegments").
+        /// </summary>
+        public static int NoteCapArcSegments
+        {
+            get => Mathf.Max(3, PlayerPrefs.GetInt(KeyNoteCapArcSegments, DefaultNoteCapArcSegments));
+            set
+            {
+                // Clamp to the minimum of 3 — matches NoteCapGeometryBuilder.CreateLayout.
+                // Note: changing this at runtime has no effect on already-allocated mesh
+                // pools.  Restart Play mode (or reload the scene) to apply the new value.
+                PlayerPrefs.SetInt(KeyNoteCapArcSegments, Mathf.Max(3, value));
                 PlayerPrefs.Save();
             }
         }
@@ -181,27 +237,6 @@ namespace RhythmicFlow.Player
         /// Default: 0.00 (no extra visual rim — mesh matches chart outerLocal).
         /// </summary>
         public static float VisualOuterExpandNorm = 0.00f;
-
-        /// <summary>
-        /// Visual/quality control for note cap arc smoothness (spec §8.3.1).
-        ///
-        /// Sets the number of angular column quads across each note cap edge.
-        /// Applies equally to Tap, Catch, Flick, and Hold head caps — all four use
-        /// the same <see cref="NoteCapGeometryBuilder"/> and share this column count.
-        ///
-        /// <b>Read at startup only.</b>  Each note renderer reads this value once in
-        /// Awake and allocates its mesh pool and scratch arrays accordingly.  Changing
-        /// this field mid-session has no effect on existing pools — the change takes
-        /// effect only after restarting Play mode (or reloading the scene).
-        ///
-        /// Values below 3 are clamped to 3 inside <see cref="NoteCapGeometryBuilder.CreateLayout"/>.
-        ///
-        /// Does NOT affect hold body ribbon, arena surface, lane surface, judgement ring,
-        /// or lane guide tessellation — those are controlled independently per-component.
-        ///
-        /// Default: 5 (v0 shipped default, spec §8.3.1).
-        /// </summary>
-        public static int NoteCapArcSegments = 180;
 
         /// <summary>
         /// Hit Band — inward coverage fraction from judgement ring toward chartInner (input-only, spec §5.5.2 / §8.3.1).
