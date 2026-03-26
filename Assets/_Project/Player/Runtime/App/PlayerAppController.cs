@@ -35,6 +35,9 @@ using UnityEngine.Networking;
 
 namespace RhythmicFlow.Player
 {
+    // Run Awake early so visual-quality settings are written to PlayerSettingsStore before
+    // note renderers (at default order 0) read them in their own Awake calls.
+    [DefaultExecutionOrder(-100)]
     public class PlayerAppController : MonoBehaviour
     {
         // -------------------------------------------------------------------
@@ -89,6 +92,17 @@ namespace RhythmicFlow.Player
                  "Default: 0")]
         [Range(0f, 1f)]
         [SerializeField] private float spawnRadiusFactor = 0f;
+
+        [Header("Visual Quality (startup-read — exit and re-enter Play mode to apply changes)")]
+        [Tooltip(
+            "Number of arc column quads across each note cap edge (Tap / Catch / Flick / Hold head).\n\n" +
+            "Higher values produce smoother curves on wide lanes. Min: 3. Default: 5.\n\n" +
+            "STARTUP-ONLY: this value is written to PlayerPrefs in Awake and read by note renderers\n" +
+            "in their own Awake. Changing it during Play mode has no effect on the current session —\n" +
+            "exit Play mode, adjust the value, then re-enter Play mode to rebuild the mesh pools.\n\n" +
+            "Does NOT affect hold body ribbon, arena, lane, judgement ring, or lane guide geometry.\n\n" +
+            "Spec §8.3.1 / PlayerSettingsStore.NoteCapArcSegments.")]
+        [SerializeField] private int noteCapArcSegments = PlayerSettingsStore.DefaultNoteCapArcSegments;
 
         [Header("Input Projection")]
         [Tooltip("When true, screen rays are tested against visualSurfaceLayerMask before falling back " +
@@ -352,6 +366,26 @@ namespace RhythmicFlow.Player
         // ===================================================================
         // Unity lifecycle
         // ===================================================================
+
+        // Awake runs before Start and — thanks to [DefaultExecutionOrder(-100)] — before
+        // note renderers' Awake calls.  We use it exclusively to push visual-quality
+        // settings into PlayerSettingsStore before the renderers read them.
+        //
+        // Note renderers read PlayerSettingsStore.NoteCapArcSegments in their own Awake
+        // and allocate fixed-size mesh pools from that value.  This must happen first.
+        private void Awake()
+        {
+            // Write the Inspector-facing noteCapArcSegments value to PlayerSettingsStore.
+            // PlayerSettingsStore.NoteCapArcSegments (the property setter) persists the
+            // clamped value to PlayerPrefs and enforces the minimum of 3.
+            //
+            // The note renderers' Awake calls (at default execution order 0) then read
+            // back this value via the getter and build their mesh pools accordingly.
+            //
+            // TODO: replace this Inspector-field approach with a proper settings UI when
+            // one is added to the project.  The PlayerPrefs path remains the same.
+            PlayerSettingsStore.NoteCapArcSegments = noteCapArcSegments;
+        }
 
         private void Start()
         {

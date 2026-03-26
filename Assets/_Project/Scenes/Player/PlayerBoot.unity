@@ -174,6 +174,7 @@ MonoBehaviour:
   gameplayMode: 0
   noteLeadTimeMs: 2000
   spawnRadiusFactor: 0
+  noteCapArcSegments: 180
   useVisualSurfaceRaycast: 1
   visualSurfaceLayerMask:
     serializedVersion: 2
@@ -1026,7 +1027,7 @@ MonoBehaviour:
   debugLogSpawnOncePerSecond: 0
   debugDrawSpawnArcs: 0
   drawHoldHeadCap: 1
-  holdArcSegments: 360
+  holdArcSegments: 180
   holdRadialSegments: 16
 --- !u!4 &780337768
 Transform:
@@ -1137,9 +1138,9 @@ MonoBehaviour:
   playerAppController: {fileID: 4343613}
   laneMaterial: {fileID: 2100000, guid: cdeb0c0ad74f7054082630f3ac81e66e, type: 2}
   frustumProfile: {fileID: 1154423719}
-  laneTint: {r: 0.49056602, g: 0.49056602, b: 0.49056602, a: 1}
+  laneTint: {r: 0.49056602, g: 0.49056602, b: 0.49056602, a: 0.49019608}
   liftLocal: 0
-  arcSegments: 360
+  arcSegments: 180
   radialSegments: 4
 --- !u!1 &1464150561
 GameObject:
@@ -1236,7 +1237,7 @@ MonoBehaviour:
   playerAppController: {fileID: 4343613}
   frustumProfile: {fileID: 1154423719}
   skinSet: {fileID: 11400000, guid: 1cd89d19e52a7a440b7f2b676c0b98d6, type: 2}
-  arcSegments: 360
+  arcSegments: 180
 --- !u!1 &1768587415
 GameObject:
   m_ObjectHideFlags: 0
