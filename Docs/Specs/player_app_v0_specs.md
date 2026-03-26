@@ -482,8 +482,8 @@ Note bodies for all types (Tap, Catch, Flick, Hold) must be:
 **Target geometry direction:**
 The intended final direction is **exact lane-curve-following**: note head caps follow the arc of the lane at their current radius, forming curved-edge quads rather than straight-chord approximations. This is reached incrementally:
 * **v0 step 1 (done):** Single-segment trapezoid. One chord per cap edge. Acceptable for straight or nearly-straight lanes.
-* **v0 step 2 (current):** Segmented curved-cap geometry — each cap edge subdivided into N arc-sampled column boundaries (ColumnCount = 5 by default). The note body visibly follows the lane arc at all widths. Implemented in `NoteCapGeometryBuilder` (`Assets/_Project/Player/Runtime/Visuals/NoteCapGeometryBuilder.cs`). All three production renderers (Tap/Catch/Flick) use this builder.
-* **v0+ target:** Move `NoteCapGeometryBuilder` to `Assets/_Project/Shared/` so the Chart Editor Playfield Preview can share it (spec §chart_editor §3.3). Increase ColumnCount if very-wide lanes show visible stepping.
+* **v0 step 2 (current):** Segmented curved-cap geometry — each cap edge subdivided into N arc-sampled column boundaries. The column count is controlled by the global `NoteCapArcSegments` visual-quality setting (§8.3.1; default 5). The note body visibly follows the lane arc at all widths. Implemented in `NoteCapGeometryBuilder` (`Assets/_Project/Player/Runtime/Visuals/NoteCapGeometryBuilder.cs`). All four production note cap renderers (Tap, Catch, Flick, and Hold head cap) use this builder and share the same column count.
+* **v0+ target:** Move `NoteCapGeometryBuilder` to `Assets/_Project/Shared/` so the Chart Editor Playfield Preview can share it (spec §chart_editor §3.3). Raise `NoteCapArcSegments` via the global visual-quality setting if very-wide lanes show visible arc stepping.
 
 **Note skin goal:**
 The preferred skin workflow is **texture/PNG-driven, not material-only authoring**. Materials define the shader and rendering template; the primary artistic content is textures assigned to them. The skin system must keep visual identity stable under variable lane width — see §5.7.3 for the full skin philosophy.
@@ -501,7 +501,7 @@ Three separate MonoBehaviours, each handling one note type, driven by a `NoteSki
 | `CatchNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/CatchNoteRenderer.cs` | `NoteType.Catch` |
 | `FlickNoteRenderer` | `Assets/_Project/Player/Runtime/Visuals/FlickNoteRenderer.cs` | `NoteType.Flick` |
 
-All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each). Vertices are overwritten in-place each frame — zero per-frame GC allocation. Current v0 geometry is a 5-column segmented curved-cap (§5.7.0 step 2) built by `NoteCapGeometryBuilder`. Mesh templates have 12 vertices and 10 triangles per note.
+All three use `Graphics.DrawMesh` with a pre-allocated mesh pool (128 slots each). Vertices are overwritten in-place each frame — zero per-frame GC allocation. Current v0 geometry is a segmented curved-cap (§5.7.0 step 2) built by `NoteCapGeometryBuilder`; the arc column count is read from `NoteCapArcSegments` (§8.3.1) at startup. Arc column count is **not** a `NoteSkinSet` field — it is a session-level visual-quality parameter applied equally to all note cap types (Tap, Catch, Flick, and Hold head cap). At the default column count of 5, mesh templates have 12 vertices and 10 triangles per note. Pool topology is fixed for the session; changing `NoteCapArcSegments` takes effect on next startup.
 
 **`NoteSkinSet` ScriptableObject** (`Assets/_Project/Player/Runtime/Skins/NoteSkinSet.cs`):
 
@@ -633,7 +633,7 @@ The hold body is an **arc-conforming grid mesh** that follows the lane's actual 
 
 The hold has a **head cap** — a curved note-head visual drawn at `headR` on every approach frame. This is part of the current intended design.
 
-* Uses `NoteCapGeometryBuilder.FillCapVerticesEdgeAware` — the same arc-sampled curved-cap geometry as Tap/Catch/Flick notes — so the hold head is visually consistent with other note types at the judgement line.
+* Uses `NoteCapGeometryBuilder.FillCapVerticesEdgeAware` — the same arc-sampled curved-cap geometry as Tap/Catch/Flick notes, using the same `NoteCapArcSegments` column count (§8.3.1) — so the hold head is visually consistent with other note types at the judgement line.
 * The head reaches `judgementR` and remains pinned there (by the `Clamp01` approach formula) through the hold and into the late miss window — identical to all other note heads. **No overshoot**: `Clamp01` naturally prevents the head from advancing past `judgementR`; no special branch is required.
 * The cap inherits the same phase tint (`holdColorApproaching` / `holdColorActive` / `holdColorReleased`) as the ribbon body.
 * `drawHoldHeadCap` (Inspector bool, default `true`) is a debug/testing toggle only. When `false`, the cap is completely suppressed. **Body motion readability must not depend on the cap being present** — see below.
@@ -1408,6 +1408,7 @@ These are not persisted PlayerPrefs settings. They are simple static fields in `
 | `InputBandExpandOuterNorm` | `0.03` | **Input only.** Additional outer expansion added on top of `hitBandOuter` (additive fine-tune, see §5.5.2). Default 0.03 = 3 % extra outward. Clamped to `visualOuterLocal`. |
 | `JudgementInsetNorm` | `0.003` | **Visual/skin only.** Insets the judgement ring inside `outerLocal` by `JudgementInsetNorm × minDimLocal`. Notes land and the judgement arc is drawn at this radius. Does not change hit-testing, timing windows, or chart geometry. See §5.8. |
 | `VisualOuterExpandNorm` | `0.00` | **Visual/skin only.** Extends the arena mesh/arc outer rim beyond `outerLocal` by `VisualOuterExpandNorm × minDimLocal`. Provides a thick-track look with rim beyond the judgement ring. Default 0 = mesh matches chart `outerLocal`. Does not affect hit-testing or charting. See §5.8. |
+| `NoteCapArcSegments` | `5` | **Visual/quality only.** Number of arc columns in each note cap edge. Controls the curve smoothness of Tap, Catch, Flick, and Hold head caps — higher values reduce visible arc stepping on very-wide lanes. **Read at startup only:** the mesh pool for each note renderer is allocated once using this count; changing it mid-session has no effect. Minimum valid value: 3. Does **not** apply to hold body ribbon, arena surface, lane surface, judgement ring, or lane guide — those are controlled independently per-component. |
 
 ### **8.4 Gameplay**
 
