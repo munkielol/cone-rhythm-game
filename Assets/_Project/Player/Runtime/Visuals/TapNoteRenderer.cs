@@ -129,14 +129,15 @@ namespace RhythmicFlow.Player
         private Mesh[] _meshPool;
         private int    _poolUsed;
 
-        // Vertex scratch — filled by NoteCapGeometryBuilder.FillCapVertices each frame.
-        // Length = NoteCapGeometryBuilder.VertexCount (12).
-        private readonly Vector3[] _vertScratch = new Vector3[NoteCapGeometryBuilder.VertexCount];
+        // Per-session layout — created once in Awake from PlayerSettingsStore.NoteCapArcSegments.
+        // Governs column count, vertex count, and head/tail row indices for this renderer's pool.
+        // Read at startup only; changing NoteCapArcSegments mid-session has no effect.
+        private NoteCapLayout _capLayout;
 
-        // UV scratch — filled by NoteCapGeometryBuilder.FillCapUVs each frame.
-        // Assigned to the pooled mesh alongside _vertScratch.
-        // Length = NoteCapGeometryBuilder.VertexCount (12), matching mesh topology.
-        private readonly Vector2[] _uvScratch = new Vector2[NoteCapGeometryBuilder.VertexCount];
+        // Scratch arrays sized in Awake from _capLayout.VertexCount.
+        // Written every LateUpdate frame — zero per-frame GC allocation after Awake.
+        private Vector3[] _vertScratch;
+        private Vector2[] _uvScratch;
 
         // Pre-allocated property block — reused every DrawMesh call (no per-frame allocation).
         private MaterialPropertyBlock _propBlock;
@@ -164,13 +165,20 @@ namespace RhythmicFlow.Player
 
         private void Awake()
         {
+            // Read the global visual-quality setting once at startup.
+            // NoteCapArcSegments is startup-only: pools are allocated here and cannot be
+            // rebuilt mid-session without reloading the scene.
+            _capLayout   = NoteCapGeometryBuilder.CreateLayout(PlayerSettingsStore.NoteCapArcSegments);
+            _vertScratch = new Vector3[_capLayout.VertexCount];
+            _uvScratch   = new Vector2[_capLayout.VertexCount];
+
             // Pre-allocate the mesh pool. Each mesh has the curved-cap topology set up
             // once in BuildCapMesh (triangles + placeholder UVs). Vertices and UVs are
             // overwritten in-place every frame — no per-frame GC allocation.
             _meshPool = new Mesh[MaxNotePool];
             for (int i = 0; i < MaxNotePool; i++)
             {
-                _meshPool[i] = NoteCapGeometryBuilder.BuildCapMesh("TapNoteCurvedCap");
+                _meshPool[i] = NoteCapGeometryBuilder.BuildCapMesh("TapNoteCurvedCap", _capLayout);
             }
             _propBlock = new MaterialPropertyBlock();
         }
@@ -337,6 +345,7 @@ namespace RhythmicFlow.Player
                 // FillCapUVs so geometry and UV columns are guaranteed to align.
                 NoteCapGeometryBuilder.FillCapVerticesEdgeAware(
                     _vertScratch,
+                    _capLayout,
                     ctr,
                     tailR,
                     headR,
@@ -357,6 +366,7 @@ namespace RhythmicFlow.Player
                 // Writes into _uvScratch; assigned to the mesh below alongside vertices.
                 NoteCapGeometryBuilder.FillCapUVs(
                     _uvScratch,
+                    _capLayout,
                     r,                  // approach radius — see FillCapUVs for why we use r
                     noteHalfAngleDeg,
                     noteSkinSet,
@@ -426,35 +436,35 @@ namespace RhythmicFlow.Player
             if (debugDrawNoteOutline)
             {
                 // ── Tail arc (cyan): left→right across inner note edge ─────────────────
-                for (int i = 0; i < NoteCapGeometryBuilder.ColumnCount; i++)
+                for (int i = 0; i < _capLayout.ColumnCount; i++)
                 {
                     Debug.DrawLine(
-                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow + i]),
-                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow + i + 1]),
+                        pfRoot.TransformPoint(_vertScratch[_capLayout.TailRow + i]),
+                        pfRoot.TransformPoint(_vertScratch[_capLayout.TailRow + i + 1]),
                         Color.cyan);
                 }
 
                 // ── Head arc (cyan): left→right across outer note edge (front cap) ─────
-                for (int i = 0; i < NoteCapGeometryBuilder.ColumnCount; i++)
+                for (int i = 0; i < _capLayout.ColumnCount; i++)
                 {
                     Debug.DrawLine(
-                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow + i]),
-                        pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow + i + 1]),
+                        pfRoot.TransformPoint(_vertScratch[_capLayout.HeadRow + i]),
+                        pfRoot.TransformPoint(_vertScratch[_capLayout.HeadRow + i + 1]),
                         Color.cyan);
                 }
 
                 // ── Left radial edge (blue): column 0, tail→head ──────────────────────
                 Debug.DrawLine(
-                    pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.TailRow]),
-                    pfRoot.TransformPoint(_vertScratch[NoteCapGeometryBuilder.HeadRow]),
+                    pfRoot.TransformPoint(_vertScratch[_capLayout.TailRow]),
+                    pfRoot.TransformPoint(_vertScratch[_capLayout.HeadRow]),
                     Color.blue);
 
                 // ── Right radial edge (blue): column N, tail→head ─────────────────────
                 Debug.DrawLine(
                     pfRoot.TransformPoint(
-                        _vertScratch[NoteCapGeometryBuilder.TailRow + NoteCapGeometryBuilder.ColumnCount]),
+                        _vertScratch[_capLayout.TailRow + _capLayout.ColumnCount]),
                     pfRoot.TransformPoint(
-                        _vertScratch[NoteCapGeometryBuilder.HeadRow + NoteCapGeometryBuilder.ColumnCount]),
+                        _vertScratch[_capLayout.HeadRow + _capLayout.ColumnCount]),
                     Color.blue);
 
                 // ── Centre radial sample line (white): exact laneCenterDeg, tail→head ──

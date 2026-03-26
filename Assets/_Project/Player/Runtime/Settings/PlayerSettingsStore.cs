@@ -183,6 +183,27 @@ namespace RhythmicFlow.Player
         public static float VisualOuterExpandNorm = 0.00f;
 
         /// <summary>
+        /// Visual/quality control for note cap arc smoothness (spec §8.3.1).
+        ///
+        /// Sets the number of angular column quads across each note cap edge.
+        /// Applies equally to Tap, Catch, Flick, and Hold head caps — all four use
+        /// the same <see cref="NoteCapGeometryBuilder"/> and share this column count.
+        ///
+        /// <b>Read at startup only.</b>  Each note renderer reads this value once in
+        /// Awake and allocates its mesh pool and scratch arrays accordingly.  Changing
+        /// this field mid-session has no effect on existing pools — the change takes
+        /// effect only after restarting Play mode (or reloading the scene).
+        ///
+        /// Values below 3 are clamped to 3 inside <see cref="NoteCapGeometryBuilder.CreateLayout"/>.
+        ///
+        /// Does NOT affect hold body ribbon, arena surface, lane surface, judgement ring,
+        /// or lane guide tessellation — those are controlled independently per-component.
+        ///
+        /// Default: 5 (v0 shipped default, spec §8.3.1).
+        /// </summary>
+        public static int NoteCapArcSegments = 180;
+
+        /// <summary>
         /// Hit Band — inward coverage fraction from judgement ring toward chartInner (input-only, spec §5.5.2 / §8.3.1).
         ///
         /// inwardDepthLocal = max(0, judgementRadiusLocal − chartInnerLocal)

@@ -272,10 +272,15 @@ namespace RhythmicFlow.Player
         private Mesh[] _capPool;
         private int    _capPoolUsed;
 
-        // Scratch arrays for hold head cap geometry — filled per-frame, no GC alloc.
-        // Lengths match NoteCapGeometryBuilder.VertexCount (12): 2 rows × (ColumnCount+1) cols.
-        private readonly Vector3[] _capVertScratch = new Vector3[NoteCapGeometryBuilder.VertexCount];
-        private readonly Vector2[] _capUvScratch   = new Vector2[NoteCapGeometryBuilder.VertexCount];
+        // Per-session layout for the hold head cap — created once in Awake from
+        // PlayerSettingsStore.NoteCapArcSegments, same value used by Tap/Catch/Flick.
+        // Read at startup only; changing NoteCapArcSegments mid-session has no effect.
+        private NoteCapLayout _capLayout;
+
+        // Scratch arrays for hold head cap geometry — sized in Awake from _capLayout.VertexCount.
+        // Reused every frame: no per-frame GC allocation after Awake.
+        private Vector3[] _capVertScratch;
+        private Vector2[] _capUvScratch;
 
         // Reused every DrawMesh call — no per-frame allocation.
         // Must be created in Awake; Unity forbids engine-object ctor in field initializers.
@@ -315,12 +320,19 @@ namespace RhythmicFlow.Player
                 _meshPool[i] = BuildHoldArcMesh();
             }
 
-            // Pre-allocate cap pool. Caps use NoteCapGeometryBuilder topology (12 verts, 30 indices)
-            // built once here — identical to TapNoteRenderer's pool.
+            // Read the global visual-quality setting once at startup (same value as Tap/Catch/Flick).
+            // NoteCapArcSegments is startup-only: cap pool and scratch arrays are allocated here
+            // and cannot be rebuilt mid-session without reloading the scene.
+            _capLayout      = NoteCapGeometryBuilder.CreateLayout(PlayerSettingsStore.NoteCapArcSegments);
+            _capVertScratch = new Vector3[_capLayout.VertexCount];
+            _capUvScratch   = new Vector2[_capLayout.VertexCount];
+
+            // Pre-allocate cap pool. Caps use NoteCapGeometryBuilder topology (column count
+            // set by _capLayout) built once here — same geometry as Tap/Catch/Flick caps.
             _capPool = new Mesh[MaxHoldPool];
             for (int i = 0; i < MaxHoldPool; i++)
             {
-                _capPool[i] = NoteCapGeometryBuilder.BuildCapMesh("HoldHeadCap");
+                _capPool[i] = NoteCapGeometryBuilder.BuildCapMesh("HoldHeadCap", _capLayout);
             }
 
             _propBlock = new MaterialPropertyBlock();
@@ -569,7 +581,7 @@ namespace RhythmicFlow.Player
                     if (capHeadR - capTailR > 0.0001f)
                     {
                         NoteCapGeometryBuilder.FillCapVerticesEdgeAware(
-                            _capVertScratch, ctr, capTailR, capHeadR,
+                            _capVertScratch, _capLayout, ctr, capTailR, capHeadR,
                             AngleUtil.Normalize360(lane.CenterDeg), noteHalfAngleDeg,
                             headR,   // approach radius — for chord-to-angle conversion
                             noteSkinSet.bodyLeftEdgeLocalWidth,
@@ -578,7 +590,7 @@ namespace RhythmicFlow.Player
                             zOffset: NoteLayerZLift);
 
                         NoteCapGeometryBuilder.FillCapUVs(
-                            _capUvScratch, headR, noteHalfAngleDeg, noteSkinSet,
+                            _capUvScratch, _capLayout, headR, noteHalfAngleDeg, noteSkinSet,
                             flipBodyVertical: false);
 
                         if (capTex != null)
